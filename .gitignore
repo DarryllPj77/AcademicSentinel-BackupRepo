@@ -361,3 +361,5 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/AcademicSentinel.Server/academicsentinel.db-shm
+/AcademicSentinel.Server/academicsentinel.db-wal
