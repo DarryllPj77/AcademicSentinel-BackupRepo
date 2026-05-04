@@ -61,6 +61,7 @@ namespace AcademicSentinel.Client.Views.IMC
         private readonly HashSet<int> _safelyLeftStudentIds = new();
         private readonly HashSet<int> _permanentlyDismissedStudents = new HashSet<int>();
         private readonly HashSet<int> _studentsWithViolations = new HashSet<int>();
+        private readonly Dictionary<int, string> _pendingJoinRequests = new();
         private readonly ConcurrentDictionary<int, ObservableCollection<StudentMonitoringEvent>> _studentLogs = new();
         private readonly List<IDisposable> _hubSubscriptions = new();
         private int? _selectedStudentId;
@@ -438,6 +439,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 if (_permanentlyDismissedStudents.Contains(id))
                     return;
 
+                _pendingJoinRequests.Remove(id);
                 _safelyLeftStudentIds.Remove(id);
                 _ = LoadParticipantsFromServerAsync();
             })));
@@ -467,6 +469,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
             _hubSubscriptions.Add(_hubConnection.On<int, string>("StudentJoinedOrReconnected", (studentId, studentName) => Dispatcher.InvokeAsync(() =>
             {
+                _pendingJoinRequests.Remove(studentId);
                 var student = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (student != null)
                 {
@@ -604,6 +607,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 if (_permanentlyDismissedStudents.Contains(studentId))
                     return;
 
+                _pendingJoinRequests[studentId] = studentName;
                 var existing = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (existing == null)
                 {
@@ -632,6 +636,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
             _hubSubscriptions.Add(_hubConnection.On<int>("StudentJoinDenied", studentId => Dispatcher.Invoke(() =>
             {
+                _pendingJoinRequests.Remove(studentId);
                 var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (targetStudent == null) return;
                 LogActivity(targetStudent.Email, "JOIN_DENIED", "Join request denied.", "#9E9E9E");
@@ -702,6 +707,7 @@ namespace AcademicSentinel.Client.Views.IMC
             try
             {
                 await _hubConnection.InvokeAsync("ApproveStudentJoin", _roomId, student.StudentId);
+                _pendingJoinRequests.Remove(student.StudentId);
                 student.IsJoinPending = false;
                 LogActivity(student.Name, "JOIN_APPROVED", "Instructor approved student join.", "#1B5E20");
                 _studentsView.Refresh();
@@ -783,6 +789,33 @@ namespace AcademicSentinel.Client.Views.IMC
                         IsLeaveRequested = isLeaveRequested,
                         Status = isLeaveRequested ? "Wants to Leave" : "Connected",
                         StatusColor = isLeaveRequested ? "#FF9800" : "#4CAF50"
+                    });
+                }
+
+                foreach (var pending in _pendingJoinRequests.ToList())
+                {
+                    if (_permanentlyDismissedStudents.Contains(pending.Key) || _safelyLeftStudentIds.Contains(pending.Key))
+                        continue;
+
+                    if (ActiveStudents.Any(s => s.StudentId == pending.Key))
+                        continue;
+
+                    var enrollment = participants.FirstOrDefault(p => p.StudentId == pending.Key);
+                    var displayName = !string.IsNullOrWhiteSpace(enrollment?.StudentName)
+                        ? enrollment.StudentName
+                        : pending.Value;
+                    var email = !string.IsNullOrWhiteSpace(enrollment?.StudentEmail)
+                        ? enrollment.StudentEmail
+                        : pending.Value;
+
+                    ActiveStudents.Add(new LiveStudentStatus
+                    {
+                        StudentId = pending.Key,
+                        Name = displayName,
+                        Email = email,
+                        IsJoinPending = true,
+                        Status = "Requesting to Join",
+                        StatusColor = "#FF9800"
                     });
                 }
 

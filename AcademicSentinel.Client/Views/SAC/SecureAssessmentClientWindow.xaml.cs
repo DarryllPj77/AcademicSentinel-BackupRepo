@@ -115,9 +115,26 @@ namespace AcademicSentinel.Client.Views.SAC
 
             UpdateRequestLeaveButtonState();
 
-            _ = LoadDetectionSettingsAsync();
-            _ = InitializeSignalRAsync();
-            _ = RefreshMonitoringStateAsync();
+            _ = InitializeAsync();
+        }
+
+        private async Task InitializeAsync()
+        {
+            try
+            {
+                // Load detection settings first
+                await LoadDetectionSettingsAsync();
+
+                // Then initialize SignalR after detector is ready
+                await InitializeSignalRAsync();
+
+                // Finally refresh state
+                await RefreshMonitoringStateAsync();
+            }
+            catch (Exception ex)
+            {
+                DetectionReports.Add($"Initialization error: {ex.Message}");
+            }
         }
 
         private async Task LoadDetectionSettingsAsync()
@@ -231,13 +248,18 @@ namespace AcademicSentinel.Client.Views.SAC
             if (shouldRun && !_detectorsRunning)
             {
                 _detectorsRunning = true;
-                DetectionReports.Add($"Detector Runtime: Active ({DateTime.Now:h:mm:ss tt})");
+                DetectionReports.Add($"Detector Runtime: Active ({DateTime.Now:h:mm:ss tt}) [initialized={_detectorsInitialized}, monitoring={_isMonitoringActive}]");
                 DetectionReports.Add($"Idle baseline started at {DateTime.Now:h:mm:ss tt}");
             }
             else if (!shouldRun && _detectorsRunning)
             {
                 _detectorsRunning = false;
-                DetectionReports.Add($"Detector Runtime: Paused ({DateTime.Now:h:mm:ss tt})");
+                var reason = !_detectorsInitialized ? "not initialized" 
+                           : !_isMonitoringActive ? "monitoring inactive"
+                           : _sessionEnded ? "session ended"
+                           : _monitoringCountdownEndsAt.HasValue ? "countdown in progress"
+                           : "unknown";
+                DetectionReports.Add($"Detector Runtime: Paused ({DateTime.Now:h:mm:ss tt}) [reason: {reason}]");
             }
         }
 
@@ -334,10 +356,10 @@ namespace AcademicSentinel.Client.Views.SAC
                     headerStatus.Foreground = color;
                 }
 
-                // Update leave permission label: blocked during active monitoring, paused, or countdown
+                // Update leave permission label: blocked only when monitoring is active AND leave is locked
                 if (FindName("TxtCompactLeavePermission") is TextBlock compactLeavePermission)
                 {
-                    bool leaveBlocked = isActive || (_currentPhase != ExamPhase.PreSession && !_sessionEnded);
+                    bool leaveBlocked = isActive && _leaveRequestState == LeaveRequestState.Locked;
                     compactLeavePermission.Text = leaveBlocked ? "Leave Permission: Blocked" : "Leave Permission: Allowed";
                     compactLeavePermission.Foreground = leaveBlocked
                         ? new SolidColorBrush(Color.FromRgb(198, 40, 40))
@@ -619,7 +641,7 @@ namespace AcademicSentinel.Client.Views.SAC
                     _monitoringStartedAt = null;
                     if (!_sessionEnded)
                         _currentPhase = ExamPhase.Active;
-                    _leaveRequestState = LeaveRequestState.Locked;
+                    _leaveRequestState = LeaveRequestState.Unlocked;
                     _isLeaveRequested = false;
 
                     SetMonitoringStateUI(false, "PAUSED BY INSTRUCTOR", System.Windows.Media.Brushes.Goldenrod);
@@ -872,22 +894,32 @@ namespace AcademicSentinel.Client.Views.SAC
                 });
 
                 await _hubConnection.StartAsync();
+
+                // Give handlers a small window to execute before checking state
+                // This ensures JoinPendingApproval handler can set proper state
                 await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
+
+                // Add a small delay to allow SignalR handlers to execute first
+                await Task.Delay(100);
 
                 try
                 {
-                    bool isMonitoringActive = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
-                    _isMonitoringActive = isMonitoringActive;
-                    _monitoringCountdownEndsAt = null;
-                    _monitoringStartedAt = isMonitoringActive ? DateTime.Now : null;
-                    if (!_sessionEnded)
-                        _currentPhase = isMonitoringActive ? ExamPhase.Active : ExamPhase.PreSession;
+                    // Only query state if we're not in pending approval (which would be set by handler)
+                    if (_currentPhase != ExamPhase.Countdown)
+                    {
+                        bool isMonitoringActive = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
+                        _isMonitoringActive = isMonitoringActive;
+                        _monitoringCountdownEndsAt = null;
+                        _monitoringStartedAt = isMonitoringActive ? DateTime.Now : null;
+                        if (!_sessionEnded)
+                            _currentPhase = isMonitoringActive ? ExamPhase.Active : ExamPhase.PreSession;
 
-                    string text = isMonitoringActive ? "ACTIVE" : "INACTIVE";
-                    var color = isMonitoringActive ? System.Windows.Media.Brushes.LimeGreen : System.Windows.Media.Brushes.Gray;
-                    SetMonitoringStateUI(isMonitoringActive, text, color);
-                    UpdateDetectorRuntimeState();
-                    UpdateRequestLeaveButtonState();
+                        string text = isMonitoringActive ? "ACTIVE" : "INACTIVE";
+                        var color = isMonitoringActive ? System.Windows.Media.Brushes.LimeGreen : System.Windows.Media.Brushes.Gray;
+                        SetMonitoringStateUI(isMonitoringActive, text, color);
+                        UpdateDetectorRuntimeState();
+                        UpdateRequestLeaveButtonState();
+                    }
                 }
                 catch
                 {

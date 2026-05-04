@@ -597,14 +597,25 @@ namespace AcademicSentinel.Client.Views.IMC
 
             string roomTitle = $"{courseItem.CourseLogo} - {courseItem.CourseDescription}";
 
-            // 1. Create the new Room Detail window
-            var roomDetail = new RoomDetailWindow(courseItem.RoomId, roomTitle);
+            try
+            {
+                // 1. Create the new Room Detail window
+                var roomDetail = new RoomDetailWindow(courseItem.RoomId, roomTitle);
 
-            // 2. Show the new window
-            roomDetail.Show();
+                // 2. Show the new window
+                roomDetail.Show();
 
-            // 3. CLOSE the current dashboard so they don't pile up!
-            this.Close();
+                // 3. Transfer main window ownership to prevent app shutdown
+                Application.Current.MainWindow = roomDetail;
+
+                // 4. Close the dashboard window
+                this.Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Unable to open the room detail window.\n\n{ex.Message}",
+                    "Open Room Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void UpdateEmptyState()

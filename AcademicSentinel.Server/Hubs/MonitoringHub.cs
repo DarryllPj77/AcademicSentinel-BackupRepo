@@ -341,12 +341,18 @@ public class MonitoringHub : Hub
 
         var isSessionEnded = !string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
 
+        var latestStatus = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
+            .OrderByDescending(p => p.JoinedAt)
+            .Select(p => p.ConnectionStatus)
+            .FirstOrDefaultAsync();
+
         var leaveAlreadyGranted = await _context.MonitoringEvents
             .AnyAsync(e => e.RoomId == roomId
                         && e.StudentId == studentId
                         && e.EventType == "LEAVE_GRANTED");
 
-        if (isSessionEnded || leaveAlreadyGranted)
+        if (isSessionEnded || (leaveAlreadyGranted && !string.Equals(latestStatus, "Connected", StringComparison.OrdinalIgnoreCase)))
         {
             await Clients.Client(Context.ConnectionId).SendAsync("LeaveGranted", studentId);
         }
@@ -564,7 +570,7 @@ public class MonitoringHub : Hub
 
         if (participant != null)
         {
-            participant.ConnectionStatus = "Completed";
+            participant.ConnectionStatus = "Disconnected";
             participant.DisconnectedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
         }

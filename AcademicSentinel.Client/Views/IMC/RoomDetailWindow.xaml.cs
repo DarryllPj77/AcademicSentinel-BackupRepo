@@ -26,7 +26,10 @@ namespace AcademicSentinel.Client.Views.IMC
             InitializeComponent();
 
             CurrentRoomId = roomId;
-            TxtRoomTitle.Text = roomTitle;
+            if (TxtRoomTitle != null)
+            {
+                TxtRoomTitle.Text = roomTitle;
+            }
 
             // Load Sidebar Branding
             LoadTeacherSidebarInfo();
@@ -40,9 +43,16 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (SessionManager.CurrentUser != null)
             {
-                TxtSidebarProfName.Text = !string.IsNullOrWhiteSpace(SessionManager.CurrentUser.FullName)
+                var email = SessionManager.CurrentUser.Email ?? string.Empty;
+                var fallbackName = string.IsNullOrWhiteSpace(email) ? "Instructor" : email.Split('@')[0];
+                var displayName = !string.IsNullOrWhiteSpace(SessionManager.CurrentUser.FullName)
                     ? SessionManager.CurrentUser.FullName
-                    : SessionManager.CurrentUser.Email.Split('@')[0];
+                    : fallbackName;
+
+                if (TxtSidebarProfName != null)
+                {
+                    TxtSidebarProfName.Text = displayName;
+                }
 
                 if (!string.IsNullOrEmpty(SessionManager.CurrentUser.ProfileImageUrl))
                 {
@@ -254,6 +264,11 @@ namespace AcademicSentinel.Client.Views.IMC
         }
         private void ApplyFilter()
         {
+            if (PastSessionsGrid == null)
+            {
+                return;
+            }
+
             var searchText = TxtSearch?.Text?.Trim() ?? string.Empty;
             var filterItem = (CmbFilter?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "All Sessions";
 

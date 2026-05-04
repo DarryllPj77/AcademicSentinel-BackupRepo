@@ -60,6 +60,12 @@ namespace AcademicSentinel.Client.Services.SAC
             return EvaluateAndMapFindings(_behavioralMonitoringService.Poll(false));
         }
 
+        public void SetMonitoringEnabled(bool enabled)
+        {
+            // Fire and forget is OK here, but ensure logging works
+            _ = SetMonitoringEnabledAsync(enabled);
+        }
+
         public async Task SetMonitoringEnabledAsync(bool enabled)
         {
             if (enabled)
@@ -75,17 +81,24 @@ namespace AcademicSentinel.Client.Services.SAC
                 {
                     _preFlightCompleted = true;
 
-                    var hardwareState = await _environmentIntegrityService.PerformFullScanAsync();
-
-                    if (_options.OnHardwareStateDetected != null)
+                    try
                     {
-                        await _options.OnHardwareStateDetected(hardwareState.IsVm, hardwareState.IsRemote);
+                        var hardwareState = await _environmentIntegrityService.PerformFullScanAsync();
+
+                        if (_options.OnHardwareStateDetected != null)
+                        {
+                            await _options.OnHardwareStateDetected(hardwareState.IsVm, hardwareState.IsRemote);
+                        }
+
+                        if (hardwareState.IsVm || hardwareState.IsRemote)
+                        {
+                            var description = $"Critical Environment Violation: VM: {hardwareState.IsVm}, Remote: {hardwareState.IsRemote}";
+                            _options.OnPreFlightViolationDetected?.Invoke(new DetectorFinding("VAC_HAS_VIOLATION", 50, description));
+                        }
                     }
-
-                    if (hardwareState.IsVm || hardwareState.IsRemote)
+                    catch (Exception ex)
                     {
-                        var description = $"Critical Environment Violation: VM: {hardwareState.IsVm}, Remote: {hardwareState.IsRemote}";
-                        _options.OnPreFlightViolationDetected?.Invoke(new DetectorFinding("VAC_HAS_VIOLATION", 50, description));
+                        // Log preflight error but continue
                     }
                 }
 
@@ -98,11 +111,6 @@ namespace AcademicSentinel.Client.Services.SAC
             _isStarted = false;
             IsLoggingEnabled = false;
             _behavioralMonitoringService.StopMonitoring();
-        }
-
-        public void SetMonitoringEnabled(bool enabled)
-        {
-            _ = SetMonitoringEnabledAsync(enabled);
         }
 
         public async Task StopMonitoringAsync()

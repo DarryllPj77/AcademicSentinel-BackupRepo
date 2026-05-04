@@ -16,7 +16,7 @@ namespace AcademicSentinel.Client.Views.IMC
         public int CreatedSessionId { get; private set; }
         public int MonitoringDurationSeconds { get; private set; } = 3600;
         public bool EndSessionWhenTimerEnds { get; private set; } = true;
-        public int StartDelaySeconds { get; private set; } = 10;
+        public int StartDelaySeconds { get; private set; } = 1;
 
         // UPDATED: Now requires RoomId!
         public CreateSessionSetupWindow(int roomId, string roomTitle)
@@ -193,7 +193,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private bool TryGetStartDelaySeconds(out int delaySeconds)
         {
-            delaySeconds = 10;
+            delaySeconds = 1;
             try
             {
                 if (FindName("TxtStartDelaySeconds") is not System.Windows.Controls.TextBox txtDelay)
