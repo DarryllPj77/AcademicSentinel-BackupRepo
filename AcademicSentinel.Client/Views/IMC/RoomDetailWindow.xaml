@@ -237,11 +237,18 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" x:Name="TxtRoomTitle"
-                               Text="2TSYS2526 - MATH - TN310-2"
-                               FontSize="22" FontWeight="Bold"
-                               Foreground="{StaticResource FEUGreenBrush}"
-                               VerticalAlignment="Center"/>
+                    <TextBox Grid.Column="0" x:Name="TxtRoomTitle"
+                             Text="2TSYS2526 - MATH - TN310-2"
+                             FontSize="22" FontWeight="Bold"
+                             Foreground="{StaticResource FEUGreenBrush}"
+                             VerticalAlignment="Center"
+                             Background="Transparent" 
+                             BorderThickness="0" 
+                             IsReadOnly="True" 
+                             IsReadOnlyCaretVisible="False"
+                             Focusable="True"
+                             IsHitTestVisible="True"
+                             Cursor="IBeam"/>
                     <Button Grid.Column="1" Content="← Back"
                             Style="{StaticResource OutlineBtn}"
                             Click="BtnBack_Click"/>

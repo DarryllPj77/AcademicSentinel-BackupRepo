@@ -165,16 +165,12 @@
                     </StackPanel>
                 </StackPanel>
 
-                <Button Grid.Column="2" Content="DEV: Inject Data"
-                Background="#FF9800" Foreground="Black" FontWeight="Bold"
-                Padding="10,5" Margin="0,0,10,0" Cursor="Hand" BorderThickness="0"
-                Click="BtnInjectMockData_Click"/>
-                <Button Grid.Column="3" Content="End Session"
+                <Button Grid.Column="2" Content="End Session"
                         Style="{StaticResource EndSessionBtn}"
                         Click="BtnEndSession_Click"
                         Margin="0,0,16,0"/>
 
-                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Background="Transparent" BorderThickness="0" Cursor="Hand" Padding="6" Margin="0,0,12,0">
                         <Button.Template>
                             <ControlTemplate TargetType="Button">

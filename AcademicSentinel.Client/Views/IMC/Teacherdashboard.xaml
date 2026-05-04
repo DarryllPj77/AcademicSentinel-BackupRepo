@@ -193,9 +193,20 @@
 
         <!-- ======================== COURSE CARD STYLE ======================== -->
         <Style x:Key="CourseCardStyle" TargetType="Border">
-            <Setter Property="Background" Value="White"/><Setter Property="CornerRadius" Value="12"/>
-            <Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="0,0,0,0"/>
-            <Setter Property="Effect"><Setter.Value><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.08" Color="Black"/></Setter.Value></Setter>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="CornerRadius" Value="12"/>
+
+            <!-- NEW: Added Outline -->
+            <Setter Property="BorderBrush" Value="#D0D0D0"/>
+            <Setter Property="BorderThickness" Value="1.5"/>
+
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,0,0"/>
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.08" Color="Black"/>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
 
@@ -448,16 +459,21 @@
                                                                    Foreground="{StaticResource FEUSubTextBrush}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                                                     </StackPanel>
                                                     <!-- Course image when uploaded -->
-                                                    <Image Source="{Binding CourseImagePath}" Stretch="UniformToFill"
-                                                           Visibility="{Binding HasImageVisibility, FallbackValue=Collapsed}"/>
+                                                    <!-- NEW: Added ClipToBounds and ensured Stretch is UniformToFill -->
+                                                    <Image Source="{Binding CourseImagePath}" 
+                                                           Stretch="UniformToFill" 
+                                                           ClipToBounds="True"
+                                                           Visibility="{Binding HasImageVisibility, FallbackValue=Collapsed}"/> 
                                                 </Grid>
                                             </Border>
 
                                             <!-- Course Description -->
                                             <Border Grid.Row="2" Padding="14,12">
-                                                <TextBlock Text="{Binding CourseDescription}" FontSize="13" FontWeight="Medium"
-                                                           Foreground="{StaticResource FEUDarkTextBrush}" TextWrapping="Wrap"
-                                                           TextTrimming="CharacterEllipsis" MaxHeight="40"/>
+                                                <TextBox Text="{Binding CourseDescription}" FontSize="13" FontWeight="Medium"
+                                                         Foreground="{StaticResource FEUDarkTextBrush}" TextWrapping="Wrap"
+                                                         MaxHeight="40"
+                                                         Background="Transparent" BorderThickness="0"
+                                                         IsReadOnly="True" IsReadOnlyCaretVisible="False"/>
                                             </Border>
                                         </Grid>
                                     </Border>

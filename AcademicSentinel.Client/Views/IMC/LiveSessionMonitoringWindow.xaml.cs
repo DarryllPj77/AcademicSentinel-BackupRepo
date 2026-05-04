@@ -1135,25 +1135,6 @@ namespace AcademicSentinel.Client.Views.IMC
                 criticalAlertBanner.Visibility = Visibility.Collapsed;
         }
 
-        // ======================== MOCK DATA INJECTOR ========================
-
-        private void BtnInjectMockData_Click(object sender, RoutedEventArgs e)
-        {
-            ActiveStudents.Add(new LiveStudentStatus { Email = "joe@tech.edu", Status = "Connected", StatusColor = "#4CAF50" });
-            ActiveStudents.Add(new LiveStudentStatus { Email = "jane@tech.edu", Status = "ALERT: ALT_TAB", StatusColor = "#D32F2F", ViolationCount = 2 });
-            ActiveStudents.Add(new LiveStudentStatus { Email = "adam@tech.edu", Status = "Connected", StatusColor = "#4CAF50" });
-
-            LogActivity("joe@tech.edu", "JOINED", "Student joined.", "#4CAF50");
-            LogActivity("jane@tech.edu", "VIOLATION", "ALT_TAB detected.", "#D32F2F");
-            LogActivity("adam@tech.edu", "JOINED", "Student joined.", "#4CAF50");
-
-            UpdateParticipantCount();
-
-            // Notice how Jane automatically goes to the top because she has 2 violations!
-            _studentsView.Refresh();
-            ApplyAllFilters();
-        }
-
         public class StartSessionResponse { public int SessionId { get; set; } }
     }
 
