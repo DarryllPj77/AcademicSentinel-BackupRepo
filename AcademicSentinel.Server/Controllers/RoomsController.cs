@@ -163,7 +163,7 @@ public class RoomsController : ControllerBase
         if (room != null)
         {
             room.Status = "Pending";
-            room.IsMonitoringActive = false; // <--- ADD THIS LINE!
+            room.IsMonitoringActive = false; // Bug fix: Bonus
         }
 
         await _context.SaveChangesAsync();

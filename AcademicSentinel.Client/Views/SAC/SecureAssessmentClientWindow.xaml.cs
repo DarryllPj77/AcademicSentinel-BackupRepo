@@ -58,6 +58,7 @@ namespace AcademicSentinel.Client.Views.SAC
         private bool _isPermanentlyDone;
         private bool _awaitingJoinApproval;
         private int _pendingParticipantId;
+        private bool _isDenied = false; // Bug fix: Bug1
         private readonly Queue<MonitoringEventDto> _pendingViolationQueue = new Queue<MonitoringEventDto>();
         private readonly Dictionary<string, DateTime> _lastViolationSentByType = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
@@ -403,6 +404,10 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             try
             {
+                // Bug fix: Bug4 - block violation reports while awaiting instructor join approval
+                if (_awaitingJoinApproval)
+                    return;
+
                 if (!_detectorRuntime?.IsLoggingEnabled ?? true)
                     return;
 
@@ -602,6 +607,8 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 _hubConnection.Reconnected += async _ =>
                 {
+                    // Bug fix: Bug1 - block zombie reconnect after denial
+                    if (_isDenied) return;
                     try
                     {
                         if (_awaitingJoinApproval)
@@ -633,6 +640,8 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 _hubConnection.Closed += async _ =>
                 {
+                    // Bug fix: Bug1 - block zombie reconnect after denial (Closed handler also restarts the hub)
+                    if (_isDenied) return;
                     await Task.Delay(TimeSpan.FromSeconds(1));
                     if (_hubConnection == null)
                         return;
@@ -854,20 +863,51 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
-                _hubConnection.On<JoinDeniedDto>("OnJoinDenied", response =>
+                _hubConnection.On<JoinDeniedDto>("OnJoinDenied", async response =>
                 {
-                    Dispatcher.Invoke(() =>
+                    // Bug fix: Bug1 - mark denied BEFORE StopAsync so reconnect/closed handlers short-circuit
+                    _isDenied = true;
+                    // Bug fix: Bug5 - kill hub connection before UI work to prevent post-denial leave-request abuse
+                    if (_hubConnection != null)
+                    {
+                        try { await _hubConnection.StopAsync(); } catch { }
+                    }
+
+                    await Dispatcher.InvokeAsync(() =>
                     {
                         _awaitingJoinApproval = false;
 
                         if (WaitingScreenOverlay != null)
                             WaitingScreenOverlay.Visibility = Visibility.Collapsed;
 
-                        MessageBox.Show(response.Reason, "Access Denied", MessageBoxButton.OK, MessageBoxImage.Error);
+                        // Bug fix: Bug3 - dedicated denial UI state on monitoring status text
+                        TxtMonitoringStatus.Text = "Access Denied: The Instructor rejected your join request.";
+                        // Bug fix: Bug3 - dedicated denial UI state foreground
+                        TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(211, 47, 47));
+                        // Bug fix: Bug3 - dedicated denial UI state on leave button text
+                        BtnRequestLeave.Content = "Back to Dashboard";
+                        // Bug fix: Bug3 - dedicated denial UI state on leave button background
+                        BtnRequestLeave.Background = new SolidColorBrush(Color.FromRgb(211, 47, 47));
+
+                        // Bug fix: Denial UI cleanup - hide irrelevant monitoring status label
+                        TxtMonitoringStatus.Visibility = Visibility.Collapsed;
+                        // Bug fix: Denial UI cleanup - hide irrelevant compact monitoring status label
+                        if (FindName("TxtCompactMonitoringStatus") is System.Windows.Controls.TextBlock _denialCompactMonStatus)
+                            _denialCompactMonStatus.Visibility = Visibility.Collapsed;
+                        // Bug fix: Denial UI cleanup - hide irrelevant leave permission status label (xaml name: TxtCompactLeavePermission)
+                        if (FindName("TxtCompactLeavePermission") is System.Windows.Controls.TextBlock _denialLeavePermStatus)
+                            _denialLeavePermStatus.Visibility = Visibility.Collapsed;
+
+                        // Bug fix: Denial UI cleanup - removed redundant MessageBox; UI button + redirect already communicates denial
+                        // MessageBox.Show("The Instructor Denied your request to join.", "Access Denied", MessageBoxButton.OK, MessageBoxImage.Error);
 
                         _allowClose = true;
-                        ReturnToStudentDashboard();
                     });
+
+                    // Bug fix: Bug3 - delay before redirect so denial UI state is visible to the student
+                    await Task.Delay(3000);
+                    // Bug fix: Bug3 - return to dashboard after dedicated denial UI state has been shown
+                    await Dispatcher.InvokeAsync(() => ReturnToStudentDashboard());
                 });
 
                 _hubConnection.On("SessionEnded", () =>

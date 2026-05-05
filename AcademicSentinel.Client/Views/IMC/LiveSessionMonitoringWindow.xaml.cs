@@ -516,6 +516,8 @@ namespace AcademicSentinel.Client.Views.IMC
                 if (_permanentlyDismissedStudents.Contains(id))
                     return;
 
+                // Bug fix: Bug1
+                _permanentlyDismissedStudents.Remove(id);
                 _safelyLeftStudentIds.Remove(id);
                 _ = LoadParticipantsFromServerAsync();
             })));
@@ -548,6 +550,8 @@ namespace AcademicSentinel.Client.Views.IMC
                     student.StatusColor = "#4CAF50";
                 }
 
+                // Bug fix: Bug1
+                _permanentlyDismissedStudents.Remove(studentId);
                 _safelyLeftStudentIds.Remove(studentId);
                 LogActivity("SYSTEM", "SYSTEM", $"✅ SESSION JOINED / CONNECTION RESTORED. {studentName}", "#4CAF50");
                 _ = LoadParticipantsFromServerAsync();
@@ -700,7 +704,15 @@ namespace AcademicSentinel.Client.Views.IMC
                         {
                             targetStudent.Status = "Denied";
                             targetStudent.StatusColor = "#D32F2F";
+                            // Bug fix: Bug6 - remove denied student from ActiveStudents
+                            ActiveStudents.Remove(targetStudent);
                         }
+                    }
+
+                    // Bug fix: Bug2 - block periodic LoadParticipantsFromServerAsync from re-stitching the denied student
+                    if (string.Equals(decision, "Denied", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _permanentlyDismissedStudents.Add(studentId);
                     }
 
                     _studentsView.Refresh();

@@ -32,6 +32,13 @@ public class MonitoringHub : Hub
         await Groups.AddToGroupAsync(Context.ConnectionId, roomId);
     }
 
+    // Bug fix: Bug2
+    public async Task<bool> GetMonitoringState(int roomId)
+    {
+        var room = await _context.Rooms.FindAsync(roomId);
+        return room != null && room.IsMonitoringActive;
+    }
+
     public async Task SetMonitoringState(int roomId, bool isActive)
     {
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
@@ -41,6 +48,7 @@ public class MonitoringHub : Hub
         // 1. Update In-Memory Dictionary
         MonitoringStates[roomId] = isActive;
 
+        // Bug fix: Bug3
         // 2. UPDATE THE DATABASE FOR THE GATEKEEPER!
         var room = await _context.Rooms.FindAsync(roomId);
         if (room != null)
@@ -60,6 +68,7 @@ public class MonitoringHub : Hub
 
         MonitoringStates[roomId] = false;
 
+        // Bug fix: Bug3
         // OPEN THE GATE (Optional, but aligns with paused state)
         var room = await _context.Rooms.FindAsync(roomId);
         if (room != null)
@@ -79,6 +88,7 @@ public class MonitoringHub : Hub
 
         MonitoringStates[roomId] = true;
 
+        // Bug fix: Bug3
         // LOCK THE GATE
         var room = await _context.Rooms.FindAsync(roomId);
         if (room != null)

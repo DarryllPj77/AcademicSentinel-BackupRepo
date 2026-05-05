@@ -362,3 +362,7 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /AcademicSentinel.Server/academicsentinel.db
+
+
+# Ignore Claude temporary worktrees
+.claude/worktrees/
