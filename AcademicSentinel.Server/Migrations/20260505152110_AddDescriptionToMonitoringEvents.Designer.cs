@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace AcademicSentinel.Server.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260501045243_InitialCreate")] // Post-merge fix
-    partial class InitialCreate
+    [Migration("20260505152110_AddDescriptionToMonitoringEvents")]
+    partial class AddDescriptionToMonitoringEvents
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -68,7 +68,7 @@ namespace AcademicSentinel.Server.Migrations
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("text");
 
                     b.Property<string>("EventType")
                         .IsRequired()

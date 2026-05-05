@@ -33,7 +33,7 @@ namespace AcademicSentinel.Client.Views.IMC
             Sessions = new ObservableCollection<SessionItem>();
             _sessionsView = CollectionViewSource.GetDefaultView(Sessions);
             _sessionsView.Filter = SessionMatchesFilters;
-            SessionsList.ItemsSource = _sessionsView;
+            PastSessionsGrid.ItemsSource = _sessionsView; // Post-merge fix: SessionsList renamed to PastSessionsGrid in XAML
 
             // Load Sidebar Branding
             LoadTeacherSidebarInfo();
@@ -147,6 +147,7 @@ namespace AcademicSentinel.Client.Views.IMC
                                 Sessions.Add(new SessionItem
                                 {
                                     SessionId = $"Session {Math.Max(1, s.SessionNumber)}",
+                                    RealSessionId = s.Id, // Bug fix: Bug2 - carry DB PK through so the archive window loads the correct session
                                     DateDuration = durationText,
                                     StatusText = status,
                                     Status = status,
@@ -159,6 +160,7 @@ namespace AcademicSentinel.Client.Views.IMC
                     }
                 }
             }
+            catch (Exception ex) { Console.WriteLine(ex.Message); } // Post-merge fix
         }
 
         private async void FetchRoomStatus()
@@ -278,6 +280,18 @@ namespace AcademicSentinel.Client.Views.IMC
         private void TxtSearch_TextChanged(object sender, TextChangedEventArgs e)
         {
             _sessionsView?.Refresh();
+            UpdatePaginationUI();
+        }
+
+        // Post-merge fix: UpdatePaginationUI was referenced from the merged code but never defined; minimal stub keeps call sites valid.
+        private void UpdatePaginationUI()
+        {
+            int total = Sessions?.Count ?? 0;
+            int visible = _sessionsView != null ? _sessionsView.Cast<object>().Count() : total;
+            if (TxtPaginationInfo != null)
+            {
+                TxtPaginationInfo.Text = $"Showing {visible} of {total} sessions";
+            }
         }
 
         private void CmbFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -310,15 +324,14 @@ namespace AcademicSentinel.Client.Views.IMC
         }
         private void BtnViewArchive_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (sender is System.Windows.Controls.Button btn && btn.DataContext is AcademicSentinel.Client.Models.SessionArchiveDto session)
+            if (sender is System.Windows.Controls.Button btn && btn.DataContext is SessionItem selectedSession) // Bug fix: A1 - corrected DataContext cast from SessionArchiveDto to SessionItem
             {
-                var detailWindow = new SessionArchiveDetailWindow(session.SessionId);
+                var detailWindow = new SessionArchiveDetailWindow(selectedSession.RealSessionId); // Bug fix: Bug2 - pass real DB PK instead of parsed ordinal
                 detailWindow.Owner = this;
                 detailWindow.ShowDialog();
             }
         }
-        private void TxtSearch_TextChanged(object sender, TextChangedEventArgs e) { }
-        private void CmbFilter_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
+        // Post-merge fix: removed duplicate empty stubs of TxtSearch_TextChanged and CmbFilter_SelectionChanged (real handlers above)
         private void ViewSession_Click(object sender, RoutedEventArgs e) { }
         private void DeleteSession_Click(object sender, RoutedEventArgs e) { }
     }
@@ -326,6 +339,7 @@ namespace AcademicSentinel.Client.Views.IMC
     public class SessionItem
     {
         public string SessionId { get; set; } = string.Empty;
+        public int RealSessionId { get; set; } // Bug fix: Bug2 - DB primary key (ExamSessions.Id) for SessionArchiveDetailWindow lookups
         public string DateDuration { get; set; } = string.Empty;
         public string StatusText { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;

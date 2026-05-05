@@ -379,9 +379,13 @@
                                   AlternatingRowBackground="#FAFAFA">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Session ID" Binding="{Binding SessionId}" Width="100" />
-                                <DataGridTextColumn Header="Date" Binding="{Binding StartTime, StringFormat={}{0:MM/dd/yyyy}}" Width="120" />
+                                <!-- Bug fix: A2 - rebound Date column to existing SessionItem.DateDuration (no separate Date property exists) -->
+                                <DataGridTextColumn Header="Date" Binding="{Binding DateDuration}" Width="120" />
+                                <!-- Bug fix: A2 - SessionItem has no Duration property; binding left for follow-up (cannot add property per directive) -->
                                 <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="100" />
-                                <DataGridTextColumn Header="Attendees" Binding="{Binding AttendeeCount}" Width="100" />
+                                <!-- Bug fix: A2 - rebound Attendees column to existing SessionItem.StudentCount -->
+                                <DataGridTextColumn Header="Attendees" Binding="{Binding StudentCount}" Width="100" />
+                                <!-- Bug fix: A2 - SessionItem has no Violations property; binding left for follow-up (cannot add property per directive) -->
                                 <DataGridTextColumn Header="Violations" Binding="{Binding TotalViolations}" Width="100" />
                                 <DataGridTemplateColumn Header="Action" Width="120">
                                     <DataGridTemplateColumn.CellTemplate>
