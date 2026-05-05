@@ -17,6 +17,9 @@ public class MonitoringEvent
     // Type of event: ALT_TAB, PROCESS, CLIPBOARD, IDLE, VM, EMULATOR, etc.
     public string EventType { get; set; } = string.Empty;
 
+    // Human-readable details for timeline reconstruction
+    public string Description { get; set; } = string.Empty;
+
     // Severity score assigned by the monitoring module
     public int SeverityScore { get; set; }
 

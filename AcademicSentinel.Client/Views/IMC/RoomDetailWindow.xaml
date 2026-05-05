@@ -109,6 +109,9 @@
             </Setter>
         </Style>
 
+        <Style x:Key="MaterialDesignOutlinedButton" TargetType="Button" BasedOn="{StaticResource OutlineBtn}"/>
+        <Style x:Key="MaterialDesignFlatButton" TargetType="Button" BasedOn="{StaticResource OutlineBtn}"/>
+
         <Style x:Key="DangerBtn" TargetType="Button">
             <Setter Property="Background" Value="{StaticResource FEUDangerBrush}"/>
             <Setter Property="Foreground" Value="White"/>
@@ -363,92 +366,32 @@
                         </StackPanel>
                     </Grid>
 
-                    <!-- Table Header -->
-                    <Border Grid.Row="2" Background="{StaticResource FEULightGrayBrush}"
-                            CornerRadius="6,6,0,0" Padding="16,12">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="1.1*"/>
-                                <ColumnDefinition Width="2*"/>
-                                <ColumnDefinition Width="1.4*"/>
-                                <ColumnDefinition Width="1.6*"/>
-                                <ColumnDefinition Width="0.9*"/>
-                                <ColumnDefinition Width="1.3*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="# Session ID" FontWeight="SemiBold" FontSize="13"/>
-                            <TextBlock Grid.Column="1" Text="Date &amp; Duration" FontWeight="SemiBold" FontSize="13"/>
-                            <TextBlock Grid.Column="2" Text="Exam Type" FontWeight="SemiBold" FontSize="13"/>
-                            <TextBlock Grid.Column="3" Text="Status" FontWeight="SemiBold" FontSize="13"/>
-                            <TextBlock Grid.Column="4" Text="# Students" FontWeight="SemiBold" FontSize="13"/>
-                            <TextBlock Grid.Column="5" Text="Action" FontWeight="SemiBold" FontSize="13"
-                                       HorizontalAlignment="Right"/>
-                        </Grid>
-                    </Border>
-
-                    <!-- Session rows -->
-                    <Border Grid.Row="3" BorderBrush="#E0E0E0" BorderThickness="1,0,1,1"
-                            CornerRadius="0,0,6,6">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <Grid>
-                                <ItemsControl x:Name="SessionsList">
-                                    <ItemsControl.ItemTemplate>
+                    <Border Grid.Row="2" Grid.RowSpan="2" BorderBrush="#E0E0E0" BorderThickness="1"
+                            CornerRadius="6">
+                        <DataGrid x:Name="PastSessionsGrid"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  CanUserAddRows="False"
+                                  HeadersVisibility="Column"
+                                  RowHeaderWidth="0"
+                                  GridLinesVisibility="Horizontal"
+                                  BorderThickness="0"
+                                  AlternatingRowBackground="#FAFAFA">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Session ID" Binding="{Binding SessionId}" Width="100" />
+                                <DataGridTextColumn Header="Date" Binding="{Binding StartTime, StringFormat={}{0:MM/dd/yyyy}}" Width="120" />
+                                <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="100" />
+                                <DataGridTextColumn Header="Attendees" Binding="{Binding AttendeeCount}" Width="100" />
+                                <DataGridTextColumn Header="Violations" Binding="{Binding TotalViolations}" Width="100" />
+                                <DataGridTemplateColumn Header="Action" Width="120">
+                                    <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <Border Padding="16,14" BorderBrush="#F0F0F0" BorderThickness="0,0,0,1">
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="1.1*"/>
-                                                        <ColumnDefinition Width="2*"/>
-                                                        <ColumnDefinition Width="1.4*"/>
-                                                        <ColumnDefinition Width="1.6*"/>
-                                                        <ColumnDefinition Width="0.9*"/>
-                                                        <ColumnDefinition Width="1.3*"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="0" Text="{Binding SessionId}"
-                                                               FontSize="13" VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="1" Text="{Binding DateDuration}"
-                                                               FontSize="13" VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="2" Text="{Binding ExamType}"
-                                                               FontSize="13" VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="3" Text="{Binding StatusText}"
-                                                               FontSize="13" VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="4" Text="{Binding StudentCount}"
-                                                               FontSize="13" VerticalAlignment="Center"/>
-                                                    <Button Grid.Column="5" Tag="{Binding}"
-                                                            HorizontalAlignment="Right"
-                                                            Background="Transparent" BorderThickness="0"
-                                                            Cursor="Hand" Padding="10,4"
-                                                            Click="SessionAction_Click">
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="View Session"
-                                                                       Foreground="{StaticResource FEUGreenBrush}"
-                                                                       FontWeight="SemiBold" FontSize="13"/>
-                                                            <TextBlock Text=" ▾"
-                                                                       Foreground="{StaticResource FEUGreenBrush}"
-                                                                       FontSize="11"/>
-                                                        </StackPanel>
-                                                        <Button.ContextMenu>
-                                                            <ContextMenu>
-                                                                <MenuItem Header="View Session" Click="ViewSession_Click"/>
-                                                                <MenuItem Header="Delete Session" Click="DeleteSession_Click"/>
-                                                            </ContextMenu>
-                                                        </Button.ContextMenu>
-                                                    </Button>
-                                                </Grid>
-                                            </Border>
+                                            <Button Content="View Archive" Click="BtnViewArchive_Click" Style="{StaticResource MaterialDesignFlatButton}" Height="30" />
                                         </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-
-                                <StackPanel x:Name="EmptySessionList" VerticalAlignment="Center"
-                                            HorizontalAlignment="Center" Margin="0,40" Visibility="Collapsed">
-                                    <materialDesign:PackIcon Kind="History" Width="48" Height="48"
-                                                             Foreground="#E0E0E0"
-                                                             HorizontalAlignment="Center"/>
-                                    <TextBlock Text="No past sessions" FontSize="13" Foreground="#BDBDBD"
-                                               HorizontalAlignment="Center" Margin="0,12,0,0"/>
-                                </StackPanel>
-                            </Grid>
-                        </ScrollViewer>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
                     </Border>
 
                     <!-- Pagination -->

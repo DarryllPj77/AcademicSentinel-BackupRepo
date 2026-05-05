@@ -1,5 +1,4 @@
 <Solution>
   <Project Path="AcademicSentinel.Client/AcademicSentinel.Client.csproj" Id="e53132a2-7cd9-48e3-8bbb-ae2b380dad13" />
   <Project Path="AcademicSentinel.Server/AcademicSentinel.Server.csproj" />
-  <Project Path="SecureAssessmentClient/SecureAssessmentClient.csproj" />
 </Solution>

@@ -56,3 +56,32 @@ public class ViolationTimelineDto
     public string SeverityLevel { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
 }
+
+public class SessionArchiveDto
+{
+    public int SessionId { get; set; }
+    public DateTime StartTime { get; set; }
+    public DateTime? EndTime { get; set; }
+    public string Duration { get; set; } = string.Empty;
+    public int AttendeeCount { get; set; }
+    public int TotalViolations { get; set; }
+}
+
+public class SessionStudentDto
+{
+    public int StudentId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public int RiskScore { get; set; }
+    public string RiskLevel { get; set; } = "SAFE";
+    public int ViolationCount { get; set; }
+    public List<SessionLogDto> Logs { get; set; } = new();
+}
+
+public class SessionLogDto
+{
+    public string EventType { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public int SeverityScore { get; set; }
+    public DateTime Timestamp { get; set; }
+}

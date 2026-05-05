@@ -161,4 +161,91 @@ public class ReportsController : ControllerBase
 
         return Ok(report);
     }
+
+    [HttpGet("rooms/{roomId}/sessions")]
+    public async Task<ActionResult<IEnumerable<object>>> GetRoomSessions(int roomId)
+    {
+        var sessions = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Completed")
+            .OrderByDescending(s => s.StartTime)
+            .ToListAsync();
+
+        var result = new List<object>();
+        foreach(var s in sessions)
+        {
+            var duration = s.EndTime.HasValue ? (s.EndTime.Value - s.StartTime).ToString(@"hh\:mm\:ss") : "Unknown";
+            var attendees = await _context.SessionParticipants
+                .Where(p => p.RoomId == roomId && p.JoinedAt >= s.StartTime && (s.EndTime == null || p.JoinedAt <= s.EndTime))
+                .Select(p => p.StudentId)
+                .Distinct()
+                .CountAsync();
+
+            var violations = await _context.MonitoringEvents
+                .Where(e => e.RoomId == roomId && e.Timestamp >= s.StartTime && (s.EndTime == null || e.Timestamp <= s.EndTime) && e.SeverityScore > 0)
+                .CountAsync();
+
+            result.Add(new {
+                SessionId = s.Id, StartTime = s.StartTime, EndTime = s.EndTime,
+                Duration = duration, AttendeeCount = attendees, TotalViolations = violations
+            });
+        }
+        return Ok(result);
+    }
+
+    [HttpGet("sessions/{sessionId}/students")]
+    public async Task<ActionResult<IEnumerable<object>>> GetSessionStudents(int sessionId)
+    {
+        var session = await _context.ExamSessions.FindAsync(sessionId);
+        if (session == null) return NotFound();
+
+        var studentsInSession = await _context.SessionParticipants
+            .Where(p => p.RoomId == session.RoomId && p.JoinedAt >= session.StartTime && (session.EndTime == null || p.JoinedAt <= session.EndTime))
+            .Select(p => p.StudentId)
+            .Distinct()
+            .ToListAsync();
+
+        var result = new List<object>();
+        foreach (var studentId in studentsInSession)
+        {
+            var user = await _context.Users.FindAsync(studentId);
+            if (user == null) continue;
+
+            var logs = await _context.MonitoringEvents
+                .Where(e => e.RoomId == session.RoomId && e.StudentId == studentId && e.Timestamp >= session.StartTime && (session.EndTime == null || e.Timestamp <= session.EndTime))
+                .OrderByDescending(e => e.Timestamp)
+                .Select(e => new {
+                    EventType = e.EventType, Description = e.Description,
+                    SeverityScore = e.SeverityScore, Timestamp = e.Timestamp
+                })
+                .ToListAsync();
+
+            int totalRisk = logs.Where(l => l.SeverityScore > 0).Sum(l => l.SeverityScore);
+            string riskLevel = totalRisk >= 50 ? "CHEATING" : (totalRisk >= 20 ? "SUSPICIOUS" : "SAFE");
+            int violationCount = logs.Count(l => l.SeverityScore > 0);
+
+            result.Add(new {
+                StudentId = studentId, Name = string.IsNullOrWhiteSpace(user.FullName) ? "Unknown" : user.FullName,
+                Email = user.Email, RiskScore = totalRisk, RiskLevel = riskLevel,
+                ViolationCount = violationCount, Logs = logs
+            });
+        }
+        return Ok(result);
+    }
+
+    private static string FormatDuration(DateTime startTime, DateTime? endTime)
+    {
+        var effectiveEnd = endTime ?? DateTime.UtcNow;
+        var duration = effectiveEnd - startTime;
+
+        if (duration < TimeSpan.Zero)
+            duration = TimeSpan.Zero;
+
+        var totalHours = (int)duration.TotalHours;
+        var minutes = duration.Minutes;
+
+        if (totalHours > 0)
+            return $"{totalHours}h {minutes}m";
+
+        return $"{minutes}m";
+    }
 }

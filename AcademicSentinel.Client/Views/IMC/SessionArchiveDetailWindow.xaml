@@ -1,0 +1,147 @@
+<Window x:Class="AcademicSentinel.Client.Views.IMC.SessionArchiveDetailWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        mc:Ignorable="d"
+        Title="Session Archive"
+        Height="680"
+        Width="1080"
+        WindowStartupLocation="CenterOwner"
+        Background="#F6F8FA"
+        FontFamily="Segoe UI">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="PrimaryBrush" Color="#1B5E20"/>
+        <SolidColorBrush x:Key="SubtleBorderBrush" Color="#E4E7EB"/>
+        <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF"/>
+
+        <Style x:Key="MaterialDesignOutlinedButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="BorderThickness" Value="1.5"/>
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Border" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="#101B5E20"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{StaticResource CardBrush}" CornerRadius="12" Padding="18" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <materialDesign:PackIcon Kind="ClipboardTextClockOutline" Width="22" Height="22" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,8,0"/>
+                    <TextBlock Text="Session Archive" FontSize="22" FontWeight="Bold" Foreground="#1B1B1B"/>
+                </StackPanel>
+
+                <Button Grid.Column="1"
+                        Content="Back"
+                        Click="BtnBack_Click"
+                        Style="{StaticResource MaterialDesignOutlinedButton}"/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" Background="{StaticResource CardBrush}" CornerRadius="12" Padding="16" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2.2*"/>
+                    <ColumnDefinition Width="12"/>
+                    <ColumnDefinition Width="1.0*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Background="#FAFBFC" CornerRadius="8" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1" Padding="10,4">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <materialDesign:PackIcon Grid.Column="0" Kind="Magnify" Width="18" Height="18" Foreground="#8C8C8C" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1"
+                                 x:Name="TxtSearch"
+                                 BorderThickness="0"
+                                 Background="Transparent"
+                                 VerticalContentAlignment="Center"
+                                 FontSize="13"
+                                 TextChanged="TxtSearch_TextChanged"
+                                 materialDesign:HintAssist.Hint="Search by name or email"/>
+                    </Grid>
+                </Border>
+
+                <ComboBox Grid.Column="2"
+                          x:Name="CmbRiskLevel"
+                          SelectionChanged="CmbRiskLevel_SelectionChanged"
+                          VerticalContentAlignment="Center">
+                    <ComboBoxItem Content="All" IsSelected="True"/>
+                    <ComboBoxItem Content="SAFE"/>
+                    <ComboBoxItem Content="SUSPICIOUS"/>
+                    <ComboBoxItem Content="CHEATING"/>
+                </ComboBox>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="4" Background="{StaticResource CardBrush}" CornerRadius="12" Padding="16" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1">
+            <DataGrid x:Name="ArchiveDataGrid"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="True"
+                      CanUserAddRows="False"
+                      HeadersVisibility="Column"
+                      RowHeaderWidth="0"
+                      GridLinesVisibility="Horizontal"
+                      BorderThickness="0"
+                      AlternatingRowBackground="#FAFBFC">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Participant Name" Binding="{Binding Name}" Width="1.8*"/>
+                    <DataGridTextColumn Header="Email" Binding="{Binding Email}" Width="2.2*"/>
+                    <DataGridTextColumn Header="Violations" Binding="{Binding ViolationCount}" Width="0.9*"/>
+                    <DataGridTextColumn Header="Risk Level" Binding="{Binding RiskLevel}" Width="1.1*"/>
+                    <DataGridTemplateColumn Header="Actions" Width="1.2*">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Button x:Name="BtnExportPdf"
+                                        Content="Export PDF"
+                                        Click="BtnExportPdf_Click"
+                                        Tag="{Binding}"
+                                        Padding="10,5"
+                                        HorizontalAlignment="Center"
+                                        Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+    </Grid>
+</Window>

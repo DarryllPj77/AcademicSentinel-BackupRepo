@@ -117,6 +117,17 @@ namespace AcademicSentinel.Client.Services.SAC
             await Task.CompletedTask;
         }
 
+        public void Stop()
+        {
+            IsLoggingEnabled = false;
+
+            if (!_isStarted)
+                return;
+
+            _isStarted = false;
+            _behavioralMonitoringService.StopMonitoring();
+        }
+
         private IReadOnlyList<DetectorFinding> EvaluateAndMapFindings(IReadOnlyList<MonitoringDetectionEvent> events)
         {
             if (IsPaused)

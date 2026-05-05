@@ -1,1 +1,0 @@
-﻿this project is only for reference for the detections in the actual AcademicSentinel app, do not do any edit here, treat this project file like it doesnt exist

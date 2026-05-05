@@ -157,9 +157,6 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             var isTimerDisabled = _monitoringDurationSeconds <= 0;
 
-            if (FindName("RunTimerDisabledIndicator") is TextBlock timerDisabledIndicator)
-                timerDisabledIndicator.Visibility = isTimerDisabled ? Visibility.Visible : Visibility.Collapsed;
-
             if (FindName("CountdownDisabledIndicator") is TextBlock countdownDisabledIndicator)
                 countdownDisabledIndicator.Visibility = isTimerDisabled ? Visibility.Visible : Visibility.Collapsed;
 
@@ -450,6 +447,11 @@ namespace AcademicSentinel.Client.Views.IMC
                 if (_safelyLeftStudentIds.Contains(studentId) || _permanentlyDismissedStudents.Contains(studentId))
                     return;
 
+                if (_selectedStudentId == studentId)
+                {
+                    ResetToMainMonitoringView();
+                }
+
                 var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (targetStudent == null)
                     return;
@@ -594,6 +596,11 @@ namespace AcademicSentinel.Client.Views.IMC
 
             _hubSubscriptions.Add(_hubConnection.On<int>("StudentLeftSession", studentId => Dispatcher.InvokeAsync(() =>
             {
+                if (_selectedStudentId == studentId)
+                {
+                    ResetToMainMonitoringView();
+                }
+
                 var student = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (student != null)
                 {
@@ -859,6 +866,32 @@ namespace AcademicSentinel.Client.Views.IMC
             LogFeedItemsControl.ItemsSource = _logsView;
             _selectedStudentId = null;
             ApplyAllFilters();
+        }
+
+        private void ResetToMainMonitoringView()
+        {
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                if (FindName("RightDetailPanel") is Border rightDetailPanel)
+                    rightDetailPanel.Visibility = Visibility.Collapsed;
+
+                StudentDetailPanel.Visibility = Visibility.Collapsed;
+                LogFeedItemsControl.Visibility = Visibility.Visible;
+
+                _selectedStudentId = 0;
+                _selectedStudent = null;
+
+                if (FindName("StudentsList") is System.Windows.Controls.Primitives.Selector studentsList)
+                    studentsList.SelectedItem = null;
+
+                if (_logsView != null)
+                {
+                    _logsView.Filter = null;
+                    _logsView.Refresh();
+                }
+
+                TxtLogHeader.Text = "Global Log Feed";
+            });
         }
 
         private void CollapseDetailPanel()

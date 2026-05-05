@@ -81,7 +81,7 @@ public class MonitoringHub : Hub
             await Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", true);
         });
     }
-
+    // 1
     public async Task EndSessionOnDisconnect(int roomId)
     {
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
@@ -114,64 +114,89 @@ public class MonitoringHub : Hub
     // SAC calls this when the student enters the active exam room
     public async Task JoinLiveExam(int roomId)
     {
-        // Extract the Student's ID from their JWT
-        var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (userIdString == null) return;
-        int studentId = int.Parse(userIdString);
-
-        var student = await _context.Users.FindAsync(studentId);
-
-        // 1. Verify the room exists and is in Active state
-        var room = await _context.Rooms.FindAsync(roomId);
-        if (room == null) return;
-
-        if (room.Status != "Active")
+        try
         {
-            // Notify the client that they cannot join yet
-            await Clients.Caller.SendAsync("JoinFailed", "Cannot join room: the instructor has not started the session or has ended it.");
-            return;
-        }
+            var userIdString = Context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            if (userIdString == null)
+            {
+                await Clients.Caller.SendAsync("JoinFailed", "User identity not found.");
+                return;
+            }
 
-        var activeSession = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Active")
-            .OrderByDescending(s => s.StartTime)
-            .FirstOrDefaultAsync();
+            int studentId = int.Parse(userIdString);
 
-        // 2. Add connection to the SignalR Room Group
-        await Groups.AddToGroupAsync(Context.ConnectionId, roomId.ToString());
+            var studentUser = await _context.Users.FindAsync(studentId);
+            if (studentUser == null)
+            {
+                await Clients.Caller.SendAsync("JoinFailed", "Student record not found in database.");
+                return;
+            }
 
-        // 3. Update Database: Mark as officially "Participating" and "Connected"
-        var participant = await _context.SessionParticipants
-            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
-            .OrderByDescending(p => p.JoinedAt)
-            .FirstOrDefaultAsync();
+            var room = await _context.Rooms.FindAsync(roomId);
+            if (room == null || room.Status != "Active")
+            {
+                await Clients.Caller.SendAsync("JoinFailed", "Cannot join room: session is inactive.");
+                return;
+            }
 
-        bool shouldCreateNewParticipant = participant == null
-            || (activeSession != null && participant.JoinedAt < activeSession.StartTime);
+            var activeSession = await _context.ExamSessions
+                .Where(s => s.RoomId == roomId && s.Status == "Active")
+                .OrderByDescending(s => s.StartTime)
+                .FirstOrDefaultAsync();
 
-        if (shouldCreateNewParticipant)
-        {
-            // First join for the current active session
-            participant = new SessionParticipant
+            await Groups.AddToGroupAsync(Context.ConnectionId, roomId.ToString());
+
+            var participant = await _context.SessionParticipants
+                .Where(p => p.RoomId == roomId && p.StudentId == studentId && (activeSession == null || p.JoinedAt >= activeSession.StartTime))
+                .OrderByDescending(p => p.JoinedAt)
+                .FirstOrDefaultAsync();
+
+            if (participant != null && participant.ConnectionStatus == "Completed")
+            {
+                await Clients.Caller.SendAsync("JoinFailed", "You have already completed and exited this active session.");
+                return;
+            }
+
+            if (participant == null)
+            {
+                participant = new SessionParticipant
+                {
+                    RoomId = roomId,
+                    StudentId = studentId,
+                    ConnectionStatus = "Connected",
+                    JoinedAt = DateTime.UtcNow
+                };
+                _context.SessionParticipants.Add(participant);
+            }
+            else
+            {
+                // Update existing record for Reconnection
+                participant.ConnectionStatus = "Connected";
+                participant.JoinedAt = DateTime.UtcNow;
+                participant.DisconnectedAt = null;
+            }
+
+            _context.MonitoringEvents.Add(new MonitoringEvent
             {
                 RoomId = roomId,
                 StudentId = studentId,
-                ConnectionStatus = "Connected",
-                JoinedAt = DateTime.UtcNow
-            };
-            _context.SessionParticipants.Add(participant);
-        }
-        else
-        {
-            // Reconnecting after a drop
-            participant.ConnectionStatus = "Connected";
-            participant.JoinedAt = DateTime.UtcNow;
-            participant.DisconnectedAt = null;
-        }
-        await _context.SaveChangesAsync();
+                EventType = "SYSTEM",
+                Description = $"✅ SESSION JOINED / CONNECTION RESTORED. ({studentUser.Email})",
+                SeverityScore = 0,
+                Timestamp = DateTime.UtcNow
+            });
 
-        // 4. Notify the IMC Dashboard that the student is live!
-        await Clients.Group(roomId.ToString()).SendAsync("StudentJoinedOrReconnected", student?.Id ?? studentId, student?.FullName ?? $"Student #{studentId}");
+            await _context.SaveChangesAsync();
+
+            await Clients.Group(roomId.ToString()).SendAsync("StudentJoined", studentId);
+            string studentDisplayName = string.IsNullOrWhiteSpace(studentUser.FullName) ? studentUser.Email : studentUser.FullName;
+            await Clients.Group(roomId.ToString()).SendAsync("StudentJoinedOrReconnected", studentId, studentDisplayName);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"JoinLiveExam FAILED for Room {roomId} / Student {Context.User?.Identity?.Name}: {ex.ToString()}");
+            await Clients.Caller.SendAsync("JoinFailed", "An unexpected internal server error occurred while finalizing your join.");
+        }
     }
 
     // SignalR AUTOMATICALLY triggers this if a user's app closes or internet drops
@@ -242,6 +267,16 @@ public class MonitoringHub : Hub
                 {
                     participant.ConnectionStatus = "Disconnected";
                     participant.DisconnectedAt = DateTime.UtcNow;
+
+                    db.MonitoringEvents.Add(new MonitoringEvent
+                    {
+                        EventType = "SYSTEM",
+                        Description = "⚠️ CONNECTION LOST. Student dropped offline.",
+                        SeverityScore = 0,
+                        RoomId = participant.RoomId,
+                        StudentId = studentId,
+                        Timestamp = DateTime.UtcNow
+                    });
                 }
 
                 await db.SaveChangesAsync();
@@ -326,6 +361,7 @@ public class MonitoringHub : Hub
             RoomId = roomId,
             StudentId = studentId,
             EventType = eventData.EventType,
+            Description = eventData.Description,
             SeverityScore = eventData.SeverityScore,
             Timestamp = DateTime.UtcNow
         };

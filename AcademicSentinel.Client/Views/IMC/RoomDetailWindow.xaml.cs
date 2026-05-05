@@ -11,6 +11,9 @@ using System.Windows.Media.Imaging;
 using AcademicSentinel.Client.Constants;
 using AcademicSentinel.Client.Services;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using AcademicSentinel.Client.Models;
 
 namespace AcademicSentinel.Client.Views.IMC
 {
@@ -36,9 +39,8 @@ namespace AcademicSentinel.Client.Views.IMC
             LoadTeacherSidebarInfo();
 
             // Load Database Content
-            UpdatePaginationUI();
             FetchRoomStatus();
-            FetchPastSessions();
+            _ = LoadPastSessionsAsync();
         }
 
         private void LoadTeacherSidebarInfo()
@@ -112,7 +114,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
         // ======================== DATA LOADING ========================
 
-        private async void FetchPastSessions()
+        private async Task LoadPastSessionsAsync()
         {
             try
             {
@@ -157,7 +159,6 @@ namespace AcademicSentinel.Client.Views.IMC
                     }
                 }
             }
-            catch (Exception ex) { Console.WriteLine($"History Load Error: {ex.Message}"); }
         }
 
         private async void FetchRoomStatus()
@@ -172,12 +173,6 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
             }
             catch (Exception ex) { Console.WriteLine(ex.Message); }
-        }
-
-        private void UpdatePaginationUI()
-        {
-            if (EmptySessionList != null) EmptySessionList.Visibility = Sessions.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            if (TxtPaginationInfo != null) TxtPaginationInfo.Text = $"Showing {Sessions.Count} sessions";
         }
 
         private void BtnCreateSession_Click(object sender, RoutedEventArgs e)
@@ -197,7 +192,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 liveWindow.Closed += (_, __) =>
                 {
                     this.Show();
-                    FetchPastSessions();
+                    _ = LoadPastSessionsAsync();
                     FetchRoomStatus();
                 };
                 liveWindow.Show();
@@ -272,7 +267,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
 
                 FetchRoomStatus();
-                FetchPastSessions();
+                await LoadPastSessionsAsync();
                 MessageBox.Show("Room forcefully reset.", "Force End", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -313,6 +308,17 @@ namespace AcademicSentinel.Client.Views.IMC
                 || (item.DateDuration?.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
                 || (item.ExamType?.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0);
         }
+        private void BtnViewArchive_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+            if (sender is System.Windows.Controls.Button btn && btn.DataContext is AcademicSentinel.Client.Models.SessionArchiveDto session)
+            {
+                var detailWindow = new SessionArchiveDetailWindow(session.SessionId);
+                detailWindow.Owner = this;
+                detailWindow.ShowDialog();
+            }
+        }
+        private void TxtSearch_TextChanged(object sender, TextChangedEventArgs e) { }
+        private void CmbFilter_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
         private void ViewSession_Click(object sender, RoutedEventArgs e) { }
         private void DeleteSession_Click(object sender, RoutedEventArgs e) { }
     }

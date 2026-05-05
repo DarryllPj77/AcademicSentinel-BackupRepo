@@ -12,7 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace AcademicSentinel.Server.Migrations
 {
     [DbContext(typeof(AppDbContext))]
+<<<<<<<< HEAD:AcademicSentinel.Server/Migrations/20260501045243_InitialCreate.Designer.cs
     [Migration("20260501045243_InitialCreate")]
+========
+    [Migration("20260427075951_InitialCreate")]
+>>>>>>>> origin/session-archiving:AcademicSentinel.Server/Migrations/20260427075951_InitialCreate.Designer.cs
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -65,6 +69,10 @@ namespace AcademicSentinel.Server.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("EventType")
                         .IsRequired()

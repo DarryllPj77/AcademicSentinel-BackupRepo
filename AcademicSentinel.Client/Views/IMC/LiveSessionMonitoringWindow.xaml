@@ -248,15 +248,6 @@
                                     </StackPanel>
                                 </Border>
 
-                                <Border Grid.Column="1" Background="#E8F5E9" CornerRadius="6" Padding="8,6" BorderBrush="#A5D6A7" BorderThickness="1" Margin="6,0,0,0">
-                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                            <TextBlock Text="Monitoring Active For:" FontSize="10" Foreground="#1B5E20"/>
-                                            <TextBlock x:Name="RunTimerDisabledIndicator" Text=" (Disabled)" FontSize="10" Foreground="Gray" Visibility="Collapsed"/>
-                                        </StackPanel>
-                                        <TextBlock x:Name="TxtMonitoringTimerDisplay" Text="--:--:--" FontSize="16" FontWeight="Bold" Foreground="#1B5E20" HorizontalAlignment="Center"/>
-                                    </StackPanel>
-                                </Border>
                             </Grid>
 
                             <Button Style="{StaticResource GhostBtn}" Click="BtnViewParticipants_Click" Margin="0,15,0,0" HorizontalAlignment="Stretch">
