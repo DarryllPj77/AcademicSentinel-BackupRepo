@@ -61,6 +61,9 @@ namespace AcademicSentinel.Client.Views.SAC
         private bool _isHandlingFailure = false;
         private bool _isTransitioningState = false;
         private System.Threading.CancellationTokenSource _stateCts;
+        private bool _awaitingJoinApproval;
+        private int _pendingParticipantId;
+        private bool _isDenied = false; // Bug fix: Bug1
         private readonly Queue<MonitoringEventDto> _pendingViolationQueue = new Queue<MonitoringEventDto>();
         private readonly Dictionary<string, DateTime> _lastViolationSentByType = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
@@ -389,6 +392,10 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             try
             {
+                // Bug fix: Bug4 - block violation reports while awaiting instructor join approval
+                if (_awaitingJoinApproval)
+                    return;
+
                 if (!_detectorRuntime?.IsLoggingEnabled ?? true)
                     return;
 
@@ -504,6 +511,76 @@ namespace AcademicSentinel.Client.Views.SAC
             return false;
         }
 
+        private async Task<bool> RequestJoinGateAsync()
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+
+                var response = await client.PostAsync($"{ApiEndpoints.Rooms}/{_roomId}/request-join", null);
+                if (response.StatusCode == System.Net.HttpStatusCode.Accepted)
+                {
+                    var data = await response.Content.ReadFromJsonAsync<JoinResponseDto>();
+                    if (data == null)
+                        return false;
+
+                    _awaitingJoinApproval = true;
+                    _pendingParticipantId = data.ParticipantId;
+
+                    if (WaitingScreenOverlay != null)
+                        WaitingScreenOverlay.Visibility = Visibility.Visible;
+                    if (WaitingScreenText != null)
+                    {
+                        WaitingScreenText.Text = data.IsLate
+                            ? "Waiting for instructor to admit you to the session..."
+                            : "Waiting for instructor to approve your rejoin request...";
+                    }
+
+                    var studentId = SessionManager.CurrentUser?.Id ?? 0;
+                    if (studentId > 0 && _hubConnection?.State == HubConnectionState.Connected)
+                    {
+                        await _hubConnection.InvokeAsync("NotifyInstructorStudentPending", _roomId, studentId);
+                    }
+
+                    return false;
+                }
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var data = await response.Content.ReadFromJsonAsync<JoinResponseDto>();
+                    if (data != null)
+                        _pendingParticipantId = data.ParticipantId;
+
+                    _awaitingJoinApproval = false;
+                    return true;
+                }
+
+                var errorMsg = await response.Content.ReadAsStringAsync();
+                MessageBox.Show(errorMsg, "Join Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Unable to request join: {ex.Message}", "Join Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            _allowClose = true;
+            ReturnToStudentDashboard();
+            return false;
+        }
+
+        private async Task StartLiveExamAsync()
+        {
+            if (_hubConnection == null)
+                return;
+
+            await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
+            await FlushPendingViolationsAsync();
+
+            var monitoringState = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
+            SetMonitoringActive(monitoringState);
+        }
+
         private async Task InitializeSignalRAsync()
         {
             try
@@ -518,8 +595,13 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 _hubConnection.Reconnected += async _ =>
                 {
+                    // Bug fix: Bug1 - block zombie reconnect after denial
+                    if (_isDenied) return;
                     try
                     {
+                        if (_awaitingJoinApproval)
+                            return;
+
                         await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
                         var reconnectedStudentId = SessionManager.CurrentUser?.Id ?? 0;
                         if (reconnectedStudentId > 0)
@@ -546,6 +628,8 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 _hubConnection.Closed += async _ =>
                 {
+                    // Bug fix: Bug1 - block zombie reconnect after denial (Closed handler also restarts the hub)
+                    if (_isDenied) return;
                     await Task.Delay(TimeSpan.FromSeconds(1));
                     if (_hubConnection == null)
                         return;
@@ -778,6 +862,67 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
+                _hubConnection.On<JoinApprovedDto>("OnJoinApproved", response =>
+                {
+                    _ = Dispatcher.InvokeAsync(async () =>
+                    {
+                        _awaitingJoinApproval = false;
+                        _pendingParticipantId = response.ParticipantId;
+
+                        if (WaitingScreenOverlay != null)
+                            WaitingScreenOverlay.Visibility = Visibility.Collapsed;
+
+                        await StartLiveExamAsync();
+                    });
+                });
+
+                _hubConnection.On<JoinDeniedDto>("OnJoinDenied", async response =>
+                {
+                    // Bug fix: Bug1 - mark denied BEFORE StopAsync so reconnect/closed handlers short-circuit
+                    _isDenied = true;
+                    // Bug fix: Bug5 - kill hub connection before UI work to prevent post-denial leave-request abuse
+                    if (_hubConnection != null)
+                    {
+                        try { await _hubConnection.StopAsync(); } catch { }
+                    }
+
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        _awaitingJoinApproval = false;
+
+                        if (WaitingScreenOverlay != null)
+                            WaitingScreenOverlay.Visibility = Visibility.Collapsed;
+
+                        // Bug fix: Bug3 - dedicated denial UI state on monitoring status text
+                        TxtMonitoringStatus.Text = "Access Denied: The Instructor rejected your join request.";
+                        // Bug fix: Bug3 - dedicated denial UI state foreground
+                        TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(211, 47, 47));
+                        // Bug fix: Bug3 - dedicated denial UI state on leave button text
+                        BtnRequestLeave.Content = "Back to Dashboard";
+                        // Bug fix: Bug3 - dedicated denial UI state on leave button background
+                        BtnRequestLeave.Background = new SolidColorBrush(Color.FromRgb(211, 47, 47));
+
+                        // Bug fix: Denial UI cleanup - hide irrelevant monitoring status label
+                        TxtMonitoringStatus.Visibility = Visibility.Collapsed;
+                        // Bug fix: Denial UI cleanup - hide irrelevant compact monitoring status label
+                        if (FindName("TxtCompactMonitoringStatus") is System.Windows.Controls.TextBlock _denialCompactMonStatus)
+                            _denialCompactMonStatus.Visibility = Visibility.Collapsed;
+                        // Bug fix: Denial UI cleanup - hide irrelevant leave permission status label (xaml name: TxtCompactLeavePermission)
+                        if (FindName("TxtCompactLeavePermission") is System.Windows.Controls.TextBlock _denialLeavePermStatus)
+                            _denialLeavePermStatus.Visibility = Visibility.Collapsed;
+
+                        // Bug fix: Denial UI cleanup - removed redundant MessageBox; UI button + redirect already communicates denial
+                        // MessageBox.Show("The Instructor Denied your request to join.", "Access Denied", MessageBoxButton.OK, MessageBoxImage.Error);
+
+                        _allowClose = true;
+                    });
+
+                    // Bug fix: Bug3 - delay before redirect so denial UI state is visible to the student
+                    await Task.Delay(3000);
+                    // Bug fix: Bug3 - return to dashboard after dedicated denial UI state has been shown
+                    await Dispatcher.InvokeAsync(() => ReturnToStudentDashboard());
+                });
+
                 _hubConnection.On("SessionEnded", () =>
                 {
                     Dispatcher.Invoke(() =>
@@ -839,6 +984,11 @@ namespace AcademicSentinel.Client.Views.SAC
                 }
 
                 await FlushPendingViolationsAsync();
+            }
+                if (await RequestJoinGateAsync())
+                {
+                    await StartLiveExamAsync();
+                }
             }
             catch (Exception ex)
             {
@@ -1239,6 +1389,7 @@ namespace AcademicSentinel.Client.Views.SAC
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
             if (!_allowClose && !_isPermanentlyDone && !_isLeaveApproved && _leaveRequestState != LeaveRequestState.Unlocked)
+            if (!_allowClose && !_isPermanentlyDone && _leaveRequestState != LeaveRequestState.Unlocked && !_awaitingJoinApproval)
             {
                 e.Cancel = true;
                 WindowState = WindowState.Minimized;
@@ -1281,6 +1432,28 @@ namespace AcademicSentinel.Client.Views.SAC
             public int CurrentScore { get; set; }
             public string CurrentLevel { get; set; } = string.Empty;
             public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+        }
+
+        private class JoinResponseDto
+        {
+            public string Status { get; set; } = string.Empty;
+            public int ParticipantId { get; set; }
+            public bool IsRejoin { get; set; }
+            public bool IsLate { get; set; }
+        }
+
+        private class JoinApprovedDto
+        {
+            public int RoomId { get; set; }
+            public int StudentId { get; set; }
+            public int ParticipantId { get; set; }
+        }
+
+        private class JoinDeniedDto
+        {
+            public int RoomId { get; set; }
+            public int StudentId { get; set; }
+            public string Reason { get; set; } = string.Empty;
         }
     }
 }

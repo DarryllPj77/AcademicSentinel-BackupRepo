@@ -32,19 +32,32 @@ public class MonitoringHub : Hub
         await Groups.AddToGroupAsync(Context.ConnectionId, roomId);
     }
 
+    // Bug fix: Bug2
+    public async Task<bool> GetMonitoringState(int roomId)
+    {
+        var room = await _context.Rooms.FindAsync(roomId);
+        return room != null && room.IsMonitoringActive;
+    }
+
     public async Task SetMonitoringState(int roomId, bool isActive)
     {
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
         if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
             return;
 
+        // 1. Update In-Memory Dictionary
         MonitoringStates[roomId] = isActive;
-        await Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", isActive);
-    }
 
-    public Task<bool> GetMonitoringState(int roomId)
-    {
-        return Task.FromResult(MonitoringStates.TryGetValue(roomId, out var isActive) && isActive);
+        // Bug fix: Bug3
+        // 2. UPDATE THE DATABASE FOR THE GATEKEEPER!
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room != null)
+        {
+            room.IsMonitoringActive = isActive;
+            await _context.SaveChangesAsync();
+        }
+
+        await Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", isActive);
     }
 
     public async Task PauseSessionMonitoring(int roomId)
@@ -52,6 +65,17 @@ public class MonitoringHub : Hub
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
         if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
             return;
+
+        MonitoringStates[roomId] = false;
+
+        // Bug fix: Bug3
+        // OPEN THE GATE (Optional, but aligns with paused state)
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room != null)
+        {
+            room.IsMonitoringActive = false;
+            await _context.SaveChangesAsync();
+        }
 
         await Clients.Group(roomId.ToString()).SendAsync("MonitoringPaused");
     }
@@ -61,6 +85,17 @@ public class MonitoringHub : Hub
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
         if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
             return;
+
+        MonitoringStates[roomId] = true;
+
+        // Bug fix: Bug3
+        // LOCK THE GATE
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room != null)
+        {
+            room.IsMonitoringActive = true;
+            await _context.SaveChangesAsync();
+        }
 
         await Clients.Group(roomId.ToString()).SendAsync("MonitoringResumed");
     }
@@ -480,5 +515,176 @@ public class MonitoringHub : Hub
         }
 
         await Clients.Group(roomId.ToString()).SendAsync("StudentLeftSession", studentId);
+    }
+
+    // =======================================================
+    // JOIN APPROVAL STATE MACHINE
+    // =======================================================
+
+    // SAC calls this after the request-join HTTP gate returns 202 Pending.
+    // The hub re-validates against the DB so a malicious client cannot fake
+    // a pending state, then surfaces the request to the IMC in real time.
+    public async Task NotifyInstructorStudentPending(int roomId, int studentId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Student", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdString == null) return;
+        int authenticatedStudentId = int.Parse(userIdString);
+        if (authenticatedStudentId != studentId) return;
+
+        var activeSession = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        if (activeSession == null) return;
+
+        var participant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+
+        if (participant == null
+            || participant.JoinedAt < activeSession.StartTime
+            || !string.Equals(participant.JoinApprovalStatus, "Pending", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var hadLeaveGranted = await _context.MonitoringEvents
+            .AnyAsync(e => e.RoomId == roomId
+                        && e.StudentId == studentId
+                        && e.EventType == "LEAVE_GRANTED"
+                        && e.Timestamp >= activeSession.StartTime);
+
+        var student = await _context.Users.FindAsync(studentId);
+
+        await Clients.Group(roomId.ToString()).SendAsync("StudentPendingApproval", new
+        {
+            roomId,
+            studentId,
+            participantId = participant.Id,
+            studentName = student?.FullName ?? $"Student #{studentId}",
+            studentEmail = student?.Email,
+            profileImageUrl = student?.ProfileImageUrl,
+            isRejoin = hadLeaveGranted,
+            isLate = !hadLeaveGranted,
+            requestedAt = DateTime.UtcNow
+        });
+    }
+
+    public async Task ApproveStudentJoin(int roomId, int studentId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var instructorIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return;
+
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null || room.Status != "Active" || room.InstructorId != instructorId) return;
+
+        var activeSession = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        if (activeSession == null) return;
+
+        var participant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+        if (participant == null || participant.JoinedAt < activeSession.StartTime) return;
+
+        participant.JoinApprovalStatus = "Approved";
+        participant.IsCurrentlyActive = true;
+
+        // REJOIN_APPROVED supersedes any prior LEAVE_GRANTED for this student
+        // in this session, so the HTTP gate will allow clean reconnects after
+        // network drops without re-prompting the instructor.
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId = roomId,
+            StudentId = studentId,
+            EventType = "REJOIN_APPROVED",
+            SeverityScore = 0,
+            Timestamp = DateTime.UtcNow
+        });
+
+        await _context.SaveChangesAsync();
+
+        await Clients.User(studentId.ToString()).SendAsync("OnJoinApproved", new
+        {
+            roomId,
+            studentId,
+            participantId = participant.Id
+        });
+
+        await Clients.Group(roomId.ToString()).SendAsync("StudentJoinApprovalResolved", new
+        {
+            roomId,
+            studentId,
+            decision = "Approved"
+        });
+    }
+
+    public async Task DenyStudentJoin(int roomId, int studentId, string? reason)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var instructorIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return;
+
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null || room.InstructorId != instructorId) return;
+
+        var activeSession = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        if (activeSession == null) return;
+
+        var participant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+        if (participant == null || participant.JoinedAt < activeSession.StartTime) return;
+
+        participant.JoinApprovalStatus = "Denied";
+        participant.IsCurrentlyActive = false;
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId = roomId,
+            StudentId = studentId,
+            EventType = "JOIN_DENIED",
+            SeverityScore = 0,
+            Timestamp = DateTime.UtcNow
+        });
+
+        await _context.SaveChangesAsync();
+
+        await Clients.User(studentId.ToString()).SendAsync("OnJoinDenied", new
+        {
+            roomId,
+            studentId,
+            reason = string.IsNullOrWhiteSpace(reason)
+                ? "Your request to join was denied by the instructor."
+                : reason
+        });
+
+        await Clients.Group(roomId.ToString()).SendAsync("StudentJoinApprovalResolved", new
+        {
+            roomId,
+            studentId,
+            decision = "Denied"
+        });
     }
 }

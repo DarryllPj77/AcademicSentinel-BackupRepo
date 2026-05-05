@@ -11,7 +11,8 @@
         Background="#F5F5F5"
         FontFamily="{materialDesign:MaterialDesignFont}"
         TextElement.Foreground="#1B1B1B"
-        TextElement.FontSize="13">
+        TextElement.FontSize="13"
+        Loaded="Window_Loaded">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -371,15 +372,31 @@
                                                                    Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"/>
                                                         <TextBlock Text="{Binding Status}" FontSize="10" Foreground="{Binding StatusColor}"/>
                                                     </StackPanel>
-                                                    <Button x:Name="BtnApproveLeave"
-                                                            Grid.Column="3"
-                                                            Content="Approve Leave"
-                                                            Style="{StaticResource PrimaryBtn}"
-                                                            FontSize="10"
-                                                            Padding="8,4"
-                                                            Margin="6,0,36,0"
-                                                            Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
-                                                            Click="BtnApproveLeave_Click"/>
+                                                    <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="6,0,18,0">
+                                                        <Button x:Name="BtnApproveJoin"
+                                                                Content="Approve"
+                                                                Style="{StaticResource PrimaryBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsJoinApprovalPending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnApproveJoin_Click"/>
+                                                        <Button x:Name="BtnDenyJoin"
+                                                                Content="Deny"
+                                                                Style="{StaticResource GhostBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsJoinApprovalPending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnDenyJoin_Click"/>
+                                                        <Button x:Name="BtnApproveLeave"
+                                                                Content="Approve Leave"
+                                                                Style="{StaticResource PrimaryBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnApproveLeave_Click"/>
+                                                    </StackPanel>
                                                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0">
                                                         <materialDesign:PackIcon Kind="AlertCircle"
                                                                                  Width="16"
