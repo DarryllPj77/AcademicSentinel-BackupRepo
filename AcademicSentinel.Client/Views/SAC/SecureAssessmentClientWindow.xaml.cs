@@ -56,6 +56,8 @@ namespace AcademicSentinel.Client.Views.SAC
         private LeaveRequestState _leaveRequestState = LeaveRequestState.Locked;
         private bool _allowClose;
         private bool _isPermanentlyDone;
+        private bool _awaitingJoinApproval;
+        private int _pendingParticipantId;
         private readonly Queue<MonitoringEventDto> _pendingViolationQueue = new Queue<MonitoringEventDto>();
         private readonly Dictionary<string, DateTime> _lastViolationSentByType = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
@@ -516,6 +518,76 @@ namespace AcademicSentinel.Client.Views.SAC
             return false;
         }
 
+        private async Task<bool> RequestJoinGateAsync()
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+
+                var response = await client.PostAsync($"{ApiEndpoints.Rooms}/{_roomId}/request-join", null);
+                if (response.StatusCode == System.Net.HttpStatusCode.Accepted)
+                {
+                    var data = await response.Content.ReadFromJsonAsync<JoinResponseDto>();
+                    if (data == null)
+                        return false;
+
+                    _awaitingJoinApproval = true;
+                    _pendingParticipantId = data.ParticipantId;
+
+                    if (WaitingScreenOverlay != null)
+                        WaitingScreenOverlay.Visibility = Visibility.Visible;
+                    if (WaitingScreenText != null)
+                    {
+                        WaitingScreenText.Text = data.IsLate
+                            ? "Waiting for instructor to admit you to the session..."
+                            : "Waiting for instructor to approve your rejoin request...";
+                    }
+
+                    var studentId = SessionManager.CurrentUser?.Id ?? 0;
+                    if (studentId > 0 && _hubConnection?.State == HubConnectionState.Connected)
+                    {
+                        await _hubConnection.InvokeAsync("NotifyInstructorStudentPending", _roomId, studentId);
+                    }
+
+                    return false;
+                }
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var data = await response.Content.ReadFromJsonAsync<JoinResponseDto>();
+                    if (data != null)
+                        _pendingParticipantId = data.ParticipantId;
+
+                    _awaitingJoinApproval = false;
+                    return true;
+                }
+
+                var errorMsg = await response.Content.ReadAsStringAsync();
+                MessageBox.Show(errorMsg, "Join Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Unable to request join: {ex.Message}", "Join Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            _allowClose = true;
+            ReturnToStudentDashboard();
+            return false;
+        }
+
+        private async Task StartLiveExamAsync()
+        {
+            if (_hubConnection == null)
+                return;
+
+            await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
+            await FlushPendingViolationsAsync();
+
+            var monitoringState = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
+            SetMonitoringActive(monitoringState);
+        }
+
         private async Task InitializeSignalRAsync()
         {
             try
@@ -532,6 +604,9 @@ namespace AcademicSentinel.Client.Views.SAC
                 {
                     try
                     {
+                        if (_awaitingJoinApproval)
+                            return;
+
                         await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
                         var reconnectedStudentId = SessionManager.CurrentUser?.Id ?? 0;
                         if (reconnectedStudentId > 0)
@@ -765,6 +840,36 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
+                _hubConnection.On<JoinApprovedDto>("OnJoinApproved", response =>
+                {
+                    _ = Dispatcher.InvokeAsync(async () =>
+                    {
+                        _awaitingJoinApproval = false;
+                        _pendingParticipantId = response.ParticipantId;
+
+                        if (WaitingScreenOverlay != null)
+                            WaitingScreenOverlay.Visibility = Visibility.Collapsed;
+
+                        await StartLiveExamAsync();
+                    });
+                });
+
+                _hubConnection.On<JoinDeniedDto>("OnJoinDenied", response =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        _awaitingJoinApproval = false;
+
+                        if (WaitingScreenOverlay != null)
+                            WaitingScreenOverlay.Visibility = Visibility.Collapsed;
+
+                        MessageBox.Show(response.Reason, "Access Denied", MessageBoxButton.OK, MessageBoxImage.Error);
+
+                        _allowClose = true;
+                        ReturnToStudentDashboard();
+                    });
+                });
+
                 _hubConnection.On("SessionEnded", () =>
                 {
                     Dispatcher.Invoke(() =>
@@ -802,11 +907,10 @@ namespace AcademicSentinel.Client.Views.SAC
                 });
 
                 await _hubConnection.StartAsync();
-                await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
-                await FlushPendingViolationsAsync();
-
-                var monitoringState = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
-                SetMonitoringActive(monitoringState);
+                if (await RequestJoinGateAsync())
+                {
+                    await StartLiveExamAsync();
+                }
             }
             catch (Exception ex)
             {
@@ -1212,7 +1316,7 @@ namespace AcademicSentinel.Client.Views.SAC
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
-            if (!_allowClose && !_isPermanentlyDone && _leaveRequestState != LeaveRequestState.Unlocked)
+            if (!_allowClose && !_isPermanentlyDone && _leaveRequestState != LeaveRequestState.Unlocked && !_awaitingJoinApproval)
             {
                 e.Cancel = true;
                 WindowState = WindowState.Minimized;
@@ -1255,6 +1359,28 @@ namespace AcademicSentinel.Client.Views.SAC
             public int CurrentScore { get; set; }
             public string CurrentLevel { get; set; } = string.Empty;
             public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+        }
+
+        private class JoinResponseDto
+        {
+            public string Status { get; set; } = string.Empty;
+            public int ParticipantId { get; set; }
+            public bool IsRejoin { get; set; }
+            public bool IsLate { get; set; }
+        }
+
+        private class JoinApprovedDto
+        {
+            public int RoomId { get; set; }
+            public int StudentId { get; set; }
+            public int ParticipantId { get; set; }
+        }
+
+        private class JoinDeniedDto
+        {
+            public int RoomId { get; set; }
+            public int StudentId { get; set; }
+            public string Reason { get; set; } = string.Empty;
         }
     }
 }

@@ -160,11 +160,15 @@ public class RoomsController : ControllerBase
 
         // Also update the Room status back to Pending so it can be reused
         var room = await _context.Rooms.FindAsync(session.RoomId);
-        if (room != null) room.Status = "Pending";
+        if (room != null)
+        {
+            room.Status = "Pending";
+            room.IsMonitoringActive = false; // <--- ADD THIS LINE!
+        }
 
         await _context.SaveChangesAsync();
 
-        // Broadcast to SignalR that the session is over and force-release soft lock states.
+        // Broadcast to SignalR that the session is over...
         await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("MonitoringStateChanged", false);
         await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("SessionEnded");
 
@@ -338,7 +342,7 @@ public class RoomsController : ControllerBase
         return Ok(result);
     }
 
-    // NEW: Actual Delete logic for unenrollment [cite: 72]
+    // NEW: Actual Delete logic for unenrollment 
     [HttpDelete("{roomId}/unenroll/{studentId}")]
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> UnenrollStudent(int roomId, int studentId)
@@ -392,6 +396,130 @@ public class RoomsController : ControllerBase
         await _hubContext.Clients.User(studentId.ToString()).SendAsync("RemovedFromSession", roomId);
 
         return Ok(new { message = "Student removed from current session." });
+    }
+
+    // ==========================================
+    // JOIN APPROVAL GATE (late join + rejoin)
+    // ==========================================
+    [HttpPost("{roomId}/request-join")]
+    [Authorize(Roles = "Student")]
+    public async Task<IActionResult> RequestJoinSession(int roomId)
+    {
+        var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdString == null) return Unauthorized();
+        int studentId = int.Parse(userIdString);
+
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null) return NotFound("Room not found.");
+        if (room.Status != "Active")
+            return BadRequest("This room does not have an active session.");
+
+        var isEnrolled = await _context.RoomEnrollments
+            .AnyAsync(e => e.RoomId == roomId && e.StudentId == studentId);
+        if (!isEnrolled)
+            return StatusCode(403, "You are not enrolled in this room.");
+
+        var activeSession = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        if (activeSession == null)
+            return BadRequest("No active session for this room.");
+
+        var latestParticipant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+
+        bool isRejoin = latestParticipant != null
+                     && latestParticipant.JoinedAt >= activeSession.StartTime;
+        bool isLate = !isRejoin;
+
+        var lastLeaveGranted = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "LEAVE_GRANTED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        var lastRejoinApproved = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "REJOIN_APPROVED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // Once a leave-grant has been issued, every subsequent reconnect
+        // requires a fresh REJOIN_APPROVED event with a newer timestamp.
+        bool rejoinNeedsApproval =
+            isRejoin
+            && lastLeaveGranted.HasValue
+            && (!lastRejoinApproved.HasValue || lastRejoinApproved < lastLeaveGranted);
+
+        // =========================================================================
+        // UPDATED LOGIC: Auto-accept late joiners if monitoring hasn't started yet!
+        // =========================================================================
+        // IMPORTANT: Make sure `IsMonitoringActive` exists in your Room.cs model 
+        // and is toggled to true/false in your MonitoringHub when the instructor
+        // starts/pauses/stops the feed.
+        bool isMonitoringRunning = room.IsMonitoringActive;
+
+        // Late joiners only wait if monitoring is actively running. 
+        // Rejoiners wait if they have an unresolved leave-grant.
+        bool requiresApproval = (isLate && isMonitoringRunning) || rejoinNeedsApproval;
+        // =========================================================================
+
+        SessionParticipant participant;
+        if (isRejoin)
+        {
+            participant = latestParticipant!;
+            participant.JoinApprovalStatus = requiresApproval ? "Pending" : "Approved";
+            participant.IsCurrentlyActive = !requiresApproval;
+        }
+        else
+        {
+            participant = new SessionParticipant
+            {
+                RoomId = roomId,
+                StudentId = studentId,
+                ConnectionStatus = "Disconnected",
+                JoinApprovalStatus = "Pending",
+                IsCurrentlyActive = false,
+                JoinedAt = DateTime.UtcNow
+            };
+            _context.SessionParticipants.Add(participant);
+        }
+
+        await _context.SaveChangesAsync();
+
+        if (requiresApproval)
+        {
+            return StatusCode(StatusCodes.Status202Accepted, new
+            {
+                status = "Pending",
+                participantId = participant.Id,
+                isRejoin,
+                isLate
+            });
+        }
+
+        // If they bypass approval (because monitoring isn't running yet, or it's a clean reconnect)
+        // Make sure to set them as instantly approved!
+        participant.JoinApprovalStatus = "Approved";
+        participant.IsCurrentlyActive = true;
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            status = "Approved",
+            participantId = participant.Id,
+            isRejoin,
+            isLate
+        });
     }
 
     [HttpGet("instructor")]
@@ -520,17 +648,17 @@ public class RoomsController : ControllerBase
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> EnrollStudentByEmail(int roomId, [FromBody] string studentEmail)
     {
-        // 1. Find the student by their unique email [cite: 104]
+        // 1. Find the student by their unique email 
         var student = await _context.Users.FirstOrDefaultAsync(u => u.Email == studentEmail && u.Role == "Student");
         if (student == null) return NotFound("Student not found. Ask them to register first.");
 
-        // 2. Prevent duplicate enrollments in the same room [cite: 109]
+        // 2. Prevent duplicate enrollments in the same room 
         var existing = await _context.RoomEnrollments
             .AnyAsync(e => e.RoomId == roomId && e.StudentId == student.Id);
 
         if (existing) return BadRequest("Student is already in this list.");
 
-        // 3. Save the enrollment with source "Manual" [cite: 39, 45]
+        // 3. Save the enrollment with source "Manual" 
         var enrollment = new RoomEnrollment
         {
             RoomId = roomId,

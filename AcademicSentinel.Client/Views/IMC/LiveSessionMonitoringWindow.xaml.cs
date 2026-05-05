@@ -58,6 +58,7 @@ namespace AcademicSentinel.Client.Views.IMC
         private LiveStudentStatus _selectedStudent;
         private List<ParticipantDto> _allParticipants = new List<ParticipantDto>();
         private readonly Dictionary<int, bool> _leaveRequestedStateByStudentId = new();
+        private readonly Dictionary<int, JoinApprovalRequestDto> _pendingJoinApprovals = new();
         private readonly HashSet<int> _safelyLeftStudentIds = new();
         private readonly HashSet<int> _permanentlyDismissedStudents = new HashSet<int>();
         private readonly HashSet<int> _studentsWithViolations = new HashSet<int>();
@@ -115,6 +116,12 @@ namespace AcademicSentinel.Client.Views.IMC
             };
             _participantsRefreshTimer.Tick += async (_, __) => await LoadParticipantsFromServerAsync();
             _participantsRefreshTimer.Start();
+        }
+
+        private async void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+            await InitializeSignalR();
+            await _hubConnection.InvokeAsync("JoinRoom", _roomId.ToString());
         }
 
         // ======================== SEARCH & FILTER LOGIC ========================
@@ -196,6 +203,60 @@ namespace AcademicSentinel.Client.Views.IMC
                     icon.Kind = PackIconKind.Play;
                     BtnStartMonitoring.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#1B5E20"));
                     break;
+            }
+        }
+
+        private async void BtnApproveJoin_Click(object sender, RoutedEventArgs e)
+        {
+            if (EnsureSessionNotEnded()) return;
+            if (sender is not Button btn || btn.DataContext is not LiveStudentStatus student)
+                return;
+
+            if (_hubConnection == null)
+                return;
+
+            try
+            {
+                await _hubConnection.InvokeAsync("ApproveStudentJoin", _roomId, student.StudentId);
+
+                student.IsJoinApprovalPending = false;
+                student.Status = "Approved";
+                student.StatusColor = "#4CAF50";
+                _pendingJoinApprovals.Remove(student.StudentId);
+
+                LogActivity(student.Email, "JOIN_OK", "Instructor approved join request.", "#4CAF50");
+                _studentsView.Refresh();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to approve join: {ex.Message}", "Join Approval", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private async void BtnDenyJoin_Click(object sender, RoutedEventArgs e)
+        {
+            if (EnsureSessionNotEnded()) return;
+            if (sender is not Button btn || btn.DataContext is not LiveStudentStatus student)
+                return;
+
+            if (_hubConnection == null)
+                return;
+
+            try
+            {
+                await _hubConnection.InvokeAsync("DenyStudentJoin", _roomId, student.StudentId, "Request denied by instructor.");
+
+                student.IsJoinApprovalPending = false;
+                student.Status = "Denied";
+                student.StatusColor = "#D32F2F";
+                _pendingJoinApprovals.Remove(student.StudentId);
+
+                LogActivity(student.Email, "JOIN_NO", "Instructor denied join request.", "#D32F2F");
+                _studentsView.Refresh();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to deny join: {ex.Message}", "Join Denial", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
@@ -337,10 +398,24 @@ namespace AcademicSentinel.Client.Views.IMC
                 {
                     _monitoringEffectiveStartTime = null;
                     _countdownSecondsRemaining = 0;
+
                     if (FindName("TxtMonitoringState") is TextBlock monitoringState)
                         monitoringState.Text = $"Monitoring: Active (Session #{_currentSessionId})";
                     if (FindName("TxtCountdownDisplay") is TextBlock countdownDisplay)
                         countdownDisplay.Text = "00:00";
+
+                    // ==============================================================
+                    // THE FIX: Tell the Database that monitoring is officially ON!
+                    // ==============================================================
+                    try
+                    {
+                        if (_hubConnection != null)
+                        {
+                            await _hubConnection.InvokeAsync("SetMonitoringState", _roomId, true);
+                        }
+                    }
+                    catch { }
+                    // ==============================================================
                 }
                 else if (_monitoringEffectiveStartTime.HasValue)
                 {
@@ -478,27 +553,21 @@ namespace AcademicSentinel.Client.Views.IMC
                 _ = LoadParticipantsFromServerAsync();
             })));
 
-            _hubSubscriptions.Add(_hubConnection.On<int>("StudentDisconnected", (id) => Dispatcher.Invoke(() =>
+            _hubSubscriptions.Add(_hubConnection.On<int, string>("StudentJoinedOrReconnected", (studentId, studentName) => Dispatcher.InvokeAsync(() =>
             {
-                if (_safelyLeftStudentIds.Contains(id) || _permanentlyDismissedStudents.Contains(id))
-                    return;
-
-                if (_selectedStudentId == id)
+                var student = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                if (student != null)
                 {
-                    CollapseDetailPanel();
+                    student.IsOffline = false;
+                    student.Status = "Connected";
+                    student.StatusColor = "#4CAF50";
                 }
 
-                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == id);
-                if (targetStudent == null)
-                    return;
+                // Force them off the dismissed lists here as well!
+                _permanentlyDismissedStudents.Remove(studentId);
+                _safelyLeftStudentIds.Remove(studentId);
 
-                targetStudent.Status = "Offline/Disconnected";
-                targetStudent.StatusColor = "#D32F2F";
-                targetStudent.IsLeaveRequested = false;
-                _leaveRequestedStateByStudentId[id] = false;
-                LogActivity(targetStudent.Email, "LEFT", "Student disconnected from session.", "#D32F2F");
-                _studentsView.Refresh();
-
+                LogActivity("SYSTEM", "SYSTEM", $"✅ SESSION JOINED / CONNECTION RESTORED. {studentName}", "#4CAF50");
                 _ = LoadParticipantsFromServerAsync();
             })));
 
@@ -569,6 +638,77 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 LogActivity(targetStudent.Email, "LEAVE_REQ", "Student requested leave approval.", "#FF9800");
                 _studentsView.Refresh();
+            })));
+
+            _hubSubscriptions.Add(_hubConnection.On<JoinApprovalRequestDto>("StudentPendingApproval", payload => Dispatcher.Invoke(() =>
+            {
+                if (payload == null)
+                    return;
+
+                _pendingJoinApprovals[payload.StudentId] = payload;
+
+                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
+                if (targetStudent == null)
+                {
+                    targetStudent = new LiveStudentStatus
+                    {
+                        StudentId = payload.StudentId,
+                        Name = string.IsNullOrWhiteSpace(payload.StudentName) ? payload.StudentEmail : payload.StudentName,
+                        Email = payload.StudentEmail ?? string.Empty,
+                        ProfileImageUrl = string.IsNullOrWhiteSpace(payload.ProfileImageUrl)
+                            ? string.Empty
+                            : (payload.ProfileImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                                ? payload.ProfileImageUrl
+                                : $"{ApiEndpoints.BaseUrl}{payload.ProfileImageUrl}"),
+                        Status = payload.IsLate ? "Waiting to Join" : "Waiting to Rejoin",
+                        StatusColor = "#FF9800",
+                        IsJoinApprovalPending = true
+                    };
+                    ActiveStudents.Add(targetStudent);
+                }
+                else
+                {
+                    targetStudent.IsJoinApprovalPending = true;
+                    targetStudent.Status = payload.IsLate ? "Waiting to Join" : "Waiting to Rejoin";
+                    targetStudent.StatusColor = "#FF9800";
+                }
+
+                LogActivity(targetStudent.Email, "JOIN_REQ", "Student requested join approval.", "#FF9800");
+                _studentsView.Refresh();
+                UpdateParticipantCount();
+            })));
+
+            _hubSubscriptions.Add(_hubConnection.On<dynamic>("StudentJoinApprovalResolved", payload => Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    int studentId = payload.studentId;
+                    string decision = payload.decision;
+
+                    _pendingJoinApprovals.Remove(studentId);
+
+                    var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                    if (targetStudent != null)
+                    {
+                        targetStudent.IsJoinApprovalPending = false;
+                        if (string.Equals(decision, "Approved", StringComparison.OrdinalIgnoreCase))
+                        {
+                            targetStudent.Status = "Approved";
+                            targetStudent.StatusColor = "#4CAF50";
+                        }
+                        else
+                        {
+                            targetStudent.Status = "Denied";
+                            targetStudent.StatusColor = "#D32F2F";
+                        }
+                    }
+
+                    _studentsView.Refresh();
+                    UpdateParticipantCount();
+                }
+                catch
+                {
+                }
             })));
 
             _hubSubscriptions.Add(_hubConnection.On<int>("StudentSafelyLeft", studentId => Dispatcher.Invoke(() =>
@@ -691,6 +831,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 ActiveStudents.Clear();
 
+                // 1. Add normal connected/disconnected students from the DB
                 foreach (var p in participants.Where(p =>
                     (string.Equals(p.ParticipationStatus, "Joined", StringComparison.OrdinalIgnoreCase)
                      || string.Equals(p.ParticipationStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
@@ -716,6 +857,38 @@ namespace AcademicSentinel.Client.Views.IMC
                         Status = isLeaveRequested ? "Wants to Leave" : "Connected",
                         StatusColor = isLeaveRequested ? "#FF9800" : "#4CAF50"
                     });
+                }
+
+                // 2. FIX: Stitch the pending join approvals back into the UI!
+                foreach (var pending in _pendingJoinApprovals.Values)
+                {
+                    var existingTarget = ActiveStudents.FirstOrDefault(s => s.StudentId == pending.StudentId);
+
+                    if (existingTarget == null)
+                    {
+                        // If they were wiped out completely, re-add them to the list
+                        ActiveStudents.Add(new LiveStudentStatus
+                        {
+                            StudentId = pending.StudentId,
+                            Name = string.IsNullOrWhiteSpace(pending.StudentName) ? pending.StudentEmail : pending.StudentName,
+                            Email = pending.StudentEmail ?? string.Empty,
+                            ProfileImageUrl = string.IsNullOrWhiteSpace(pending.ProfileImageUrl)
+                                ? string.Empty
+                                : (pending.ProfileImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                                    ? pending.ProfileImageUrl
+                                    : $"{ApiEndpoints.BaseUrl}{pending.ProfileImageUrl}"),
+                            Status = pending.IsLate ? "Waiting to Join" : "Waiting to Rejoin",
+                            StatusColor = "#FF9800",
+                            IsJoinApprovalPending = true
+                        });
+                    }
+                    else
+                    {
+                        // If they exist but their status got reset by the DB, override it back to Pending
+                        existingTarget.IsJoinApprovalPending = true;
+                        existingTarget.Status = pending.IsLate ? "Waiting to Join" : "Waiting to Rejoin";
+                        existingTarget.StatusColor = "#FF9800";
+                    }
                 }
 
                 _studentsView.Refresh();
@@ -1145,6 +1318,7 @@ namespace AcademicSentinel.Client.Views.IMC
         private string _status, _statusColor;
         private int _violations;
         private bool _isLeaveRequested;
+        private bool _isJoinApprovalPending;
         private bool _hasViolation;
         private bool _hasHardwareViolation;
         private bool _isUsingVm;
@@ -1171,6 +1345,7 @@ namespace AcademicSentinel.Client.Views.IMC
             }
         }
         public bool IsLeaveRequested { get => _isLeaveRequested; set { _isLeaveRequested = value; OnPropertyChanged(); } }
+        public bool IsJoinApprovalPending { get => _isJoinApprovalPending; set { _isJoinApprovalPending = value; OnPropertyChanged(); } }
         public bool HasViolation { get => _hasViolation; set { _hasViolation = value; OnPropertyChanged(); } }
         public bool HasHardwareViolation { get => _hasHardwareViolation; set { _hasHardwareViolation = value; OnPropertyChanged(); } }
         public bool IsUsingVM { get => _isUsingVm; set { _isUsingVm = value; OnPropertyChanged(); } }
@@ -1196,6 +1371,19 @@ namespace AcademicSentinel.Client.Views.IMC
         public string Email { get; set; } = string.Empty;
         public string Enrollment { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
+    }
+
+    public class JoinApprovalRequestDto
+    {
+        public int RoomId { get; set; }
+        public int StudentId { get; set; }
+        public int ParticipantId { get; set; }
+        public string StudentName { get; set; } = string.Empty;
+        public string StudentEmail { get; set; } = string.Empty;
+        public string? ProfileImageUrl { get; set; }
+        public bool IsRejoin { get; set; }
+        public bool IsLate { get; set; }
+        public DateTime RequestedAt { get; set; }
     }
 
     public class LogEntry { public string Timestamp { get; set; } public string StudentEmail { get; set; } public string BadgeText { get; set; } public string BadgeColor { get; set; } public string Message { get; set; } }
