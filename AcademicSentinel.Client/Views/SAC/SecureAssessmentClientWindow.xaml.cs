@@ -82,7 +82,7 @@ namespace AcademicSentinel.Client.Views.SAC
 
             _isLeaveRequested = false;
             _isLeaveApproved = false;
-            _detectorRuntime?.IsPaused = true;
+            if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
 
             _roomId = roomId;
             TxtCourseRoom.Text = roomTitle;
@@ -229,6 +229,13 @@ namespace AcademicSentinel.Client.Views.SAC
                              && !_sessionEnded
                              && !_monitoringCountdownEndsAt.HasValue;
 
+            if (shouldRun && !_detectorsRunning)
+            {
+                // Clear stale per-type cooldown so the first batch of detector
+                // events after start/resume always reach the server.
+                _lastViolationSentByType.Clear();
+            }
+
             _detectorRuntime?.SetMonitoringEnabled(shouldRun);
 
             if (shouldRun && !_detectorsRunning)
@@ -314,9 +321,6 @@ namespace AcademicSentinel.Client.Views.SAC
                 if (_detectorRuntime != null)
                     _detectorRuntime.IsPaused = !isActive;
 
-                // Always unlock the leave button so students are never trapped
-                BtnRequestLeave.IsEnabled = true;
-
                 // Update Main View
                 if (TxtMonitoringStatus != null)
                 {
@@ -330,6 +334,10 @@ namespace AcademicSentinel.Client.Views.SAC
                     compactStatus.Text = statusText;
                     compactStatus.Foreground = color;
                 }
+
+                // Re-enforce softlock state machine — never leave the button
+                // unconditionally enabled, since that defeats Pending/Countdown locks.
+                UpdateRequestLeaveButtonState();
             });
         }
 
@@ -748,7 +756,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         if (grantedStudentId != currentStudentId)
                             return;
 
-                        _detectorRuntime?.IsPaused = true;
+                        if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
                         _detectorRuntime?.Stop();
 
                         if (_detectorRuntime != null)
@@ -852,7 +860,7 @@ namespace AcademicSentinel.Client.Views.SAC
 
                     Dispatcher.Invoke(() =>
                     {
-                        _detectorRuntime?.IsPaused = true;
+                        if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
                         _detectorRuntime?.Stop();
                         MessageBox.Show("Session interrupted by instructor disconnect. You will be returned to the dashboard.", "Session Interrupted", MessageBoxButton.OK, MessageBoxImage.Warning);
                         _isLeaveApproved = true;
@@ -927,7 +935,7 @@ namespace AcademicSentinel.Client.Views.SAC
                 {
                     Dispatcher.Invoke(() =>
                     {
-                        _detectorRuntime?.IsPaused = true;
+                        if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
                         _detectorRuntime?.Stop();
                         _sessionEnded = true;
                         _monitoringCountdownEndsAt = null;
@@ -962,32 +970,12 @@ namespace AcademicSentinel.Client.Views.SAC
                 });
 
                 await _hubConnection.StartAsync();
-                await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
 
-                try
-                {
-                    bool isMonitoringActive = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
-                    _isMonitoringActive = isMonitoringActive;
-                    _monitoringCountdownEndsAt = null;
-                    _monitoringStartedAt = isMonitoringActive ? DateTime.Now : null;
-                    if (!_sessionEnded)
-                        _currentPhase = isMonitoringActive ? ExamPhase.Active : ExamPhase.PreSession;
-
-                    string text = isMonitoringActive ? "ACTIVE" : "INACTIVE";
-                    var color = isMonitoringActive ? System.Windows.Media.Brushes.LimeGreen : System.Windows.Media.Brushes.Gray;
-                    SetMonitoringStateUI(isMonitoringActive, text, color);
-                    UpdateDetectorRuntimeState();
-                    UpdateRequestLeaveButtonState();
-                }
-                catch
-                {
-                }
-
-                await FlushPendingViolationsAsync();
-            }
                 if (await RequestJoinGateAsync())
                 {
                     await StartLiveExamAsync();
+                    UpdateDetectorRuntimeState();
+                    UpdateRequestLeaveButtonState();
                 }
             }
             catch (Exception ex)
@@ -1388,8 +1376,11 @@ namespace AcademicSentinel.Client.Views.SAC
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
-            if (!_allowClose && !_isPermanentlyDone && !_isLeaveApproved && _leaveRequestState != LeaveRequestState.Unlocked)
-            if (!_allowClose && !_isPermanentlyDone && _leaveRequestState != LeaveRequestState.Unlocked && !_awaitingJoinApproval)
+            if (!_allowClose
+                && !_isPermanentlyDone
+                && !_isLeaveApproved
+                && !_awaitingJoinApproval
+                && _leaveRequestState != LeaveRequestState.Unlocked)
             {
                 e.Cancel = true;
                 WindowState = WindowState.Minimized;
