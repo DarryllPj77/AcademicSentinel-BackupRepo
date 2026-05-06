@@ -698,10 +698,10 @@ namespace AcademicSentinel.Client.Views.SAC
                         _leaveRequestState = LeaveRequestState.Locked;
                         _isLeaveRequested = false;
 
-                        // Pause the hardware scanner so it doesn't fire while
-                        // the instructor has the session paused.
                         if (_detectorRuntime != null)
                             _detectorRuntime.IsPaused = true;
+
+                        DetectionReports.Insert(0, $"System: Monitoring paused by instructor ({DateTime.Now:h:mm:ss tt})");
 
                         SetMonitoringStateUI(false, "PAUSED BY INSTRUCTOR", System.Windows.Media.Brushes.Goldenrod);
                         UpdateDetectorRuntimeState();
@@ -748,20 +748,20 @@ namespace AcademicSentinel.Client.Views.SAC
 
                             await Dispatcher.InvokeAsync(async () =>
                             {
-                                // Reset state machine and UI on the UI thread atomically
-                                // so the softlock can never desync to "PAUSED" after resume.
+                                // Wake the hardware scanner BEFORE SetMonitoringActive so the
+                                // UpdateDetectorRuntimeState call inside it sees an unpaused runtime.
+                                if (_detectorRuntime != null)
+                                    _detectorRuntime.IsPaused = false;
+
                                 SetMonitoringActive(true);
                                 _currentPhase = ExamPhase.Active;
                                 _leaveRequestState = LeaveRequestState.Locked;
                                 UpdateRequestLeaveButtonState();
 
-                                // Wake the hardware scanner — without this the detector
-                                // thread stays paused after resume and never reports.
                                 if (_detectorRuntime != null)
-                                {
-                                    _detectorRuntime.IsPaused = false;
                                     UpdateDetectorRuntimeState();
-                                }
+
+                                DetectionReports.Insert(0, $"System: Monitoring resumed. ({DateTime.Now:h:mm:ss tt})");
 
                                 await Task.CompletedTask;
                             });
@@ -1191,48 +1191,39 @@ namespace AcademicSentinel.Client.Views.SAC
                     return;
                 }
 
-                switch (_currentPhase)
+                if (_currentPhase == ExamPhase.PreSession)
                 {
-                    case ExamPhase.PreSession:
-                        btn.Content = "Leave Session";
-                        btn.IsEnabled = true;
-                        btn.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                        btn.Foreground = Brushes.White;
-                        break;
-
-                    case ExamPhase.Countdown:
-                        btn.Content = "Cannot Leave";
-                        btn.IsEnabled = false;
-                        btn.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
-                        btn.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#424242"));
-                        break;
-
-                    case ExamPhase.Active:
-                        switch (_leaveRequestState)
-                        {
-                            case LeaveRequestState.Locked:
-                                btn.Content = "Request to Leave";
-                                btn.IsEnabled = true;
-                                btn.Background = new SolidColorBrush(Color.FromRgb(211, 47, 47));
-                                btn.Foreground = Brushes.White;
-                                break;
-
-                            case LeaveRequestState.Pending:
-                                btn.Content = "Waiting for Instructor...";
-                                btn.IsEnabled = false;
-                                btn.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
-                                btn.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#424242"));
-                                break;
-
-                            case LeaveRequestState.Unlocked:
-                                btn.Content = "Permission Granted - Leave Now";
-                                btn.IsEnabled = true;
-                                btn.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                                btn.Foreground = Brushes.White;
-                                break;
-                        }
-                        break;
+                    btn.Content = "Leave Session";
+                    btn.IsEnabled = true;
+                    btn.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                    btn.Foreground = Brushes.White;
+                    return;
                 }
+
+                if (_leaveRequestState == LeaveRequestState.Unlocked)
+                {
+                    btn.Content = "Permission Granted - Leave Now";
+                    btn.IsEnabled = true;
+                    btn.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                    btn.Foreground = Brushes.White;
+                    return;
+                }
+
+                if (_leaveRequestState == LeaveRequestState.Pending)
+                {
+                    btn.Content = "Waiting for Instructor...";
+                    btn.IsEnabled = false;
+                    btn.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                    btn.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#424242"));
+                    return;
+                }
+
+                // Default for any non-free-leave state (Active locked, or resume countdown):
+                // strictly "Request to Leave" — never a hard "Cannot Leave" trap.
+                btn.Content = "Request to Leave";
+                btn.IsEnabled = true;
+                btn.Background = new SolidColorBrush(Color.FromRgb(211, 47, 47));
+                btn.Foreground = Brushes.White;
             });
         }
 
