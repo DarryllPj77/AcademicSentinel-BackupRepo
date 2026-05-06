@@ -307,7 +307,7 @@ namespace AcademicSentinel.Client.Views.IMC
                         {
                             // Read the file and prepare it for HTTP transfer
                             var fileContent = new ByteArrayContent(File.ReadAllBytes(openFileDialog.FileName));
-                            fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/" + Path.GetExtension(openFileDialog.FileName).TrimStart('.'));
+                            fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(GetImageMimeType(openFileDialog.FileName));
 
                             // IMPORTANT: The name "image" here must exactly match the parameter name in your ImagesController
                             content.Add(fileContent, "image", Path.GetFileName(openFileDialog.FileName));
@@ -526,11 +526,21 @@ namespace AcademicSentinel.Client.Views.IMC
                             using (var content = new MultipartFormDataContent())
                             {
                                 var fileContent = new ByteArrayContent(File.ReadAllBytes(courseImagePath));
-                                fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/" + Path.GetExtension(courseImagePath).TrimStart('.'));
+                                fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(GetImageMimeType(courseImagePath));
                                 content.Add(fileContent, "image", Path.GetFileName(courseImagePath));
 
-                                // Calls your ImagesController to save the room logo
-                                await client.PostAsync($"{ApiEndpoints.BaseUrl}/api/images/room/{createdRoom.Id}", content);
+                                // Calls your ImagesController to save the room logo.
+                                // Surface server-side rejections instead of silently saying "Success".
+                                var imgResponse = await client.PostAsync($"{ApiEndpoints.BaseUrl}/api/images/room/{createdRoom.Id}", content);
+                                if (!imgResponse.IsSuccessStatusCode)
+                                {
+                                    var imgError = await imgResponse.Content.ReadAsStringAsync();
+                                    MessageBox.Show(
+                                        $"Room created, but the course picture was rejected by the server.\n\nStatus: {imgResponse.StatusCode}\nDetails: {imgError}",
+                                        "Image Upload Failed",
+                                        MessageBoxButton.OK,
+                                        MessageBoxImage.Warning);
+                                }
                             }
                         }
 
@@ -545,6 +555,27 @@ namespace AcademicSentinel.Client.Views.IMC
                     }
                 }
             }
+        }
+
+        // Build a correct MIME type from a file path. Concatenating "image/" + extension
+        // produces invalid types like "image/jpg" (real JPEG MIME is "image/jpeg") and
+        // "image/ico" (real icon MIME is "image/x-icon"), which the server's image
+        // validator rejects silently — that's why uploaded course/profile pictures
+        // appeared to vanish.
+        private static string GetImageMimeType(string filePath)
+        {
+            var extension = Path.GetExtension(filePath)?.ToLowerInvariant();
+            return extension switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".png"            => "image/png",
+                ".gif"            => "image/gif",
+                ".webp"           => "image/webp",
+                ".bmp"            => "image/bmp",
+                ".tif" or ".tiff" => "image/tiff",
+                ".ico"            => "image/x-icon",
+                _                 => "application/octet-stream"
+            };
         }
 
         private async void BtnDeleteCourse_Click(object sender, RoutedEventArgs e)

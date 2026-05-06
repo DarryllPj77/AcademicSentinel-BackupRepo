@@ -134,7 +134,10 @@ namespace AcademicSentinel.Client.Views.SAC
                     var content = new MultipartFormDataContent();
                     var fileStream = File.OpenRead(openFileDialog.FileName);
                     var streamContent = new StreamContent(fileStream);
-                    streamContent.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+                    // Derive the real MIME type from the file extension. Hard-coding
+                    // image/jpeg made every PNG/GIF/WebP upload fail server-side
+                    // because the bytes didn't match the declared content type.
+                    streamContent.Headers.ContentType = new MediaTypeHeaderValue(GetImageMimeType(openFileDialog.FileName));
 
                     content.Add(streamContent, "image", Path.GetFileName(openFileDialog.FileName));
 
@@ -520,6 +523,26 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             _autoSyncTimer.Stop();
             base.OnClosing(e);
+        }
+
+        // Build a correct MIME type from a file path. Concatenating "image/" + extension
+        // produces invalid types (e.g. "image/jpg"; the standard is "image/jpeg") and
+        // hard-coding "image/jpeg" mis-tags every other format. Both routes cause the
+        // server to reject uploads and the picture to silently never appear.
+        private static string GetImageMimeType(string filePath)
+        {
+            var extension = Path.GetExtension(filePath)?.ToLowerInvariant();
+            return extension switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".png"            => "image/png",
+                ".gif"            => "image/gif",
+                ".webp"           => "image/webp",
+                ".bmp"            => "image/bmp",
+                ".tif" or ".tiff" => "image/tiff",
+                ".ico"            => "image/x-icon",
+                _                 => "application/octet-stream"
+            };
         }
     }
 
