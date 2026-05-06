@@ -390,6 +390,25 @@ public class RoomsController : ControllerBase
 
         latestParticipant.ConnectionStatus = "Disconnected";
         latestParticipant.DisconnectedAt = DateTime.UtcNow;
+        // Force the next rejoin to go through instructor approval — clearing
+        // IsCurrentlyActive and resetting JoinApprovalStatus stops the rejoin
+        // gate from treating this participant as a still-approved member.
+        latestParticipant.IsCurrentlyActive = false;
+        latestParticipant.JoinApprovalStatus = "Removed";
+
+        // Record a STUDENT_REMOVED event so RequestJoinSession can detect that
+        // a kick happened after the last REJOIN_APPROVED and require a fresh
+        // approval — same pattern as LEAVE_GRANTED.
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId = roomId,
+            StudentId = studentId,
+            EventType = "STUDENT_REMOVED",
+            Description = "Student removed from session by instructor.",
+            SeverityScore = 0,
+            Timestamp = DateTime.UtcNow
+        });
+
         await _context.SaveChangesAsync();
 
         await _hubContext.Clients.Group(roomId.ToString()).SendAsync("StudentDisconnected", studentId);
@@ -453,12 +472,32 @@ public class RoomsController : ControllerBase
             .Select(e => (DateTime?)e.Timestamp)
             .FirstOrDefaultAsync();
 
-        // Once a leave-grant has been issued, every subsequent reconnect
-        // requires a fresh REJOIN_APPROVED event with a newer timestamp.
+        // Track the most recent kick so a removed-then-rejoining student must
+        // pass through instructor approval, just like a student who left.
+        var lastStudentRemoved = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "STUDENT_REMOVED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // Once a leave-grant OR a kick has been issued, every subsequent
+        // reconnect requires a fresh REJOIN_APPROVED event with a newer timestamp.
+        DateTime? lastBlockingEvent =
+            (lastLeaveGranted, lastStudentRemoved) switch
+            {
+                (null, null) => null,
+                (var lg, null) => lg,
+                (null, var sr) => sr,
+                var (lg, sr) => lg > sr ? lg : sr
+            };
+
         bool rejoinNeedsApproval =
             isRejoin
-            && lastLeaveGranted.HasValue
-            && (!lastRejoinApproved.HasValue || lastRejoinApproved < lastLeaveGranted);
+            && lastBlockingEvent.HasValue
+            && (!lastRejoinApproved.HasValue || lastRejoinApproved < lastBlockingEvent);
 
         // =========================================================================
         // UPDATED LOGIC: Auto-accept late joiners if monitoring hasn't started yet!

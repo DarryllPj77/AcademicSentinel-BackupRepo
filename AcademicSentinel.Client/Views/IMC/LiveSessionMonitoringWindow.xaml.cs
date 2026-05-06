@@ -152,8 +152,18 @@ namespace AcademicSentinel.Client.Views.IMC
                                    entry.StudentEmail == "SYSTEM";
 
                 bool matchesCategory = true;
-                if (category == "Violations Only") matchesCategory = entry.BadgeText == "VIOLATION";
-                else if (category == "Connections Only") matchesCategory = (entry.BadgeText == "JOINED" || entry.BadgeText == "LEFT" || entry.BadgeText == "KICKED");
+                if (category == "Violations Only")
+                {
+                    matchesCategory = entry.BadgeText == "VIOLATION";
+                }
+                else if (category == "Connections Only")
+                {
+                    // Anything that isn't a violation is a connection / lifecycle
+                    // / approval event. Covers SYSTEM, KICKED, LEFT, UNLOCK,
+                    // LEAVE_REQ, JOIN_REQ, JOIN_OK, JOIN_NO, COUNTDOWN, STARTED,
+                    // PAUSED, RESUMED — and any future non-violation badge.
+                    matchesCategory = entry.BadgeText != "VIOLATION";
+                }
 
                 return matchesUser && matchesCategory;
             };
