@@ -578,6 +578,39 @@ namespace AcademicSentinel.Client.Views.IMC
             };
         }
 
+        private async void BtnEditCourse_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedCourses = Courses.Where(c => c.IsSelected).ToList();
+
+            if (selectedCourses.Count == 0)
+            {
+                MessageBox.Show(
+                    "Please select a course to edit by checking the checkbox on the course card.",
+                    "No Selection", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (selectedCourses.Count > 1)
+            {
+                MessageBox.Show(
+                    "Please select only one course to edit at a time.",
+                    "Multiple Selected", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var target = selectedCourses[0];
+            var dialog = new EditCourseDialog(target.RoomId, target.CourseDescription, target.CourseImagePath)
+            {
+                Owner = this
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                target.IsSelected = false;
+                await LoadCoursesFromServer();
+            }
+        }
+
         private async void BtnDeleteCourse_Click(object sender, RoutedEventArgs e)
         {
             var selectedCourses = Courses.Where(c => c.IsSelected).ToList();

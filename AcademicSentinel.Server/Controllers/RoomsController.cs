@@ -55,6 +55,39 @@ public class RoomsController : ControllerBase
         return room;
     }
 
+    // PUT: api/rooms/{id}
+    // Lets an instructor rename / re-tag a room they own. Used by the Edit Course
+    // dialog. Image edits go through ImagesController.
+    [HttpPut("{id}")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> UpdateRoom(int id, [FromBody] RoomUpdateDto update)
+    {
+        var room = await _context.Rooms.FindAsync(id);
+        if (room == null) return NotFound("Room not found.");
+
+        var instructorIdString = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return Unauthorized();
+
+        if (room.InstructorId != instructorId)
+            return StatusCode(403, "You can only edit rooms you created.");
+
+        if (!string.IsNullOrWhiteSpace(update.SubjectName))
+            room.SubjectName = update.SubjectName.Trim();
+
+        if (!string.IsNullOrWhiteSpace(update.EnrollmentCode))
+            room.EnrollmentCode = update.EnrollmentCode.Trim();
+
+        await _context.SaveChangesAsync();
+        return Ok(new { room.Id, room.SubjectName, room.EnrollmentCode });
+    }
+
+    public class RoomUpdateDto
+    {
+        public string? SubjectName { get; set; }
+        public string? EnrollmentCode { get; set; }
+    }
+
     [HttpDelete("{id}")]
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> DeleteRoom(int id)

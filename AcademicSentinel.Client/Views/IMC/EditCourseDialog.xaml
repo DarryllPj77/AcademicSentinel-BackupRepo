@@ -1,0 +1,128 @@
+<Window x:Class="AcademicSentinel.Client.Views.IMC.EditCourseDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        Title="Edit Course Room"
+        Height="600" Width="560"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#F5F5F5"
+        FontFamily="{materialDesign:MaterialDesignFont}">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="FEUGreenBrush" Color="#1B5E20"/>
+        <SolidColorBrush x:Key="FEUDarkTextBrush" Color="#212121"/>
+        <SolidColorBrush x:Key="FEUSubTextBrush" Color="#616161"/>
+        <SolidColorBrush x:Key="FEULightGrayBrush" Color="#ECEFF1"/>
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,18">
+            <TextBlock Text="Edit Course Room" FontSize="22" FontWeight="Bold"
+                       Foreground="{StaticResource FEUGreenBrush}"/>
+            <TextBlock x:Name="TxtCourseHeader" FontSize="13" FontWeight="Medium"
+                       Foreground="{StaticResource FEUSubTextBrush}" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- Body -->
+        <Border Grid.Row="1" Background="White" CornerRadius="12"
+                BorderBrush="#D0D0D0" BorderThickness="1.5"
+                Padding="22,20">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.06" Color="Black"/>
+            </Border.Effect>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Image preview + change -->
+                <TextBlock Grid.Row="0" Text="Course Picture" FontWeight="SemiBold" FontSize="13"
+                           Foreground="{StaticResource FEUDarkTextBrush}" Margin="0,0,0,8"/>
+
+                <Border Grid.Row="1" Width="320" Height="160"
+                        HorizontalAlignment="Left"
+                        Background="{StaticResource FEULightGrayBrush}"
+                        CornerRadius="10"
+                        BorderBrush="#BDBDBD" BorderThickness="1.5"
+                        ClipToBounds="True">
+                    <Grid>
+                        <StackPanel x:Name="NoImagePlaceholder"
+                                    VerticalAlignment="Center" HorizontalAlignment="Center"
+                                    Visibility="Visible">
+                            <materialDesign:PackIcon Kind="ImagePlus" Width="48" Height="48"
+                                                     Foreground="{StaticResource FEUGreenBrush}"
+                                                     HorizontalAlignment="Center"/>
+                            <TextBlock Text="No picture set"
+                                       FontSize="12"
+                                       Foreground="{StaticResource FEUSubTextBrush}"
+                                       Margin="0,6,0,0" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        <Image x:Name="CoursePreviewImage"
+                               Stretch="UniformToFill" StretchDirection="Both"
+                               ClipToBounds="True"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Visibility="Collapsed"/>
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,18">
+                    <Button x:Name="BtnPickImage" Click="BtnPickImage_Click"
+                            Padding="16,8" FontWeight="SemiBold"
+                            Background="{StaticResource FEUGreenBrush}" Foreground="White"
+                            BorderThickness="0" Cursor="Hand">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="ImageEditOutline" Width="18" Height="18"
+                                                     VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Choose New Picture" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="BtnClearImage" Click="BtnClearImage_Click"
+                            Margin="10,0,0,0"
+                            Padding="16,8" FontWeight="SemiBold"
+                            Background="Transparent" Foreground="#D32F2F"
+                            BorderBrush="#D32F2F" BorderThickness="1.5" Cursor="Hand">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="EraserVariant" Width="18" Height="18"
+                                                     VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Clear Selection" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+
+                <!-- Subject -->
+                <TextBlock Grid.Row="3" Text="Subject Name" FontWeight="SemiBold" FontSize="13"
+                           Foreground="{StaticResource FEUDarkTextBrush}" Margin="0,0,0,6"/>
+                <TextBox Grid.Row="4" x:Name="TxtSubjectName" Height="40" FontSize="14" Padding="10,0"
+                         VerticalContentAlignment="Center"
+                         BorderBrush="#BDBDBD" BorderThickness="1.5"
+                         Background="White"/>
+            </Grid>
+        </Border>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="BtnCancel" Click="BtnCancel_Click"
+                    Padding="20,10" Margin="0,0,10,0" FontWeight="SemiBold"
+                    Background="Transparent" Foreground="#616161"
+                    BorderBrush="#BDBDBD" BorderThickness="1.5" Cursor="Hand"
+                    Content="Cancel"/>
+            <Button x:Name="BtnSave" Click="BtnSave_Click"
+                    Padding="20,10" FontWeight="SemiBold"
+                    Background="{StaticResource FEUGreenBrush}" Foreground="White"
+                    BorderThickness="0" Cursor="Hand"
+                    Content="Save Changes"/>
+        </StackPanel>
+    </Grid>
+</Window>
