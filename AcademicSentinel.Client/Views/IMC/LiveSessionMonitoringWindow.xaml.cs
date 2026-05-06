@@ -505,6 +505,24 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private async Task InitializeSignalR()
         {
+            // Idempotent re-init: if a previous hub connection or its subscriptions
+            // are still alive, dispose them BEFORE building a new one. Without this,
+            // calling InitializeSignalR() twice (constructor + Start Session click)
+            // attaches two parallel sets of handlers and every server broadcast
+            // arrives 2x in the Global Log Feed.
+            foreach (var subscription in _hubSubscriptions)
+            {
+                try { subscription?.Dispose(); } catch { }
+            }
+            _hubSubscriptions.Clear();
+
+            if (_hubConnection != null)
+            {
+                try { await _hubConnection.StopAsync(); } catch { }
+                try { await _hubConnection.DisposeAsync(); } catch { }
+                _hubConnection = null;
+            }
+
             _hubConnection = new HubConnectionBuilder()
                 .WithUrl($"{ApiEndpoints.BaseUrl}/monitoringHub", o => o.AccessTokenProvider = () => Task.FromResult(SessionManager.JwtToken))
                 .WithAutomaticReconnect().Build();
@@ -542,6 +560,8 @@ namespace AcademicSentinel.Client.Views.IMC
                 _studentsView.Refresh();
             })));
 
+            // Single registration only — the previous duplicate registration here
+            // caused every join/reconnect to be logged twice in the Global Log Feed.
             _hubSubscriptions.Add(_hubConnection.On<int, string>("StudentJoinedOrReconnected", (studentId, studentName) => Dispatcher.InvokeAsync(() =>
             {
                 var student = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
@@ -552,24 +572,8 @@ namespace AcademicSentinel.Client.Views.IMC
                     student.StatusColor = "#4CAF50";
                 }
 
-                // Bug fix: Bug1
-                _permanentlyDismissedStudents.Remove(studentId);
-                _safelyLeftStudentIds.Remove(studentId);
-                LogActivity("SYSTEM", "SYSTEM", $"✅ SESSION JOINED / CONNECTION RESTORED. {studentName}", "#4CAF50");
-                _ = LoadParticipantsFromServerAsync();
-            })));
-
-            _hubSubscriptions.Add(_hubConnection.On<int, string>("StudentJoinedOrReconnected", (studentId, studentName) => Dispatcher.InvokeAsync(() =>
-            {
-                var student = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
-                if (student != null)
-                {
-                    student.IsOffline = false;
-                    student.Status = "Connected";
-                    student.StatusColor = "#4CAF50";
-                }
-
-                // Force them off the dismissed lists here as well!
+                // Force them off the dismissed lists so a kicked-then-rejoined
+                // student is treated as a fresh participant.
                 _permanentlyDismissedStudents.Remove(studentId);
                 _safelyLeftStudentIds.Remove(studentId);
 
@@ -605,28 +609,11 @@ namespace AcademicSentinel.Client.Views.IMC
                 _studentsView.Refresh();
             })));
 
-            _hubSubscriptions.Add(_hubConnection.On<int, string, int, DateTime>("ViolationDetected", (studentId, eventType, severityScore, timestamp) => _ = Dispatcher.InvokeAsync(() =>
-            {
-                if (_permanentlyDismissedStudents.Contains(studentId))
-                    return;
-
-                _studentsWithViolations.Add(studentId);
-                AppendStudentMonitoringEvent(studentId, eventType, severityScore);
-
-                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
-                if (targetStudent != null)
-                {
-                    targetStudent.ViolationCount += Math.Max(1, severityScore);
-                    targetStudent.HasViolation = true;
-                    targetStudent.Status = $"ALERT: {eventType}";
-                    targetStudent.StatusColor = "#D32F2F";
-                }
-
-                var email = targetStudent?.Email ?? _allParticipants.FirstOrDefault(p => p.StudentId == studentId)?.StudentEmail ?? $"Student #{studentId}";
-                LogActivity(email, "VIOLATION", eventType, "#D32F2F");
-                UpdateDetailPanelForIncomingViolation(studentId);
-                _studentsView.Refresh();
-            })));
+            // Removed: a second On<int,string,int,DateTime>("ViolationDetected", ...)
+            // listener used to live here. The server sends a single anonymous-object
+            // payload; SignalR delivers it to every "ViolationDetected" handler, so
+            // the second handler caused every violation to be logged 2x in the
+            // Global Log Feed and double-counted on the student's score.
 
             _hubSubscriptions.Add(_hubConnection.On<int>("LeaveRequested", studentId => Dispatcher.Invoke(() =>
             {
