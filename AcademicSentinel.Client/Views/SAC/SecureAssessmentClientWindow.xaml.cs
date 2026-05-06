@@ -687,17 +687,26 @@ namespace AcademicSentinel.Client.Views.SAC
                 _hubConnection.On("MonitoringPaused", () =>
                 {
                     _stateCts?.Cancel();
-                    _isMonitoringActive = false;
-                    _monitoringCountdownEndsAt = null;
-                    _monitoringStartedAt = null;
-                    if (!_sessionEnded)
-                        _currentPhase = ExamPhase.Active;
-                    _leaveRequestState = LeaveRequestState.Locked;
-                    _isLeaveRequested = false;
 
-                    SetMonitoringStateUI(false, "PAUSED BY INSTRUCTOR", System.Windows.Media.Brushes.Goldenrod);
-                    UpdateDetectorRuntimeState();
-                    UpdateRequestLeaveButtonState();
+                    Dispatcher.Invoke(() =>
+                    {
+                        _isMonitoringActive = false;
+                        _monitoringCountdownEndsAt = null;
+                        _monitoringStartedAt = null;
+                        if (!_sessionEnded)
+                            _currentPhase = ExamPhase.Active;
+                        _leaveRequestState = LeaveRequestState.Locked;
+                        _isLeaveRequested = false;
+
+                        // Pause the hardware scanner so it doesn't fire while
+                        // the instructor has the session paused.
+                        if (_detectorRuntime != null)
+                            _detectorRuntime.IsPaused = true;
+
+                        SetMonitoringStateUI(false, "PAUSED BY INSTRUCTOR", System.Windows.Media.Brushes.Goldenrod);
+                        UpdateDetectorRuntimeState();
+                        UpdateRequestLeaveButtonState();
+                    });
                 });
 
                 _hubConnection.On("MonitoringResumed", () =>
@@ -706,12 +715,15 @@ namespace AcademicSentinel.Client.Views.SAC
                     _stateCts = new System.Threading.CancellationTokenSource();
                     var token = _stateCts.Token;
 
-                    _isMonitoringActive = false;
-                    _monitoringCountdownEndsAt = DateTime.Now.AddSeconds(10);
-                    _currentPhase = ExamPhase.Countdown;
-                    _leaveRequestState = LeaveRequestState.Locked;
-                    UpdateDetectorRuntimeState();
-                    UpdateRequestLeaveButtonState();
+                    Dispatcher.Invoke(() =>
+                    {
+                        _isMonitoringActive = false;
+                        _monitoringCountdownEndsAt = DateTime.Now.AddSeconds(10);
+                        _currentPhase = ExamPhase.Countdown;
+                        _leaveRequestState = LeaveRequestState.Locked;
+                        UpdateDetectorRuntimeState();
+                        UpdateRequestLeaveButtonState();
+                    });
 
                     Task.Run(async () =>
                     {
@@ -731,16 +743,28 @@ namespace AcademicSentinel.Client.Views.SAC
                                 await Task.Delay(250, token);
                             }
 
-                            if (!token.IsCancellationRequested)
+                            if (token.IsCancellationRequested)
+                                return;
+
+                            await Dispatcher.InvokeAsync(async () =>
                             {
-                                _isMonitoringActive = true;
-                                _monitoringCountdownEndsAt = null;
-                                _monitoringStartedAt ??= DateTime.Now;
+                                // Reset state machine and UI on the UI thread atomically
+                                // so the softlock can never desync to "PAUSED" after resume.
+                                SetMonitoringActive(true);
                                 _currentPhase = ExamPhase.Active;
-                                SetMonitoringStateUI(true, "ACTIVE", System.Windows.Media.Brushes.LimeGreen);
-                                UpdateDetectorRuntimeState();
+                                _leaveRequestState = LeaveRequestState.Locked;
                                 UpdateRequestLeaveButtonState();
-                            }
+
+                                // Wake the hardware scanner — without this the detector
+                                // thread stays paused after resume and never reports.
+                                if (_detectorRuntime != null)
+                                {
+                                    _detectorRuntime.IsPaused = false;
+                                    UpdateDetectorRuntimeState();
+                                }
+
+                                await Task.CompletedTask;
+                            });
                         }
                         catch (OperationCanceledException)
                         {
