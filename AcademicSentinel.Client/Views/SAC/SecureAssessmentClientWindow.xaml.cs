@@ -170,7 +170,24 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private void InitializeDetectorsIfNeeded()
         {
-            if (_detectorsInitialized || _roomDetectionSettings == null)
+            if (_roomDetectionSettings == null)
+                return;
+
+            // Strict singleton enforcement: if a previous _detectorRuntime exists
+            // (race between LoadDetectionSettingsAsync success/catch paths, or a
+            // re-init triggered by a settings refresh), tear it down completely
+            // BEFORE creating a new one. Two live runtimes = two parallel poll
+            // loops = every violation logged twice at the same millisecond.
+            if (_detectorRuntime != null)
+            {
+                try { _detectorRuntime.Stop(); } catch { }
+                try { _detectorRuntime.Dispose(); } catch { }
+                _detectorRuntime = null;
+                _detectorsRunning = false;
+                _detectorsInitialized = false;
+            }
+
+            if (_detectorsInitialized)
                 return;
 
             _detectorsInitialized = true;
@@ -951,19 +968,24 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
-                _hubConnection.On<int>("RemovedFromSession", removedStudentId =>
+                // Server side: RoomsController.RemoveStudentFromCurrentSession sends
+                //     Clients.User(studentId).SendAsync("RemovedFromSession", roomId)
+                // The integer payload is the ROOM id, not the student id. The previous
+                // handler compared it against currentStudentId and short-circuited every
+                // single time — that's why kicked students kept polling the server.
+                _hubConnection.On<int>("RemovedFromSession", removedRoomId =>
                 {
-                    int currentStudentId = SessionManager.CurrentUser?.Id ?? 0;
-                    if (removedStudentId != currentStudentId)
+                    if (removedRoomId != _roomId)
                         return;
 
-                    // 1. Stop the hardware detectors IMMEDIATELY on whichever thread
-                    //    SignalR delivered this callback on, so no further polls reach
-                    //    the server while the UI countdown is still running.
-                    if (_detectorRuntime != null)
-                        _detectorRuntime.IsPaused = true;
-                    _detectorRuntime?.Stop();
+                    // 1. Forcefully kill the hardware detectors on whichever thread
+                    //    SignalR delivered this callback on, BEFORE any UI work.
+                    //    Stop → Dispose → null out so no further polls reach the server.
+                    try { _detectorRuntime?.Stop(); } catch { }
+                    try { _detectorRuntime?.Dispose(); } catch { }
+                    _detectorRuntime = null;
                     _detectorsRunning = false;
+                    _detectorsInitialized = false;
 
                     // Cut the SignalR connection up-front so Reconnected/Closed
                     // handlers cannot re-resurrect the session during the countdown.

@@ -6,13 +6,14 @@ using AcademicSentinel.Client.Services.SAC.Models;
 
 namespace AcademicSentinel.Client.Services.SAC
 {
-    internal sealed class SacDetectorRuntime
+    internal sealed class SacDetectorRuntime : IDisposable
     {
         private readonly DetectorRuntimeOptions _options;
         private readonly BehavioralMonitoringService _behavioralMonitoringService;
         private readonly EnvironmentIntegrityService _environmentIntegrityService;
         private readonly DecisionEngineService _decisionEngineService;
         private bool _isStarted;
+        private bool _isDisposed;
         public bool IsPaused { get; set; } = false;
         public bool IsLoggingEnabled { get; private set; } = true;
 
@@ -120,6 +121,22 @@ namespace AcademicSentinel.Client.Services.SAC
 
             _isStarted = false;
             _behavioralMonitoringService.StopMonitoring();
+        }
+
+        public void Dispose()
+        {
+            if (_isDisposed)
+                return;
+
+            _isDisposed = true;
+            try { Stop(); } catch { }
+
+            // Detach the option callbacks so the captured closures (which hold a
+            // reference to the SAC window) cannot fire after disposal.
+            _options.OnHardwareStateDetected = null;
+            _options.OnPreFlightViolationDetected = null;
+
+            IsPaused = true;
         }
 
         private IReadOnlyList<DetectorFinding> EvaluateAndMapFindings(IReadOnlyList<MonitoringDetectionEvent> events)
