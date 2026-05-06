@@ -209,7 +209,10 @@ namespace AcademicSentinel.Client.Views.SAC
                 }
             });
 
-            _detectorRuntime.IsPaused = true;
+            // If SignalR has already locked us into an Active session before settings
+            // finished loading, do NOT default-pause the runtime — that re-locks a
+            // late joiner whose state machine is already Active and silences detectors.
+            _detectorRuntime.IsPaused = !(_isMonitoringActive && !_sessionEnded && !_monitoringCountdownEndsAt.HasValue);
 
             var enabledModules = new List<string>();
             if (_roomDetectionSettings.EnableFocusDetection) enabledModules.Add("Focus");
@@ -586,7 +589,34 @@ namespace AcademicSentinel.Client.Views.SAC
             await FlushPendingViolationsAsync();
 
             var monitoringState = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
-            SetMonitoringActive(monitoringState);
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (monitoringState)
+                {
+                    // Late joiner inherits an already-active session.
+                    // Wake the hardware scanner BEFORE the state machine flips so the
+                    // first UpdateDetectorRuntimeState pass sees an unpaused runtime.
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsPaused = false;
+
+                    _currentPhase = ExamPhase.Active;
+                    _leaveRequestState = LeaveRequestState.Locked;
+                    _isLeaveRequested = false;
+                    _monitoringCountdownEndsAt = null;
+
+                    SetMonitoringActive(true);
+                    UpdateDetectorRuntimeState();
+                    UpdateRequestLeaveButtonState();
+
+                    DetectionReports.Insert(0, $"System: Joined active session - monitoring locked. ({DateTime.Now:h:mm:ss tt})");
+                }
+                else
+                {
+                    SetMonitoringActive(false);
+                    UpdateRequestLeaveButtonState();
+                }
+            });
         }
 
         private async Task InitializeSignalRAsync()
