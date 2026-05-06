@@ -330,10 +330,12 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <Border Grid.Column="0" Background="#FAFAFA"
-                                BorderBrush="#E0E0E0" BorderThickness="1.5"
-                                CornerRadius="6" Padding="12,8" MaxWidth="360"
-                                HorizontalAlignment="Left">
+                        <Border Grid.Column="0" Background="#FFFFFF"
+                                BorderBrush="#1B5E20" BorderThickness="1.5"
+                                CornerRadius="6" Padding="12,8"
+                                Width="360" Height="38"
+                                HorizontalAlignment="Left"
+                                SnapsToDevicePixels="True">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
@@ -341,12 +343,17 @@
                                 </Grid.ColumnDefinitions>
                                 <materialDesign:PackIcon Grid.Column="0" Kind="Magnify"
                                                          Width="18" Height="18"
-                                                         Foreground="#9E9E9E" Margin="0,0,8,0"
+                                                         Foreground="#1B5E20" Margin="0,0,8,0"
                                                          VerticalAlignment="Center"/>
                                 <TextBox Grid.Column="1" x:Name="TxtSearch"
                                          BorderThickness="0" Background="Transparent"
-                                         FontSize="13" VerticalContentAlignment="Center"
+                                         Foreground="#212121"
+                                         CaretBrush="#1B5E20"
+                                         FontSize="13" MinWidth="280"
+                                         VerticalAlignment="Center"
+                                         VerticalContentAlignment="Center"
                                          materialDesign:HintAssist.Hint="Search session Id or Date"
+                                         materialDesign:HintAssist.Foreground="#9E9E9E"
                                          TextChanged="TxtSearch_TextChanged"/>
                             </Grid>
                         </Border>
@@ -366,31 +373,69 @@
                         </StackPanel>
                     </Grid>
 
-                    <Border Grid.Row="2" Grid.RowSpan="2" BorderBrush="#E0E0E0" BorderThickness="1"
-                            CornerRadius="6">
+                    <Border Grid.Row="2" Grid.RowSpan="2" BorderBrush="#BDBDBD" BorderThickness="1"
+                            CornerRadius="6" ClipToBounds="True">
                         <DataGrid x:Name="PastSessionsGrid"
                                   AutoGenerateColumns="False"
                                   IsReadOnly="True"
                                   CanUserAddRows="False"
                                   HeadersVisibility="Column"
                                   RowHeaderWidth="0"
-                                  GridLinesVisibility="Horizontal"
+                                  GridLinesVisibility="All"
+                                  HorizontalGridLinesBrush="#E0E0E0"
+                                  VerticalGridLinesBrush="#E0E0E0"
                                   BorderThickness="0"
-                                  AlternatingRowBackground="#FAFAFA">
+                                  RowHeight="36"
+                                  ColumnHeaderHeight="38"
+                                  AlternatingRowBackground="#FAFAFA"
+                                  Background="#FFFFFF">
+                            <DataGrid.ColumnHeaderStyle>
+                                <Style TargetType="DataGridColumnHeader">
+                                    <Setter Property="Background" Value="#1B5E20"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                    <Setter Property="FontSize" Value="13"/>
+                                    <Setter Property="Padding" Value="12,0,12,0"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                                    <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                    <Setter Property="BorderBrush" Value="#0E4514"/>
+                                    <Setter Property="BorderThickness" Value="0,0,1,0"/>
+                                </Style>
+                            </DataGrid.ColumnHeaderStyle>
+                            <DataGrid.CellStyle>
+                                <Style TargetType="DataGridCell">
+                                    <Setter Property="Padding" Value="12,6,12,6"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter Property="Background" Value="#E8F5E9"/>
+                                            <Setter Property="Foreground" Value="#1B5E20"/>
+                                            <Setter Property="BorderBrush" Value="Transparent"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.CellStyle>
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="Session ID" Binding="{Binding SessionId}" Width="100" />
+                                <DataGridTextColumn Header="Session ID" Binding="{Binding SessionId}" Width="110" />
                                 <!-- Bug fix: A2 - rebound Date column to existing SessionItem.DateDuration (no separate Date property exists) -->
-                                <DataGridTextColumn Header="Date" Binding="{Binding DateDuration}" Width="120" />
+                                <DataGridTextColumn Header="Date" Binding="{Binding DateDuration}" Width="160" />
                                 <!-- Bug fix: A2 - SessionItem has no Duration property; binding left for follow-up (cannot add property per directive) -->
-                                <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="100" />
+                                <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="110" />
                                 <!-- Bug fix: A2 - rebound Attendees column to existing SessionItem.StudentCount -->
-                                <DataGridTextColumn Header="Attendees" Binding="{Binding StudentCount}" Width="100" />
+                                <DataGridTextColumn Header="Attendees" Binding="{Binding StudentCount}" Width="110" />
                                 <!-- Bug fix: A2 - SessionItem has no Violations property; binding left for follow-up (cannot add property per directive) -->
-                                <DataGridTextColumn Header="Violations" Binding="{Binding TotalViolations}" Width="100" />
-                                <DataGridTemplateColumn Header="Action" Width="120">
+                                <DataGridTextColumn Header="Violations" Binding="{Binding TotalViolations}" Width="110" />
+                                <DataGridTemplateColumn Header="Action" Width="*" MinWidth="140">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <Button Content="View Archive" Click="BtnViewArchive_Click" Style="{StaticResource MaterialDesignFlatButton}" Height="30" />
+                                            <Button Content="View Archive"
+                                                    Click="BtnViewArchive_Click"
+                                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                                    Foreground="#1B5E20"
+                                                    Height="28"
+                                                    Padding="12,0"
+                                                    HorizontalAlignment="Left"/>
                                         </DataTemplate>
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>
