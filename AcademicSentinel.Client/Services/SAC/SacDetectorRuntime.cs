@@ -13,7 +13,6 @@ namespace AcademicSentinel.Client.Services.SAC
         private readonly EnvironmentIntegrityService _environmentIntegrityService;
         private readonly DecisionEngineService _decisionEngineService;
         private bool _isStarted;
-        private bool _preFlightCompleted;
         public bool IsPaused { get; set; } = false;
         public bool IsLoggingEnabled { get; private set; } = true;
 
@@ -71,22 +70,17 @@ namespace AcademicSentinel.Client.Services.SAC
                 IsLoggingEnabled = true;
                 _behavioralMonitoringService.StartMonitoring();
 
-                if (!_preFlightCompleted)
+                var hardwareState = await _environmentIntegrityService.PerformFullScanAsync();
+
+                if (_options.OnHardwareStateDetected != null)
                 {
-                    _preFlightCompleted = true;
+                    await _options.OnHardwareStateDetected(hardwareState.IsVm, hardwareState.IsRemote);
+                }
 
-                    var hardwareState = await _environmentIntegrityService.PerformFullScanAsync();
-
-                    if (_options.OnHardwareStateDetected != null)
-                    {
-                        await _options.OnHardwareStateDetected(hardwareState.IsVm, hardwareState.IsRemote);
-                    }
-
-                    if (hardwareState.IsVm || hardwareState.IsRemote)
-                    {
-                        var description = $"Critical Environment Violation: VM: {hardwareState.IsVm}, Remote: {hardwareState.IsRemote}";
-                        _options.OnPreFlightViolationDetected?.Invoke(new DetectorFinding("VAC_HAS_VIOLATION", 50, description));
-                    }
+                if (hardwareState.IsVm || hardwareState.IsRemote)
+                {
+                    var description = $"Critical Environment Violation: VM: {hardwareState.IsVm}, Remote: {hardwareState.IsRemote}";
+                    _options.OnPreFlightViolationDetected?.Invoke(new DetectorFinding("VAC_HAS_VIOLATION", 50, description));
                 }
 
                 return;
