@@ -48,6 +48,7 @@ namespace AcademicSentinel.Client.Views.SAC
         private enum LeaveRequestState
         {
             Locked,
+            Allowed,
             Pending,
             Unlocked
         }
@@ -594,22 +595,22 @@ namespace AcademicSentinel.Client.Views.SAC
             {
                 if (monitoringState)
                 {
-                    // Late joiner inherits an already-active session.
+                    // Late/rejoiner inherits an already-active session.
                     // Wake the hardware scanner BEFORE the state machine flips so the
                     // first UpdateDetectorRuntimeState pass sees an unpaused runtime.
                     if (_detectorRuntime != null)
                         _detectorRuntime.IsPaused = false;
 
+                    SetMonitoringActive(true);
                     _currentPhase = ExamPhase.Active;
-                    _leaveRequestState = LeaveRequestState.Locked;
+                    // Allowed (not Locked) — late joiner can request leave when finished.
+                    _leaveRequestState = LeaveRequestState.Allowed;
                     _isLeaveRequested = false;
                     _monitoringCountdownEndsAt = null;
 
-                    SetMonitoringActive(true);
-                    UpdateDetectorRuntimeState();
                     UpdateRequestLeaveButtonState();
 
-                    DetectionReports.Insert(0, $"System: Joined active session - monitoring locked. ({DateTime.Now:h:mm:ss tt})");
+                    DetectionReports.Insert(0, $"System: Joined active session - monitoring active. ({DateTime.Now:h:mm:ss tt})");
                 }
                 else
                 {
@@ -920,6 +921,48 @@ namespace AcademicSentinel.Client.Views.SAC
                         _isLeaveApproved = true;
                         _ = ForceStopSignalRAsync();
                         new StudentDashboard().Show();
+                        Close();
+                    });
+                });
+
+                _hubConnection.On<int>("RemovedFromSession", removedStudentId =>
+                {
+                    int currentStudentId = SessionManager.CurrentUser?.Id ?? 0;
+                    if (removedStudentId != currentStudentId)
+                        return;
+
+                    _ = Dispatcher.InvokeAsync(() =>
+                    {
+                        // 1. Stop the hardware scanners entirely so no further polls fire
+                        //    against a half-torn-down runtime.
+                        if (_detectorRuntime != null)
+                            _detectorRuntime.IsPaused = true;
+                        _detectorRuntime?.Stop();
+                        _detectorsRunning = false;
+
+                        // Stop the WPF dispatcher timers driving polls and countdowns.
+                        _statusTimer?.Stop();
+                        _compactCountdownTimer?.Stop();
+                        _detectorPollTimer?.Stop();
+
+                        // Bypass OnClosing's softlock guard for a clean teardown.
+                        _allowClose = true;
+                        _isPermanentlyDone = true;
+                        _isLeaveApproved = true;
+
+                        // Cut the SignalR connection so reconnect/closed handlers don't
+                        // re-resurrect the session after we close.
+                        _ = ForceStopSignalRAsync();
+
+                        // 2. Notify the student.
+                        MessageBox.Show(
+                            "You have been removed from this session by the instructor.",
+                            "Removed from Session",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+
+                        // 3. Destroy the zombie window.
+                        try { new StudentDashboard().Show(); } catch { }
                         Close();
                     });
                 });
