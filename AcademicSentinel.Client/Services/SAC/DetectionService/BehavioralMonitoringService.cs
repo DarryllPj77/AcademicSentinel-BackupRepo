@@ -97,9 +97,16 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _isMonitoring = true;
             _lastForegroundWindow = GetForegroundWindow();
             _lastWindowName = GetWindowName(_lastForegroundWindow);
+            _lastForegroundWasSac = false;
+            _temporarilyExemptWindow = IntPtr.Zero;
             _lastReportedIdleLevel = 0;
             _monitoringStartedAtUtc = DateTime.UtcNow;
             _lastClipboardSequenceNumber = GetClipboardSequenceNumber();
+            _lastProcessScanAt = DateTime.MinValue;
+            _lastReportedProcesses.Clear();
+            _lastReportedAtByEvent.Clear();
+            _copyDown = false;
+            _pasteDown = false;
         }
 
         public void StopMonitoring()
