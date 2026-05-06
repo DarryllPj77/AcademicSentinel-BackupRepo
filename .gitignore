@@ -38,6 +38,14 @@ bld/
 # Uncomment if you have tasks that create the project's static files in wwwroot
 #wwwroot/
 
+# Runtime user uploads — profile pictures and course/room images written by
+# ImageStorageService at runtime. These are user data, not source code, and
+# should not be committed (binary churn + merge conflicts on per-machine uploads).
+AcademicSentinel.Server/wwwroot/images/profiles/*
+AcademicSentinel.Server/wwwroot/images/rooms/*
+!AcademicSentinel.Server/wwwroot/images/profiles/.gitkeep
+!AcademicSentinel.Server/wwwroot/images/rooms/.gitkeep
+
 # Visual Studio 2017 auto generated files
 Generated\ Files/
 
