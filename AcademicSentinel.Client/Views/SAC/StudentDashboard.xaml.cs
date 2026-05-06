@@ -110,7 +110,10 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private async void BtnChangePicture_Click(object sender, RoutedEventArgs e)
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog { Filter = "Image Files|*.jpg;*.jpeg;*.png" };
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Filter = "Image Files|*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico|All Files (*.*)|*.*"
+            };
 
             if (openFileDialog.ShowDialog() == true)
             {

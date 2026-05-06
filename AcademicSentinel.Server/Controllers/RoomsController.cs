@@ -185,6 +185,12 @@ public class RoomsController : ControllerBase
             .OrderByDescending(s => s.StartTime)
             .ToListAsync();
 
+        // Total students enrolled in the room — used to render the
+        // "attended/enrolled" ratio (e.g. 2/5) on the past-sessions table.
+        var enrolledCount = await _context.RoomEnrollments
+            .Where(e => e.RoomId == roomId)
+            .CountAsync();
+
         var result = history.Select(session =>
         {
             var endTime = session.EndTime ?? DateTime.UtcNow;
@@ -204,7 +210,8 @@ public class RoomsController : ControllerBase
                 session.EndTime,
                 session.Status,
                 session.ExamType,
-                ParticipantCount = participantCount
+                ParticipantCount = participantCount,
+                EnrolledCount = enrolledCount
             };
         }).ToList();
 

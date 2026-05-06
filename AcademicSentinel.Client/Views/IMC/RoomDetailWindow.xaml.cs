@@ -152,7 +152,8 @@ namespace AcademicSentinel.Client.Views.IMC
                                     StatusText = status,
                                     Status = status,
                                     ExamType = string.IsNullOrWhiteSpace(s.ExamType) ? "Summative" : s.ExamType,
-                                    StudentCount = s.ParticipantCount
+                                    StudentCount = s.ParticipantCount,
+                                    EnrolledCount = s.EnrolledCount
                                 });
                             }
                             UpdatePaginationUI();
@@ -345,6 +346,10 @@ namespace AcademicSentinel.Client.Views.IMC
         public string Status { get; set; } = string.Empty;
         public string ExamType { get; set; } = string.Empty;
         public int StudentCount { get; set; }
+        public int EnrolledCount { get; set; }
+
+        // Display ratio: "attended / enrolled in course", e.g. "2/5".
+        public string AttendeesDisplay => $"{StudentCount}/{EnrolledCount}";
     }
 
     public class PastSessionDto
@@ -356,6 +361,7 @@ namespace AcademicSentinel.Client.Views.IMC
         public string Status { get; set; } = string.Empty;
         public string ExamType { get; set; } = string.Empty;
         public int ParticipantCount { get; set; }
+        public int EnrolledCount { get; set; }
     }
 
     public class GenerateCodeResponse { public string EnrollmentCode { get; set; } = string.Empty; }

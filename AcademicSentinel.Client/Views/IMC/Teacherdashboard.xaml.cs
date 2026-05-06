@@ -242,7 +242,7 @@ namespace AcademicSentinel.Client.Views.IMC
             OpenFileDialog openFileDialog = new OpenFileDialog
             {
                 Title = "Select Profile Picture",
-                Filter = "Image Files (*.jpg;*.jpeg;*.png)|*.jpg;*.jpeg;*.png",
+                Filter = "Image Files (*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico)|*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico|All Files (*.*)|*.*",
                 FilterIndex = 1
             };
 
@@ -493,7 +493,7 @@ namespace AcademicSentinel.Client.Views.IMC
                     OpenFileDialog openFileDialog = new OpenFileDialog
                     {
                         Title = "Select Course Picture",
-                        Filter = "Image Files (*.jpg;*.jpeg;*.png)|*.jpg;*.jpeg;*.png"
+                        Filter = "Image Files (*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico)|*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico|All Files (*.*)|*.*"
                     };
                     if (openFileDialog.ShowDialog() == true)
                     {

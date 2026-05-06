@@ -255,7 +255,11 @@
         <Style x:Key="CourseCardStyle" TargetType="Border">
             <Setter Property="Background" Value="White"/>
             <Setter Property="CornerRadius" Value="12"/>
+            <!-- Match the Teacher dashboard outline so cards look identical across roles. -->
+            <Setter Property="BorderBrush" Value="#D0D0D0"/>
+            <Setter Property="BorderThickness" Value="1.5"/>
             <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,0,0"/>
             <Setter Property="Effect">
                 <Setter.Value>
                     <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.08" Color="Black"/>
@@ -673,12 +677,14 @@
                                             Width="240" Height="220"
                                             Margin="0,0,16,16"
                                             Cursor="Hand"
+                                            ClipToBounds="True"
                                             MouseLeftButtonDown="CourseCard_Click">
                                         <Grid>
+                                            <!-- Locked row heights so every card renders identically. -->
                                             <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="32"/>
+                                                <RowDefinition Height="120"/>
                                                 <RowDefinition Height="*"/>
-                                                <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
 
                                             <CheckBox Grid.Row="0"
@@ -688,10 +694,17 @@
 
                                             <Border Grid.Row="1"
                                                     Background="{StaticResource FEULightGrayBrush}"
-                                                    CornerRadius="0">
+                                                    CornerRadius="0"
+                                                    ClipToBounds="True">
                                                 <Grid>
+                                                    <!-- UniformToFill centers/crops any aspect ratio into the
+                                                         locked 240×120 image area. -->
                                                     <Image Source="{Binding CourseImagePath}"
                                                            Stretch="UniformToFill"
+                                                           StretchDirection="Both"
+                                                           ClipToBounds="True"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
                                                            Visibility="{Binding HasImageVisibility}"/>
                                                     <StackPanel VerticalAlignment="Center"
                                                                 HorizontalAlignment="Center"

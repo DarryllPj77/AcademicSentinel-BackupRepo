@@ -423,7 +423,7 @@
                                 <!-- Bug fix: A2 - SessionItem has no Duration property; binding left for follow-up (cannot add property per directive) -->
                                 <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="110" />
                                 <!-- Bug fix: A2 - rebound Attendees column to existing SessionItem.StudentCount -->
-                                <DataGridTextColumn Header="Attendees" Binding="{Binding StudentCount}" Width="110" />
+                                <DataGridTextColumn Header="Attendees" Binding="{Binding AttendeesDisplay}" Width="110" />
                                 <!-- Bug fix: A2 - SessionItem has no Violations property; binding left for follow-up (cannot add property per directive) -->
                                 <DataGridTextColumn Header="Violations" Binding="{Binding TotalViolations}" Width="110" />
                                 <DataGridTemplateColumn Header="Action" Width="*" MinWidth="140">

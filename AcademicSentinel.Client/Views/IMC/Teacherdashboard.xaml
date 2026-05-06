@@ -436,19 +436,22 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Border Style="{StaticResource CourseCardStyle}" Width="240" Height="220" Margin="0,0,16,16" Cursor="Hand"
+                                            ClipToBounds="True"
                                             MouseLeftButtonDown="CourseCard_Click">
                                         <Grid>
+                                            <!-- Locked row heights so every card renders identically regardless of
+                                                 whether an image is present or how long the description is. -->
                                             <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="32"/>
+                                                <RowDefinition Height="120"/>
                                                 <RowDefinition Height="*"/>
-                                                <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
 
                                             <!-- Checkbox for delete selection -->
                                             <CheckBox Grid.Row="0" IsChecked="{Binding IsSelected}" HorizontalAlignment="Right" Margin="0,8,8,0"/>
 
                                             <!-- Course Image Area -->
-                                            <Border Grid.Row="1" Background="{StaticResource FEULightGrayBrush}" CornerRadius="0">
+                                            <Border Grid.Row="1" Background="{StaticResource FEULightGrayBrush}" CornerRadius="0" ClipToBounds="True">
                                                 <Grid>
                                                     <!-- Default icon when no image -->
                                                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
@@ -458,12 +461,15 @@
                                                         <TextBlock Text="{Binding CourseLogo}" FontSize="12"
                                                                    Foreground="{StaticResource FEUSubTextBrush}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                                                     </StackPanel>
-                                                    <!-- Course image when uploaded -->
-                                                    <!-- NEW: Added ClipToBounds and ensured Stretch is UniformToFill -->
-                                                    <Image Source="{Binding CourseImagePath}" 
-                                                           Stretch="UniformToFill" 
+                                                    <!-- Course image when uploaded — UniformToFill keeps any aspect ratio
+                                                         centered and cropped to the locked 240×120 image area. -->
+                                                    <Image Source="{Binding CourseImagePath}"
+                                                           Stretch="UniformToFill"
+                                                           StretchDirection="Both"
                                                            ClipToBounds="True"
-                                                           Visibility="{Binding HasImageVisibility, FallbackValue=Collapsed}"/> 
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{Binding HasImageVisibility, FallbackValue=Collapsed}"/>
                                                 </Grid>
                                             </Border>
 
@@ -471,7 +477,7 @@
                                             <Border Grid.Row="2" Padding="14,12">
                                                 <TextBox Text="{Binding CourseDescription}" FontSize="13" FontWeight="Medium"
                                                          Foreground="{StaticResource FEUDarkTextBrush}" TextWrapping="Wrap"
-                                                         MaxHeight="40"
+                                                         VerticalAlignment="Top"
                                                          Background="Transparent" BorderThickness="0"
                                                          IsReadOnly="True" IsReadOnlyCaretVisible="False"/>
                                             </Border>
