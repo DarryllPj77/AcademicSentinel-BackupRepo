@@ -505,11 +505,21 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private async Task InitializeSignalR()
         {
-            // Idempotent re-init: if a previous hub connection or its subscriptions
-            // are still alive, dispose them BEFORE building a new one. Without this,
-            // calling InitializeSignalR() twice (constructor + Start Session click)
-            // attaches two parallel sets of handlers and every server broadcast
-            // arrives 2x in the Global Log Feed.
+            // Idempotent guard: if the hub connection is already alive, do NOT
+            // tear it down. Stopping the instructor's connection mid-session
+            // triggers the server's OnDisconnectedAsync path, which marks the
+            // room as Ended and broadcasts SessionInterrupted to every student.
+            // Just skip re-initialization — the existing handlers are already
+            // attached exactly once (post-dedup), so a second InitializeSignalR
+            // call is a no-op rather than a destructive rebuild.
+            if (_hubConnection != null
+                && _hubConnection.State != HubConnectionState.Disconnected)
+            {
+                return;
+            }
+
+            // Connection is null or fully disconnected: safe to clean up any
+            // lingering subscriptions from a prior dead connection and rebuild.
             foreach (var subscription in _hubSubscriptions)
             {
                 try { subscription?.Dispose(); } catch { }
@@ -518,7 +528,6 @@ namespace AcademicSentinel.Client.Views.IMC
 
             if (_hubConnection != null)
             {
-                try { await _hubConnection.StopAsync(); } catch { }
                 try { await _hubConnection.DisposeAsync(); } catch { }
                 _hubConnection = null;
             }
