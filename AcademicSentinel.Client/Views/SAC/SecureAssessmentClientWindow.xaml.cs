@@ -67,6 +67,9 @@ namespace AcademicSentinel.Client.Views.SAC
         private bool _isDenied = false; // Bug fix: Bug1
         private readonly Queue<MonitoringEventDto> _pendingViolationQueue = new Queue<MonitoringEventDto>();
         private readonly Dictionary<string, DateTime> _lastViolationSentByType = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private readonly object _violationDedupLock = new object();
+        private readonly object _joinLiveExamLock = new object();
+        private bool _hasJoinedLiveExam;
 
         private static readonly HashSet<string> ProcessBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -415,10 +418,18 @@ namespace AcademicSentinel.Client.Views.SAC
                     return;
 
                 var now = DateTime.UtcNow;
-                if (_lastViolationSentByType.TryGetValue(eventType, out var lastSentAt) && (now - lastSentAt).TotalSeconds < 2)
-                    return;
 
-                _lastViolationSentByType[eventType] = now;
+                // Atomic check-and-set so concurrent producers (PollDetectors tick +
+                // OnDeactivated flush) cannot both pass the cooldown window.
+                lock (_violationDedupLock)
+                {
+                    if (_lastViolationSentByType.TryGetValue(eventType, out var lastSentAt)
+                        && (now - lastSentAt).TotalSeconds < 2)
+                    {
+                        return;
+                    }
+                    _lastViolationSentByType[eventType] = now;
+                }
 
                 var payload = new MonitoringEventDto
                 {
@@ -586,7 +597,20 @@ namespace AcademicSentinel.Client.Views.SAC
             if (_hubConnection == null)
                 return;
 
-            await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
+            // Bug 1 — fire JoinLiveExam at most once per connection lifecycle.
+            // Without this gate, StartLiveExamAsync, the Reconnected handler, and the
+            // Closed-then-restart handler each independently call JoinLiveExam, and
+            // the server logs "✅ SESSION JOINED / CONNECTION RESTORED" once per call.
+            bool shouldJoin;
+            lock (_joinLiveExamLock)
+            {
+                shouldJoin = !_hasJoinedLiveExam;
+                _hasJoinedLiveExam = true;
+            }
+
+            if (shouldJoin)
+                await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
+
             await FlushPendingViolationsAsync();
 
             var monitoringState = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
@@ -641,7 +665,20 @@ namespace AcademicSentinel.Client.Views.SAC
                         if (_awaitingJoinApproval)
                             return;
 
-                        await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
+                        // A real reconnect: open the gate so JoinLiveExam fires once,
+                        // and the server records a single "CONNECTION RESTORED" entry.
+                        lock (_joinLiveExamLock) { _hasJoinedLiveExam = false; }
+
+                        bool shouldRejoin;
+                        lock (_joinLiveExamLock)
+                        {
+                            shouldRejoin = !_hasJoinedLiveExam;
+                            _hasJoinedLiveExam = true;
+                        }
+
+                        if (shouldRejoin)
+                            await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
+
                         var reconnectedStudentId = SessionManager.CurrentUser?.Id ?? 0;
                         if (reconnectedStudentId > 0)
                             await _hubConnection.InvokeAsync("ReSyncState", _roomId, reconnectedStudentId);
@@ -665,26 +702,15 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
-                _hubConnection.Closed += async _ =>
+                _hubConnection.Closed += _ =>
                 {
-                    // Bug fix: Bug1 - block zombie reconnect after denial (Closed handler also restarts the hub)
-                    if (_isDenied) return;
-                    await Task.Delay(TimeSpan.FromSeconds(1));
-                    if (_hubConnection == null)
-                        return;
-
-                    try
-                    {
-                        await _hubConnection.StartAsync();
-                        await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
-                        var recoveredStudentId = SessionManager.CurrentUser?.Id ?? 0;
-                        if (recoveredStudentId > 0)
-                            await _hubConnection.InvokeAsync("ReSyncState", _roomId, recoveredStudentId);
-                        await Dispatcher.InvokeAsync(async () => await FlushPendingViolationsAsync());
-                    }
-                    catch
-                    {
-                    }
+                    // WithAutomaticReconnect() already handles transient drops and surfaces a
+                    // single Reconnected event. Manually calling StartAsync() + JoinLiveExam
+                    // here races the auto-reconnect path and produced duplicate
+                    // "SESSION JOINED / CONNECTION RESTORED" log entries. Just clear the
+                    // join flag so the next genuine reconnect can rejoin once.
+                    lock (_joinLiveExamLock) { _hasJoinedLiveExam = false; }
+                    return Task.CompletedTask;
                 };
 
                 _hubConnection.On<bool>("MonitoringStateChanged", (isActive) =>
@@ -931,37 +957,74 @@ namespace AcademicSentinel.Client.Views.SAC
                     if (removedStudentId != currentStudentId)
                         return;
 
-                    _ = Dispatcher.InvokeAsync(() =>
-                    {
-                        // 1. Stop the hardware scanners entirely so no further polls fire
-                        //    against a half-torn-down runtime.
-                        if (_detectorRuntime != null)
-                            _detectorRuntime.IsPaused = true;
-                        _detectorRuntime?.Stop();
-                        _detectorsRunning = false;
+                    // 1. Stop the hardware detectors IMMEDIATELY on whichever thread
+                    //    SignalR delivered this callback on, so no further polls reach
+                    //    the server while the UI countdown is still running.
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsPaused = true;
+                    _detectorRuntime?.Stop();
+                    _detectorsRunning = false;
 
-                        // Stop the WPF dispatcher timers driving polls and countdowns.
+                    // Cut the SignalR connection up-front so Reconnected/Closed
+                    // handlers cannot re-resurrect the session during the countdown.
+                    _ = ForceStopSignalRAsync();
+
+                    // Run the UI work and the countdown loop on the dispatcher.
+                    _ = Dispatcher.InvokeAsync(async () =>
+                    {
+                        // Stop dispatcher timers BEFORE Close() so a queued tick can't
+                        // touch a disposed window mid-teardown.
                         _statusTimer?.Stop();
                         _compactCountdownTimer?.Stop();
                         _detectorPollTimer?.Stop();
 
-                        // Bypass OnClosing's softlock guard for a clean teardown.
+                        // 2. Update the softlock UI to the removal banner.
+                        MonitorDotBrush.Color = System.Windows.Media.Color.FromRgb(211, 47, 47);
+                        TxtMonitoringStatus.Text = "REMOVED BY THE INSTRUCTOR";
+                        TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(198, 40, 40));
+
+                        if (FindName("TxtCompactMonitoringStatus") is TextBlock compactStatus)
+                        {
+                            compactStatus.Text = "REMOVED BY THE INSTRUCTOR";
+                            compactStatus.Foreground = new SolidColorBrush(Color.FromRgb(198, 40, 40));
+                        }
+                        if (FindName("TxtHeaderMonitoringStatus") is TextBlock headerStatus)
+                        {
+                            headerStatus.Text = "REMOVED BY THE INSTRUCTOR";
+                            headerStatus.Foreground = new SolidColorBrush(Color.FromRgb(198, 40, 40));
+                        }
+
+                        // Lock the leave button so the student can't fight the countdown.
+                        if (FindName("BtnRequestLeave") is Button leaveButton)
+                        {
+                            leaveButton.IsEnabled = false;
+                            leaveButton.Content = "Removed from Session";
+                            leaveButton.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                            leaveButton.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#424242"));
+                        }
+
+                        DetectionReports.Insert(0, $"System: Removed by instructor. ({DateTime.Now:h:mm:ss tt})");
+
+                        // 3. 5-second countdown. Task.Delay(1000) yields back to the
+                        //    dispatcher so the UI text re-renders every tick.
+                        for (int remaining = 5; remaining > 0; remaining--)
+                        {
+                            string banner = $"Going back to dashboard in {remaining}...";
+                            TxtMonitoringStatus.Text = banner;
+
+                            if (FindName("TxtCompactMonitoringStatus") is TextBlock compact)
+                                compact.Text = banner;
+                            if (FindName("TxtHeaderMonitoringStatus") is TextBlock header)
+                                header.Text = banner;
+
+                            await Task.Delay(1000);
+                        }
+
+                        // 4. Bypass OnClosing's softlock guard and destroy the window.
                         _allowClose = true;
                         _isPermanentlyDone = true;
                         _isLeaveApproved = true;
 
-                        // Cut the SignalR connection so reconnect/closed handlers don't
-                        // re-resurrect the session after we close.
-                        _ = ForceStopSignalRAsync();
-
-                        // 2. Notify the student.
-                        MessageBox.Show(
-                            "You have been removed from this session by the instructor.",
-                            "Removed from Session",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
-
-                        // 3. Destroy the zombie window.
                         try { new StudentDashboard().Show(); } catch { }
                         Close();
                     });
