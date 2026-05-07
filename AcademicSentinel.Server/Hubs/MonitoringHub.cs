@@ -58,6 +58,9 @@ public class MonitoringHub : Hub
         }
 
         await Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", isActive);
+        await Clients.Group(roomId.ToString()).SendAsync(
+            "SessionStatusChanged",
+            isActive ? "Active" : "Pending");
     }
 
     public async Task PauseSessionMonitoring(int roomId)
@@ -78,6 +81,7 @@ public class MonitoringHub : Hub
         }
 
         await Clients.Group(roomId.ToString()).SendAsync("MonitoringPaused");
+        await Clients.Group(roomId.ToString()).SendAsync("SessionStatusChanged", "Paused");
     }
 
     public async Task ResumeSessionMonitoring(int roomId)
@@ -98,6 +102,7 @@ public class MonitoringHub : Hub
         }
 
         await Clients.Group(roomId.ToString()).SendAsync("MonitoringResumed");
+        await Clients.Group(roomId.ToString()).SendAsync("SessionStatusChanged", "Active");
     }
 
     public async Task BeginMonitoringCountdown(int roomId, int delaySeconds, int monitoringDurationSeconds)
@@ -107,12 +112,23 @@ public class MonitoringHub : Hub
             return;
 
         MonitoringStates[roomId] = false;
-        await Clients.Group(roomId.ToString()).SendAsync("MonitoringCountdownStarted", delaySeconds, monitoringDurationSeconds);
+
+        // Spec v3/v4/v5 — `SessionCountdownStarted` is the spec name for
+        // the initial countdown signal. `SessionStatusChanged` carries the
+        // current room status (Pending/Countdown/Active/Ended).
+        await Clients.Group(roomId.ToString()).SendAsync("SessionCountdownStarted", delaySeconds, monitoringDurationSeconds);
+        await Clients.Group(roomId.ToString()).SendAsync("SessionStatusChanged", "Countdown");
 
         _ = Task.Run(async () =>
         {
             await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, delaySeconds)));
             MonitoringStates[roomId] = true;
+
+            // Discrete `SessionStarted` event (spec) + `SessionStatusChanged`
+            // status broadcast + `MonitoringStateChanged(true)` for SAC's
+            // pause/resume state machine (extra, beyond spec).
+            await Clients.Group(roomId.ToString()).SendAsync("SessionStarted");
+            await Clients.Group(roomId.ToString()).SendAsync("SessionStatusChanged", "Active");
             await Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", true);
         });
     }
@@ -144,6 +160,7 @@ public class MonitoringHub : Hub
 
         await Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", false);
         await Clients.Group(roomId.ToString()).SendAsync("SessionEnded");
+        await Clients.Group(roomId.ToString()).SendAsync("SessionStatusChanged", "Ended");
     }
 
     // SAC calls this when the student enters the active exam room
@@ -404,9 +421,9 @@ public class MonitoringHub : Hub
         _context.MonitoringEvents.Add(monitoringEvent);
         await _context.SaveChangesAsync();
 
-        // Broadcast violation alert to the Instructor Monitoring Console
-        // The IMC will display this as a real-time violation alert
-        await Clients.Group(roomId.ToString()).SendAsync("ViolationDetected", new
+        // Broadcast violation alert to the Instructor Monitoring Console.
+        // Spec v4/v5 names this hub method `ReceiveViolationAlert`.
+        await Clients.Group(roomId.ToString()).SendAsync("ReceiveViolationAlert", new
         {
             studentId = studentId,
             eventType = eventData.EventType,

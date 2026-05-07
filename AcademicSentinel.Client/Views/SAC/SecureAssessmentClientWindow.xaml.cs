@@ -906,7 +906,7 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
-                _hubConnection.On<int, int>("MonitoringCountdownStarted", (delay, duration) =>
+                _hubConnection.On<int, int>("SessionCountdownStarted", (delay, duration) =>
                 {
                     _stateCts?.Cancel();
                     _stateCts = new System.Threading.CancellationTokenSource();

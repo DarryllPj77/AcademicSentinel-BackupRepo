@@ -600,7 +600,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 _ = LoadParticipantsFromServerAsync();
             })));
 
-            _hubSubscriptions.Add(_hubConnection.On<ViolationAlertPayload>("ViolationDetected", payload => _ = Dispatcher.InvokeAsync(() =>
+            _hubSubscriptions.Add(_hubConnection.On<ViolationAlertPayload>("ReceiveViolationAlert", payload => _ = Dispatcher.InvokeAsync(() =>
             {
                 if (payload == null) return;
 

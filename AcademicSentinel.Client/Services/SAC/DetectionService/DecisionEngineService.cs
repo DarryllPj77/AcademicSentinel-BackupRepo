@@ -35,7 +35,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "ALT_TAB":
                     case "WINDOW_SWITCH":
                     case "FOCUS":
+                    case "FOCUS_LOST":
                         newEvent.SeverityScore = 10;
+                        break;
+                    // RTFM aggressive escalations (rate window / sustained loss).
+                    // Spec: "Passive → escalates to Aggressive if repeated".
+                    case "RTFM_RATE":
+                    case "RTFM_SUSTAINED":
+                        newEvent.SeverityScore = 50;
                         break;
                     case "IDLE":
                     case "INACTIVITY":
@@ -49,6 +56,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "PASTE":
                     case "SCREENSHOT":
                     case "PRINTSCREEN":
+                    case "SNIP_TOOL":
                         // S1 passive on first hit; the engine bumps to S2 (20) once
                         // we've recorded 3+ passive events of any type — see below.
                         newEvent.SeverityScore = 10;
@@ -62,9 +70,19 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "VAC":
                     case "HAS":
                     case "VAC_HAS_VIOLATION":
+                    case "HAS_DEBUGGER":
+                    case "HAS_TIME_TAMPER":
                     case "VM":
                     case "REMOTE":
+                        // S3 aggressive: debugger attached and time-tamper are
+                        // intentional anti-proctoring actions.
                         newEvent.SeverityScore = 50;
+                        break;
+                    case "HAS_CLOCK_DRIFT":
+                        // Mid-tier: 30-90s drift may be legitimate (NTP skew,
+                        // VM hibernation). Score as S2 so it surfaces as a
+                        // suspicious flag but doesn't auto-fail the student.
+                        newEvent.SeverityScore = 20;
                         break;
                     default:
                         if (normalized.Contains("RTFM") || normalized.Contains("ALT_TAB") || normalized.Contains("WINDOW_SWITCH") || normalized.Contains("FOCUS"))

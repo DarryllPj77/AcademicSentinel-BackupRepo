@@ -12,6 +12,8 @@ namespace AcademicSentinel.Client.Services.SAC
         private readonly BehavioralMonitoringService _behavioralMonitoringService;
         private readonly EnvironmentIntegrityService _environmentIntegrityService;
         private readonly DecisionEngineService _decisionEngineService;
+        private readonly KeyboardHookService _keyboardHookService;
+        private readonly HardwareSoftwareArtifactService _hardwareSoftwareArtifactService;
         private bool _isStarted;
         private bool _isDisposed;
         public bool IsPaused { get; set; } = false;
@@ -44,6 +46,67 @@ namespace AcademicSentinel.Client.Services.SAC
             _behavioralMonitoringService = new BehavioralMonitoringService(settings, _options.BlacklistedProcessNames);
             _environmentIntegrityService = new EnvironmentIntegrityService();
             _decisionEngineService = new DecisionEngineService(_options.StrictMode);
+            _keyboardHookService = new KeyboardHookService();
+            _keyboardHookService.ScreenshotKeyDetected += OnScreenshotKeyDetected;
+            _keyboardHookService.SnippingToolComboDetected += OnSnippingToolComboDetected;
+
+            _hardwareSoftwareArtifactService = new HardwareSoftwareArtifactService();
+            _hardwareSoftwareArtifactService.ArtifactDetected += OnHasArtifactDetected;
+        }
+
+        private void OnHasArtifactDetected(string eventType, string description)
+        {
+            if (!_isStarted || IsPaused)
+                return;
+
+            var ev = new MonitoringDetectionEvent
+            {
+                EventType = eventType,
+                Description = description,
+                Timestamp = DateTime.UtcNow
+            };
+            EmitSyntheticFinding(ev);
+        }
+
+        private void OnScreenshotKeyDetected()
+        {
+            if (!_isStarted || IsPaused)
+                return;
+
+            // Synthesise a CSAD finding and push it through the same pipeline
+            // as the polled clipboard-based events, so dedup + scoring apply.
+            var ev = new MonitoringDetectionEvent
+            {
+                EventType = "PRINTSCREEN",
+                Description = "PrintScreen key pressed (low-level keyboard hook).",
+                Timestamp = DateTime.UtcNow
+            };
+            EmitSyntheticFinding(ev);
+        }
+
+        private void OnSnippingToolComboDetected()
+        {
+            if (!_isStarted || IsPaused)
+                return;
+
+            var ev = new MonitoringDetectionEvent
+            {
+                EventType = "SNIP_TOOL",
+                Description = "Win+Shift+S pressed (Snipping Tool overlay invoked).",
+                Timestamp = DateTime.UtcNow
+            };
+            EmitSyntheticFinding(ev);
+        }
+
+        private void EmitSyntheticFinding(MonitoringDetectionEvent rawEvent)
+        {
+            var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
+            var description = $"{rawEvent.Description} | CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}";
+            var finding = new DetectorFinding(rawEvent.EventType, rawEvent.SeverityScore, description);
+
+            // Reuse the preflight callback as a generic "out-of-band finding"
+            // channel — the SAC window already routes that to ReportViolationAsync.
+            _options.OnPreFlightViolationDetected?.Invoke(finding);
         }
 
         public IReadOnlyList<DetectorFinding> Poll(bool isWindowActive)
@@ -77,6 +140,8 @@ namespace AcademicSentinel.Client.Services.SAC
                 _isStarted = true;
                 IsLoggingEnabled = true;
                 _behavioralMonitoringService.StartMonitoring();
+                _keyboardHookService.Install();
+                _hardwareSoftwareArtifactService.Start();
 
                 var hardwareState = await _environmentIntegrityService.PerformFullScanAsync();
 
@@ -100,6 +165,8 @@ namespace AcademicSentinel.Client.Services.SAC
             _isStarted = false;
             IsLoggingEnabled = false;
             _behavioralMonitoringService.StopMonitoring();
+            _keyboardHookService.Uninstall();
+            _hardwareSoftwareArtifactService.Stop();
         }
 
         public void SetMonitoringEnabled(bool enabled)
@@ -116,6 +183,8 @@ namespace AcademicSentinel.Client.Services.SAC
 
             _isStarted = false;
             _behavioralMonitoringService.StopMonitoring();
+            _keyboardHookService.Uninstall();
+            _hardwareSoftwareArtifactService.Stop();
             await Task.CompletedTask;
         }
 
@@ -128,6 +197,8 @@ namespace AcademicSentinel.Client.Services.SAC
 
             _isStarted = false;
             _behavioralMonitoringService.StopMonitoring();
+            _keyboardHookService.Uninstall();
+            _hardwareSoftwareArtifactService.Stop();
         }
 
         public void Dispose()
@@ -137,6 +208,8 @@ namespace AcademicSentinel.Client.Services.SAC
 
             _isDisposed = true;
             try { Stop(); } catch { }
+            try { _keyboardHookService.Dispose(); } catch { }
+            try { _hardwareSoftwareArtifactService.Dispose(); } catch { }
 
             // Detach the option callbacks so the captured closures (which hold a
             // reference to the SAC window) cannot fire after disposal.
