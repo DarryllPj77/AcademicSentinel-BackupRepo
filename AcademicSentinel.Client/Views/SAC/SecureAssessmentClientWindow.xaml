@@ -57,6 +57,19 @@
                             Padding="10,6" FontSize="13" Cursor="Hand"
                             Content="□" Click="BtnExpandCompact_Click"/>
 
+                    <Button x:Name="BtnDone"
+                            Content="Done"
+                            Padding="12,7"
+                            MinWidth="100"
+                            Margin="0,0,10,0"
+                            FontSize="16"
+                            FontWeight="Bold"
+                            Cursor="Hand"
+                            Background="#1B5E20"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Click="BtnDone_Click"/>
+
                     <Button x:Name="BtnRequestLeave"
                             Content="Request to Leave"
                             Padding="12,7"

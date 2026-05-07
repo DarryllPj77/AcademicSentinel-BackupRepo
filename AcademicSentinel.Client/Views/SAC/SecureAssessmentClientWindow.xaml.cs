@@ -217,6 +217,7 @@ namespace AcademicSentinel.Client.Views.SAC
                 IdleThresholdSeconds = _roomDetectionSettings.IdleThresholdSeconds,
                 EnableProcessDetection = _roomDetectionSettings.EnableProcessDetection,
                 EnableVirtualizationCheck = _roomDetectionSettings.EnableVirtualizationCheck,
+                StrictMode = _roomDetectionSettings.StrictMode,
                 BlacklistedProcessNames = new HashSet<string>(ProcessBlacklist, StringComparer.OrdinalIgnoreCase),
                 OnHardwareStateDetected = async (isVm, isRemote) =>
                 {
@@ -259,7 +260,8 @@ namespace AcademicSentinel.Client.Views.SAC
             if (_roomDetectionSettings.EnableProcessDetection) enabledModules.Add("Process");
             if (_roomDetectionSettings.EnableIdleDetection) enabledModules.Add("Idle");
 
-            DetectionReports.Add($"Detector Setup: {(enabledModules.Count == 0 ? "No modules enabled" : string.Join(", ", enabledModules))}");
+            string modeSuffix = _roomDetectionSettings.StrictMode ? " | Strict Mode: ON" : "";
+            DetectionReports.Add($"Detector Setup: {(enabledModules.Count == 0 ? "No modules enabled" : string.Join(", ", enabledModules))}{modeSuffix}");
             ReportFindings(_detectorRuntime.RunStartupChecks());
             UpdateDetectorRuntimeState();
         }
@@ -1242,6 +1244,64 @@ namespace AcademicSentinel.Client.Views.SAC
             }
         }
 
+        // Spec v4/v5 — Soft Lock "Done" button.
+        // Sends a SessionCompletionRequest to the server so the instructor sees
+        // the student is finished. Does NOT immediately allow exit; the leave
+        // button still has to go through the existing approval gate.
+        private bool _hasSentDone;
+
+        private async void BtnDone_Click(object sender, RoutedEventArgs e)
+        {
+            int studentId = SessionManager.CurrentUser?.Id ?? 0;
+            if (studentId <= 0)
+                return;
+
+            if (_hasSentDone)
+                return;
+
+            // Available only during active monitoring (after countdown).
+            if (_sessionEnded || _currentPhase != ExamPhase.Active)
+            {
+                MessageBox.Show(
+                    "The Done button is only available once the session is active.",
+                    "Session Not Active", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            try
+            {
+                if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
+                {
+                    MessageBox.Show("Not connected to server.", "Done",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                _hasSentDone = true;
+                BtnDone.IsEnabled = false;
+                BtnDone.Content = "Done — awaiting instructor";
+                BtnDone.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                BtnDone.Foreground = new SolidColorBrush(
+                    (Color)ColorConverter.ConvertFromString("#424242"));
+
+                await _hubConnection.InvokeAsync("RequestSessionCompletion", _roomId, studentId);
+
+                DetectionReports.Insert(0,
+                    $"System: You marked the assessment as Done. Instructor has been notified. ({DateTime.Now:h:mm:ss tt})");
+            }
+            catch (Exception ex)
+            {
+                _hasSentDone = false;
+                BtnDone.IsEnabled = true;
+                BtnDone.Content = "Done";
+                BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                BtnDone.Foreground = Brushes.White;
+
+                MessageBox.Show($"Could not send Done signal: {ex.Message}", "Done",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
         private async void BtnRequestLeave_Click(object sender, RoutedEventArgs e)
         {
             if (_sessionEnded)
@@ -1532,9 +1592,17 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             base.OnStateChanged(e);
 
+            // Spec v5 — Soft Lock: "Window cannot be manually closed, minimized,
+            // or terminated by the student." If the OS or a stray hotkey
+            // (Win+D / Win+M / taskbar click) drops us into a Minimized state,
+            // immediately re-surface as the compact always-on-top overlay.
             if (WindowState == WindowState.Minimized)
             {
+                // Restore first so the dispatcher pumps a non-Minimized state
+                // before SwitchToCompactMode mutates Width/Height.
+                WindowState = WindowState.Normal;
                 SwitchToCompactMode();
+                Activate();
             }
         }
 

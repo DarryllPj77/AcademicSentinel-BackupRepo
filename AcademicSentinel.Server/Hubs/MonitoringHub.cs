@@ -442,6 +442,46 @@ public class MonitoringHub : Hub
         await Clients.Group(roomId.ToString()).SendAsync("LeaveRequested", studentId);
     }
 
+    // Spec v4/v5 — Soft Lock "Done" button.
+    // Student presses Done when their assessment is finished. This is purely
+    // informational: the instructor sees a "Completed Assessment" entry in the
+    // IMC feed, but monitoring stays active and the leave button stays locked
+    // until the instructor explicitly grants leave (existing GrantLeave flow).
+    public async Task RequestSessionCompletion(int roomId, int studentId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Student", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdString == null) return;
+
+        int authenticatedStudentId = int.Parse(userIdString);
+        if (authenticatedStudentId != studentId) return;
+
+        var isParticipantInRoom = await _context.SessionParticipants
+            .AnyAsync(p => p.RoomId == roomId && p.StudentId == studentId);
+
+        if (!isParticipantInRoom)
+            return;
+
+        // Persist as a SYSTEM monitoring event so it shows up in the room
+        // history audit trail next to violations and join/leave events.
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId = roomId,
+            StudentId = studentId,
+            EventType = "SESSION_COMPLETION_REQUESTED",
+            Description = "Student pressed Done — assessment finished, awaiting instructor approval.",
+            SeverityScore = 0,
+            Timestamp = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        // Notify the room (instructor sees it in the live feed).
+        await Clients.Group(roomId.ToString()).SendAsync("SessionCompletionRequested", studentId);
+    }
+
     public async Task GrantLeave(int roomId, int studentId)
     {
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;

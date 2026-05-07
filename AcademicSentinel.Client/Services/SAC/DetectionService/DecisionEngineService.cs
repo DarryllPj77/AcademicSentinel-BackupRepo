@@ -6,9 +6,15 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
     public class DecisionEngineService
     {
         private readonly object _syncRoot = new();
+        private readonly bool _strictMode;
         private int _cumulativeScore = 0;
         private int _passiveEventCount = 0;
         private RiskLevel _currentLevel = RiskLevel.Safe;
+
+        public DecisionEngineService(bool strictMode = false)
+        {
+            _strictMode = strictMode;
+        }
 
         public RiskAssessment EvaluateEvent(MonitoringDetectionEvent newEvent)
         {
@@ -76,13 +82,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                         break;
                 }
 
-                // S1 → S2 escalation: once we've seen 3+ passive events in the
-                // session, every subsequent passive event scores 20 instead of 10.
+                // S1 → S2 escalation. Normally requires 3 passive events; in
+                // strict mode every passive event is treated as S2 immediately
+                // (per spec: "higher severity weighting").
                 bool isPassive = newEvent.SeverityScore == 10;
                 if (isPassive)
                 {
                     _passiveEventCount++;
-                    if (_passiveEventCount >= 3)
+                    if (_strictMode || _passiveEventCount >= 3)
                         newEvent.SeverityScore = 20;
                 }
 

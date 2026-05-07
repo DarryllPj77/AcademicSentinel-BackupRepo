@@ -21,7 +21,14 @@ namespace AcademicSentinel.Client.Services.SAC
         {
             _options = options;
 
-            int idleViolation = Math.Max(1, _options.IdleThresholdSeconds);
+            // Strict Mode (per spec v3/v4/v5):
+            //  - Idle threshold is halved (tighter inactivity gating).
+            //  - DecisionEngine treats every passive event as S2 (20 pts) instead
+            //    of S1 (10 pts), and bypasses the 3-event escalation counter.
+            int rawIdle = Math.Max(1, _options.IdleThresholdSeconds);
+            int idleViolation = _options.StrictMode
+                ? Math.Max(5, rawIdle / 2)
+                : rawIdle;
 
             var settings = new DetectionSettings
             {
@@ -29,14 +36,14 @@ namespace AcademicSentinel.Client.Services.SAC
                 EnableClipboardMonitoring = _options.EnableClipboardMonitoring,
                 EnableIdleDetection = _options.EnableIdleDetection,
                 EnableProcessDetection = _options.EnableProcessDetection,
-                IdleWarningThresholdSeconds = Math.Max(10, idleViolation / 2),
+                IdleWarningThresholdSeconds = Math.Max(5, idleViolation / 2),
                 IdleViolationThresholdSeconds = idleViolation,
                 IdleCriticalThresholdSeconds = Math.Max(idleViolation + 10, idleViolation * 2)
             };
 
             _behavioralMonitoringService = new BehavioralMonitoringService(settings, _options.BlacklistedProcessNames);
             _environmentIntegrityService = new EnvironmentIntegrityService();
-            _decisionEngineService = new DecisionEngineService();
+            _decisionEngineService = new DecisionEngineService(_options.StrictMode);
         }
 
         public IReadOnlyList<DetectorFinding> Poll(bool isWindowActive)
@@ -171,6 +178,7 @@ namespace AcademicSentinel.Client.Services.SAC
         public int IdleThresholdSeconds { get; set; }
         public bool EnableProcessDetection { get; set; }
         public bool EnableVirtualizationCheck { get; set; }
+        public bool StrictMode { get; set; }
         public HashSet<string> BlacklistedProcessNames { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public Func<bool, bool, Task> OnHardwareStateDetected { get; set; }
         public Action<DetectorFinding> OnPreFlightViolationDetected { get; set; }

@@ -652,6 +652,29 @@ namespace AcademicSentinel.Client.Views.IMC
                 _studentsView.Refresh();
             })));
 
+            // Spec v4/v5 — Soft Lock "Done" notification.
+            // Student pressed Done; surface as a DONE entry in the live feed so
+            // the instructor can verify completion before granting leave.
+            _hubSubscriptions.Add(_hubConnection.On<int>("SessionCompletionRequested", studentId => Dispatcher.Invoke(() =>
+            {
+                if (_permanentlyDismissedStudents.Contains(studentId))
+                    return;
+
+                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                var email = targetStudent?.Email
+                            ?? _allParticipants.FirstOrDefault(p => p.StudentId == studentId)?.StudentEmail
+                            ?? $"Student #{studentId}";
+
+                if (targetStudent != null)
+                {
+                    targetStudent.Status = "Completed Assessment";
+                    targetStudent.StatusColor = "#1B5E20";
+                }
+
+                LogActivity(email, "DONE", "Student finished the assessment — awaiting instructor approval.", "#1B5E20");
+                _studentsView.Refresh();
+            })));
+
             _hubSubscriptions.Add(_hubConnection.On<JoinApprovalRequestDto>("StudentPendingApproval", payload => Dispatcher.Invoke(() =>
             {
                 if (payload == null)
