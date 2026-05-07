@@ -133,8 +133,10 @@ public class RoomsController : ControllerBase
     // ==========================================
 
     // POST: api/rooms/{roomId}/start-session
-    // This creates a NEW session record every time an exam starts
+    // This creates a NEW session record every time an exam starts.
+    // Spec v3/v4 alias: POST /api/rooms/{roomId}/start
     [HttpPost("{roomId}/start-session")]
+    [HttpPost("{roomId}/start")]
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> StartExamSession(int roomId, [FromBody] StartSessionDto? request)
     {
@@ -180,8 +182,10 @@ public class RoomsController : ControllerBase
     }
 
     // PUT: api/rooms/sessions/{sessionId}/end
-    // This marks a specific session as finished
+    // This marks a specific session as finished.
+    // Spec v3/v4 aliases: POST /api/rooms/{sessionId}/end (POST verb to match spec).
     [HttpPut("sessions/{sessionId}/end")]
+    [HttpPost("{sessionId}/end")]
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> EndExamSession(int sessionId)
     {
@@ -206,6 +210,25 @@ public class RoomsController : ControllerBase
         await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("SessionEnded");
 
         return Ok(new { message = "Session officially ended and logged in history." });
+    }
+
+    // Spec v3/v4: GET /api/rooms/{sessionId}/status — returns the room's
+    // current lifecycle state (Pending / Countdown / Active / Ended) and
+    // whether monitoring is currently engaged. Useful for SAC clients that
+    // want to query state without holding a SignalR connection.
+    [HttpGet("{roomId}/status")]
+    public async Task<IActionResult> GetRoomStatus(int roomId)
+    {
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null) return NotFound("Room not found.");
+
+        return Ok(new
+        {
+            roomId = room.Id,
+            status = room.Status,
+            isMonitoringActive = room.IsMonitoringActive,
+            subjectName = room.SubjectName
+        });
     }
 
     // GET: api/rooms/{roomId}/history
@@ -263,7 +286,10 @@ public class RoomsController : ControllerBase
         return Ok(settings);
     }
 
+    // Spec v3/v4 calls this `PUT /api/rooms/{roomId}/settings`. Accept both
+    // POST (existing client) and PUT (spec) to keep backward compatibility.
     [HttpPost("{roomId}/settings")]
+    [HttpPut("{roomId}/settings")]
     public async Task<ActionResult<RoomDetectionSettings>> SaveRoomSettings(int roomId, [FromBody] RoomSetupDto setupRequest)
     {
         var room = await _context.Rooms.FindAsync(roomId);
@@ -459,8 +485,10 @@ public class RoomsController : ControllerBase
 
     // ==========================================
     // JOIN APPROVAL GATE (late join + rejoin)
+    // Spec v3/v4 alias: POST /api/rooms/{roomId}/join
     // ==========================================
     [HttpPost("{roomId}/request-join")]
+    [HttpPost("{roomId}/join")]
     [Authorize(Roles = "Student")]
     public async Task<IActionResult> RequestJoinSession(int roomId)
     {
@@ -617,7 +645,9 @@ public class RoomsController : ControllerBase
     // STUDENT DASHBOARD ENDPOINTS
     // ==========================================
 
+    // Spec v3/v4 alias: GET /api/rooms/my
     [HttpGet("student")]
+    [HttpGet("my")]
     [Authorize(Roles = "Student")]
     public async Task<IActionResult> GetStudentRooms()
     {
@@ -673,7 +703,9 @@ public class RoomsController : ControllerBase
         return Ok(result);
     }
 
+    // Spec v3/v4 alias: POST /api/rooms/enroll
     [HttpPost("enroll-code")]
+    [HttpPost("enroll")]
     [Authorize(Roles = "Student")]
     public async Task<IActionResult> EnrollStudentByCode([FromBody] EnrollByCodeDto request)
     {

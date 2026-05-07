@@ -48,7 +48,7 @@ PostgreSQL via `Npgsql.EntityFrameworkCore.PostgreSQL` — recently migrated fro
 
 JWT Bearer is configured in `Program.cs`. The hub at `/monitoringHub` requires the JWT in the **query string** as `?access_token=...` rather than the `Authorization` header — this is set up in the `JwtBearerEvents.OnMessageReceived` block. SignalR clients (both `AcademicSentinel.Client` and `SecureAssessmentClient`) must pass the token via `HubConnectionBuilder.WithUrl(..., options => options.AccessTokenProvider = ...)`.
 
-JWT lifetime is 3 hours (`AuthController.Login`). Tokens carry `ClaimTypes.NameIdentifier` (user id), `ClaimTypes.Role` (`Instructor` / `Student`), and `ClaimTypes.Name` (email). Hub methods read role/id from these claims and enforce that students can only act on their own `studentId`.
+JWT lifetime is 8 hours (`AuthController.Login`, per spec v4). Tokens carry `ClaimTypes.NameIdentifier` (user id), `ClaimTypes.Role` (`Instructor` / `Student`), and `ClaimTypes.Name` (email). Hub methods read role/id from these claims and enforce that students can only act on their own `studentId`.
 
 `MonitoringHub.MonitoringStates` is a `static ConcurrentDictionary<int, bool>` — monitoring on/off state is **process-local in-memory** and resets on server restart. Multi-instance deployment would need a backplane.
 

@@ -110,9 +110,10 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private async void BtnChangePicture_Click(object sender, RoutedEventArgs e)
         {
+            // Spec v4: profile pictures restricted to .png/.jpg/.jpeg only.
             OpenFileDialog openFileDialog = new OpenFileDialog
             {
-                Filter = "Image Files|*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico|All Files (*.*)|*.*"
+                Filter = "Image Files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg"
             };
 
             if (openFileDialog.ShowDialog() == true)
@@ -529,6 +530,7 @@ namespace AcademicSentinel.Client.Views.SAC
         // produces invalid types (e.g. "image/jpg"; the standard is "image/jpeg") and
         // hard-coding "image/jpeg" mis-tags every other format. Both routes cause the
         // server to reject uploads and the picture to silently never appear.
+        // Spec v4: only .png/.jpg/.jpeg are accepted by the server.
         private static string GetImageMimeType(string filePath)
         {
             var extension = Path.GetExtension(filePath)?.ToLowerInvariant();
@@ -536,11 +538,6 @@ namespace AcademicSentinel.Client.Views.SAC
             {
                 ".jpg" or ".jpeg" => "image/jpeg",
                 ".png"            => "image/png",
-                ".gif"            => "image/gif",
-                ".webp"           => "image/webp",
-                ".bmp"            => "image/bmp",
-                ".tif" or ".tiff" => "image/tiff",
-                ".ico"            => "image/x-icon",
                 _                 => "application/octet-stream"
             };
         }

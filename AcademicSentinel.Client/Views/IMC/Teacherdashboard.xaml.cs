@@ -242,7 +242,8 @@ namespace AcademicSentinel.Client.Views.IMC
             OpenFileDialog openFileDialog = new OpenFileDialog
             {
                 Title = "Select Profile Picture",
-                Filter = "Image Files (*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico)|*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico|All Files (*.*)|*.*",
+                // Spec v4: profile pictures restricted to .png/.jpg/.jpeg only.
+                Filter = "Image Files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg",
                 FilterIndex = 1
             };
 
@@ -493,7 +494,8 @@ namespace AcademicSentinel.Client.Views.IMC
                     OpenFileDialog openFileDialog = new OpenFileDialog
                     {
                         Title = "Select Course Picture",
-                        Filter = "Image Files (*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico)|*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico|All Files (*.*)|*.*"
+                        // Spec v4: course logos restricted to .png/.jpg/.jpeg only.
+                        Filter = "Image Files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg"
                     };
                     if (openFileDialog.ShowDialog() == true)
                     {
@@ -562,6 +564,9 @@ namespace AcademicSentinel.Client.Views.IMC
         // "image/ico" (real icon MIME is "image/x-icon"), which the server's image
         // validator rejects silently — that's why uploaded course/profile pictures
         // appeared to vanish.
+        // Spec v4: only .png/.jpg/.jpeg are accepted by the server's
+        // ImageStorageService. Returning an unknown MIME type for anything
+        // else would surface a clean rejection rather than a silent failure.
         private static string GetImageMimeType(string filePath)
         {
             var extension = Path.GetExtension(filePath)?.ToLowerInvariant();
@@ -569,11 +574,6 @@ namespace AcademicSentinel.Client.Views.IMC
             {
                 ".jpg" or ".jpeg" => "image/jpeg",
                 ".png"            => "image/png",
-                ".gif"            => "image/gif",
-                ".webp"           => "image/webp",
-                ".bmp"            => "image/bmp",
-                ".tif" or ".tiff" => "image/tiff",
-                ".ico"            => "image/x-icon",
                 _                 => "application/octet-stream"
             };
         }

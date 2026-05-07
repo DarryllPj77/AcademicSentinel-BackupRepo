@@ -58,7 +58,8 @@ namespace AcademicSentinel.Client.Views.IMC
             var dialog = new OpenFileDialog
             {
                 Title = "Select Course Picture",
-                Filter = "Image Files (*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico)|*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.ico|All Files (*.*)|*.*"
+                // Spec v4: course logos restricted to .png/.jpg/.jpeg only.
+                Filter = "Image Files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg"
             };
 
             if (dialog.ShowDialog() != true)
@@ -189,6 +190,7 @@ namespace AcademicSentinel.Client.Views.IMC
             }
         }
 
+        // Spec v4: only .png/.jpg/.jpeg are accepted by the server.
         private static string GetImageMimeType(string filePath)
         {
             var extension = Path.GetExtension(filePath)?.ToLowerInvariant();
@@ -196,11 +198,6 @@ namespace AcademicSentinel.Client.Views.IMC
             {
                 ".jpg" or ".jpeg" => "image/jpeg",
                 ".png"            => "image/png",
-                ".gif"            => "image/gif",
-                ".webp"           => "image/webp",
-                ".bmp"            => "image/bmp",
-                ".tif" or ".tiff" => "image/tiff",
-                ".ico"            => "image/x-icon",
                 _                 => "application/octet-stream"
             };
         }
