@@ -73,10 +73,28 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private static readonly HashSet<string> ProcessBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
+            // Debuggers / reverse-engineering
             "windbg", "x64dbg", "ollydbg", "ida", "dnspy", "fiddler", "cheatengine",
-            "processmonitor", "procexp", "teamviewer", "anydesk", "ultravnc", "gotomypc",
-            "discord", "telegram", "slack", "whatsapp", "skype", "teams", "zoom",
-            "obs", "ffmpeg", "camtasia", "snagit", "bandicam", "chrome", "firefox", "opera"
+            "processmonitor", "procexp",
+            // Remote-access tools
+            "teamviewer", "anydesk", "ultravnc", "gotomypc", "vncserver", "rustdesk", "splashtop",
+            // Messaging / communication
+            "discord", "telegram", "slack", "whatsapp", "skype", "teams", "zoom", "messenger",
+            // Screen capture / streaming
+            "obs", "obs64", "obs32", "ffmpeg", "camtasia", "snagit", "bandicam",
+            "sharex", "snippingtool", "screensketch", "screenrec",
+            // Secondary browsers (a single browser session belongs to the SAC)
+            "chrome", "firefox", "opera", "msedge", "brave", "vivaldi", "tor",
+            // AI chat / coding assistants
+            "chatgpt", "claude", "copilot", "perplexity", "gemini",
+            // Android emulators (covers BlueStacks even when VAC misses them)
+            "bluestacks", "hd-player", "hd-agent", "bstksvc", "bluestacks_bgp",
+            "nox", "noxvmhandle", "noxvmhandleagent",
+            "memu", "memuheadless",
+            "ldplayer", "dnplayer", "ldvbox",
+            "genymotion", "genymotion-shell", "vboxheadless", "vboxmanage",
+            "mumumvm", "mumuplayer",
+            "andy", "droid4x"
         };
 
         // Now accepts the Room ID from the Waiting Room!

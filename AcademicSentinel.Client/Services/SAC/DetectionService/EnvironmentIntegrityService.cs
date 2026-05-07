@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Management;
 using System.Net.NetworkInformation;
@@ -20,7 +21,9 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 {
                     isVm = DetectVmFromComputerSystemWmi()
                         || DetectVmFromVideoControllerWmi()
-                        || DetectVmFromMacPrefixes();
+                        || DetectVmFromMacPrefixes()
+                        || DetectAndroidEmulatorByProcess()
+                        || DetectAndroidEmulatorByDriver();
                 }
                 catch
                 {
@@ -51,7 +54,12 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     var model = Convert.ToString(obj["Model"]) ?? string.Empty;
                     var text = $"{manufacturer} {model}";
 
-                    if (ContainsAny(text, "VMware", "VirtualBox", "innotek", "QEMU", "Hyper-V"))
+                    if (ContainsAny(text,
+                            "VMware", "VirtualBox", "innotek", "QEMU", "Hyper-V",
+                            "Xen", "Parallels", "KVM", "Bochs",
+                            // Android emulators that surface via Win32_ComputerSystem
+                            "BlueStacks", "BST", "Nox", "BigNox", "MEmu", "LDPlayer",
+                            "Genymotion", "Andy", "Droid4X"))
                         return true;
                 }
             }
@@ -70,7 +78,11 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 foreach (ManagementObject obj in searcher.Get())
                 {
                     var name = Convert.ToString(obj["Name"]) ?? string.Empty;
-                    if (ContainsAny(name, "VMware SVGA", "VirtualBox Graphics"))
+                    if (ContainsAny(name,
+                            "VMware SVGA", "VirtualBox Graphics",
+                            "Parallels Display", "QEMU", "Hyper-V Video",
+                            // BlueStacks ships its own paravirtualized graphics adapter
+                            "BlueStacks", "BstkVMM", "Nox", "MEmu"))
                         return true;
                 }
             }
@@ -87,9 +99,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             {
                 var vmPrefixes = new[]
                 {
-                    "005056", // VMware
-                    "000C29", // VMware
-                    "080027"  // VirtualBox
+                    "005056", // VMware ESXi
+                    "000C29", // VMware Workstation
+                    "001C14", // VMware
+                    "000569", // VMware
+                    "080027", // VirtualBox / older BlueStacks
+                    "0A0027", // VirtualBox NAT variant
+                    "001C42", // Parallels
+                    "525400"  // QEMU/KVM
                 };
 
                 foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
@@ -100,6 +117,81 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
                     if (vmPrefixes.Any(p => mac.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
                         return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        // Android emulators run as native Windows processes — even when the WMI
+        // probe doesn't recognise them as a VM, their host process is visible.
+        private static bool DetectAndroidEmulatorByProcess()
+        {
+            // Process names (no .exe). Match anywhere in the name to be tolerant
+            // of suffixes like HD-Player, Bluestacks_bgp, BstkSVC, NoxVMHandle.
+            var emulatorProcessSignatures = new[]
+            {
+                "bluestacks", "bstk", "hd-player", "hd-agent",
+                "nox", "noxvmhandle",
+                "memu", "memuheadless",
+                "ldplayer", "dnplayer",
+                "genymotion", "vboxheadless",
+                "mumumvm", "mumuplayer",
+                "andy", "droid4x"
+            };
+
+            try
+            {
+                foreach (var process in Process.GetProcesses())
+                {
+                    string name;
+                    try { name = process.ProcessName ?? string.Empty; }
+                    catch { continue; }
+
+                    if (string.IsNullOrWhiteSpace(name))
+                        continue;
+
+                    if (emulatorProcessSignatures.Any(sig =>
+                            name.IndexOf(sig, StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        // BlueStacks/Nox install a virtualization-layer kernel driver that's
+        // visible via Win32_SystemDriver even when their host process is not yet
+        // running — useful for catching a paused emulator.
+        private static bool DetectAndroidEmulatorByDriver()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher(
+                    "SELECT Name, DisplayName FROM Win32_SystemDriver");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    var name = Convert.ToString(obj["Name"]) ?? string.Empty;
+                    var display = Convert.ToString(obj["DisplayName"]) ?? string.Empty;
+                    var combined = $"{name} {display}";
+
+                    if (ContainsAny(combined,
+                            "BlueStacks", "BstHdDrv", "BstkVMM",
+                            "Nox", "NoxVm",
+                            "MEmu", "Mvbox",
+                            "LDPlayer", "VBoxNetLwf", "VBoxDrv",
+                            "Genymotion"))
+                    {
+                        return true;
+                    }
                 }
             }
             catch
