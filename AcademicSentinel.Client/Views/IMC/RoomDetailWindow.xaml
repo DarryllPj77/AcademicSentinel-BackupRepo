@@ -418,14 +418,10 @@
                             </DataGrid.CellStyle>
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Session ID" Binding="{Binding SessionId}" Width="110" />
-                                <!-- Bug fix: A2 - rebound Date column to existing SessionItem.DateDuration (no separate Date property exists) -->
-                                <DataGridTextColumn Header="Date" Binding="{Binding DateDuration}" Width="160" />
-                                <!-- Bug fix: A2 - SessionItem has no Duration property; binding left for follow-up (cannot add property per directive) -->
-                                <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="110" />
-                                <!-- Bug fix: A2 - rebound Attendees column to existing SessionItem.StudentCount -->
+                                <DataGridTextColumn Header="Date" Binding="{Binding DateDuration}" Width="170" />
+                                <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="100" />
                                 <DataGridTextColumn Header="Attendees" Binding="{Binding AttendeesDisplay}" Width="110" />
-                                <!-- Bug fix: A2 - SessionItem has no Violations property; binding left for follow-up (cannot add property per directive) -->
-                                <DataGridTextColumn Header="Violations" Binding="{Binding TotalViolations}" Width="110" />
+                                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="120" />
                                 <DataGridTemplateColumn Header="Action" Width="*" MinWidth="140">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>

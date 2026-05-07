@@ -1,0 +1,124 @@
+<Window x:Class="AcademicSentinel.Client.Views.IMC.Dialogs.StudentLogsPreviewDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        Title="Student Activity Logs"
+        Height="640" Width="900"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize"
+        Background="#F5F5F5"
+        FontFamily="{materialDesign:MaterialDesignFont}">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="FEUGreenBrush" Color="#1B5E20"/>
+        <SolidColorBrush x:Key="FEUSubTextBrush" Color="#616161"/>
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,18">
+            <TextBlock Text="Activity Logs" FontSize="22" FontWeight="Bold"
+                       Foreground="{StaticResource FEUGreenBrush}"/>
+            <TextBlock x:Name="TxtStudentHeader" FontSize="13" FontWeight="Medium"
+                       Foreground="{StaticResource FEUSubTextBrush}" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- Summary chips -->
+        <Border Grid.Row="1" Background="White" CornerRadius="10"
+                BorderBrush="#D0D0D0" BorderThickness="1.5"
+                Padding="16,12" Margin="0,0,0,14">
+            <StackPanel Orientation="Horizontal">
+                <StackPanel Margin="0,0,28,0">
+                    <TextBlock Text="Total Events" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{StaticResource FEUSubTextBrush}"/>
+                    <TextBlock x:Name="TxtTotalEvents" Text="0" FontSize="20" FontWeight="Bold"
+                               Foreground="{StaticResource FEUGreenBrush}"/>
+                </StackPanel>
+                <StackPanel Margin="0,0,28,0">
+                    <TextBlock Text="Total Severity" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{StaticResource FEUSubTextBrush}"/>
+                    <TextBlock x:Name="TxtTotalSeverity" Text="0" FontSize="20" FontWeight="Bold"
+                               Foreground="#D32F2F"/>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Text="Risk Level" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{StaticResource FEUSubTextBrush}"/>
+                    <TextBlock x:Name="TxtRiskLevel" Text="—" FontSize="20" FontWeight="Bold"
+                               Foreground="#1B5E20"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Logs table -->
+        <Border Grid.Row="2" BorderBrush="#BDBDBD" BorderThickness="1"
+                CornerRadius="6" ClipToBounds="True">
+            <DataGrid x:Name="LogsDataGrid"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="True"
+                      CanUserAddRows="False"
+                      HeadersVisibility="Column"
+                      RowHeaderWidth="0"
+                      GridLinesVisibility="All"
+                      HorizontalGridLinesBrush="#E0E0E0"
+                      VerticalGridLinesBrush="#E0E0E0"
+                      BorderThickness="0"
+                      RowHeight="34"
+                      ColumnHeaderHeight="38"
+                      AlternatingRowBackground="#FAFAFA"
+                      Background="White">
+                <DataGrid.ColumnHeaderStyle>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="Background" Value="#1B5E20"/>
+                        <Setter Property="Foreground" Value="White"/>
+                        <Setter Property="FontWeight" Value="SemiBold"/>
+                        <Setter Property="FontSize" Value="13"/>
+                        <Setter Property="Padding" Value="12,0,12,0"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                        <Setter Property="VerticalContentAlignment" Value="Center"/>
+                        <Setter Property="BorderBrush" Value="#0E4514"/>
+                        <Setter Property="BorderThickness" Value="0,0,1,0"/>
+                    </Style>
+                </DataGrid.ColumnHeaderStyle>
+                <DataGrid.CellStyle>
+                    <Style TargetType="DataGridCell">
+                        <Setter Property="Padding" Value="12,4,12,4"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="VerticalContentAlignment" Value="Center"/>
+                    </Style>
+                </DataGrid.CellStyle>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat='MMM dd, yyyy hh:mm:ss tt'}" Width="180"/>
+                    <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="160"/>
+                    <DataGridTextColumn Header="Severity" Binding="{Binding SeverityScore}" Width="80"/>
+                    <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="*"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="BtnClose" Click="BtnClose_Click"
+                    Padding="20,10" Margin="0,0,10,0" FontWeight="SemiBold"
+                    Background="Transparent" Foreground="#616161"
+                    BorderBrush="#BDBDBD" BorderThickness="1.5" Cursor="Hand"
+                    Content="Close"/>
+            <Button x:Name="BtnExportFromPreview" Click="BtnExportFromPreview_Click"
+                    Padding="20,10" FontWeight="SemiBold"
+                    Background="{StaticResource FEUGreenBrush}" Foreground="White"
+                    BorderThickness="0" Cursor="Hand">
+                <StackPanel Orientation="Horizontal">
+                    <materialDesign:PackIcon Kind="FilePdfBox" Width="18" Height="18"
+                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBlock Text="Export PDF" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+        </StackPanel>
+    </Grid>
+</Window>

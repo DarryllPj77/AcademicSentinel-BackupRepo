@@ -127,16 +127,23 @@
                     <DataGridTextColumn Header="Email" Binding="{Binding Email}" Width="2.2*"/>
                     <DataGridTextColumn Header="Violations" Binding="{Binding ViolationCount}" Width="0.9*"/>
                     <DataGridTextColumn Header="Risk Level" Binding="{Binding RiskLevel}" Width="1.1*"/>
-                    <DataGridTemplateColumn Header="Actions" Width="1.2*">
+                    <DataGridTemplateColumn Header="Actions" Width="1.8*" MinWidth="240">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
-                                <Button x:Name="BtnExportPdf"
-                                        Content="Export PDF"
-                                        Click="BtnExportPdf_Click"
-                                        Tag="{Binding}"
-                                        Padding="10,5"
-                                        HorizontalAlignment="Center"
-                                        Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Button Content="View Logs"
+                                            Click="BtnViewLogs_Click"
+                                            Tag="{Binding}"
+                                            Padding="10,5"
+                                            Margin="0,0,8,0"
+                                            Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                                    <Button x:Name="BtnExportPdf"
+                                            Content="Export PDF"
+                                            Click="BtnExportPdf_Click"
+                                            Tag="{Binding}"
+                                            Padding="10,5"
+                                            Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                                </StackPanel>
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>

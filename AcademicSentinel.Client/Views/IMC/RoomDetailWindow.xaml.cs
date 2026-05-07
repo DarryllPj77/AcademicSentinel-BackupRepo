@@ -82,18 +82,18 @@ namespace AcademicSentinel.Client.Views.IMC
 
         // ======================== UPDATED SIDEBAR NAVIGATION ========================
 
-        // Both Profile and Courses now point to the TeacherDashboard
-        private void NavProfile_Click(object sender, RoutedEventArgs e) => NavigateBackToDashboard();
-        private void NavCourses_Click(object sender, RoutedEventArgs e) => NavigateBackToDashboard();
+        // Profile button lands the user on the Account Profile panel — bug fix:
+        // previously this routed to the Courses panel just like NavCourses_Click.
+        private void NavProfile_Click(object sender, RoutedEventArgs e) => NavigateBackToDashboard(landOnProfile: true);
+        private void NavCourses_Click(object sender, RoutedEventArgs e) => NavigateBackToDashboard(landOnProfile: false);
 
-        // Back button also returns to the Dashboard
-        private void BtnBack_Click(object sender, RoutedEventArgs e) => NavigateBackToDashboard();
+        // Back button also returns to the Dashboard (Courses panel by default).
+        private void BtnBack_Click(object sender, RoutedEventArgs e) => NavigateBackToDashboard(landOnProfile: false);
 
-        // Helper method to handle the transition
-        private void NavigateBackToDashboard()
+        // Helper method to handle the transition.
+        private void NavigateBackToDashboard(bool landOnProfile)
         {
-            // Create and show the Dashboard
-            var dashboard = new TeacherDashboard();
+            var dashboard = new TeacherDashboard(landOnProfile);
             dashboard.Show();
 
             // Close this Room Detail window to prevent window piling
@@ -135,20 +135,26 @@ namespace AcademicSentinel.Client.Views.IMC
                                 DateTime startTime = s.StartTime.ToLocalTime();
                                 string status = s.Status;
 
-                                string durationText = startTime.ToString("MMM dd, yyyy - hh:mm tt");
+                                // Date column = clean local date/time only.
+                                string dateText = startTime.ToString("MMM dd, yyyy - hh:mm tt");
 
+                                // Duration column = how long the session actually ran,
+                                // in minutes. Empty string if never ended.
+                                string durationOnly = "—";
                                 if (s.EndTime.HasValue)
                                 {
                                     DateTime endTime = s.EndTime.Value.ToLocalTime();
                                     int minutes = (int)Math.Round((endTime - startTime).TotalMinutes);
-                                    durationText += $" ({minutes} mins)";
+                                    if (minutes < 1) minutes = 1;
+                                    durationOnly = $"{minutes} min{(minutes == 1 ? "" : "s")}";
                                 }
 
                                 Sessions.Add(new SessionItem
                                 {
                                     SessionId = $"Session {Math.Max(1, s.SessionNumber)}",
-                                    RealSessionId = s.Id, // Bug fix: Bug2 - carry DB PK through so the archive window loads the correct session
-                                    DateDuration = durationText,
+                                    RealSessionId = s.Id,
+                                    DateDuration = dateText,
+                                    Duration = durationOnly,
                                     StatusText = status,
                                     Status = status,
                                     ExamType = string.IsNullOrWhiteSpace(s.ExamType) ? "Summative" : s.ExamType,
@@ -340,8 +346,9 @@ namespace AcademicSentinel.Client.Views.IMC
     public class SessionItem
     {
         public string SessionId { get; set; } = string.Empty;
-        public int RealSessionId { get; set; } // Bug fix: Bug2 - DB primary key (ExamSessions.Id) for SessionArchiveDetailWindow lookups
-        public string DateDuration { get; set; } = string.Empty;
+        public int RealSessionId { get; set; } // DB primary key (ExamSessions.Id) for SessionArchiveDetailWindow lookups
+        public string DateDuration { get; set; } = string.Empty; // formatted "MMM dd, yyyy - hh:mm tt"
+        public string Duration { get; set; } = string.Empty;     // formatted "N mins" or "—" if not ended
         public string StatusText { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public string ExamType { get; set; } = string.Empty;

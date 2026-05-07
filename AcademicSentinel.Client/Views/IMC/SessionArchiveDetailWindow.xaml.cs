@@ -98,6 +98,33 @@ namespace AcademicSentinel.Client.Views.IMC
             _studentsView?.Refresh();
         }
 
+        // Lets the instructor preview a student's full activity timeline before
+        // committing to a PDF export. Required by spec — see Bug #3 in QA list.
+        private void BtnViewLogs_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button)
+                return;
+
+            var student = button.DataContext as SessionStudentDto;
+            if (student == null)
+                return;
+
+            var dialog = new Dialogs.StudentLogsPreviewDialog(student)
+            {
+                Owner = this
+            };
+
+            // Modal preview. If the user pressed "Export PDF" inside the
+            // dialog, fall through to the existing export flow with the same
+            // student bound — no need to duplicate file-save logic.
+            dialog.ShowDialog();
+
+            if (dialog.ExportRequested)
+            {
+                ExportStudentReport(student);
+            }
+        }
+
         private void BtnExportPdf_Click(object sender, RoutedEventArgs e)
         {
             if (sender is not Button button)
@@ -106,6 +133,14 @@ namespace AcademicSentinel.Client.Views.IMC
             var student = button.DataContext as SessionStudentDto;
             if (student == null)
                 return;
+
+            ExportStudentReport(student);
+        }
+
+        // Shared export pipeline used by both the in-row Export PDF button
+        // and the Export-from-preview button on the logs dialog.
+        private void ExportStudentReport(SessionStudentDto student)
+        {
 
             var saveFileDialog = new SaveFileDialog
             {

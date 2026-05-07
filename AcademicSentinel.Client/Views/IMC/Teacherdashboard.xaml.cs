@@ -22,7 +22,12 @@ namespace AcademicSentinel.Client.Views.IMC
     {
         public ObservableCollection<CourseItem> Courses { get; set; }
 
-        public TeacherDashboard()
+        public TeacherDashboard() : this(landOnProfile: false) { }
+
+        // Overload: lets the caller (e.g. the Profile sidebar button on
+        // RoomDetailWindow) request that the dashboard opens directly on the
+        // Account Profile panel instead of the default Courses panel.
+        public TeacherDashboard(bool landOnProfile)
         {
             InitializeComponent();
 
@@ -32,8 +37,16 @@ namespace AcademicSentinel.Client.Views.IMC
             // Load the Logged-in User's Data
             LoadUserData();
 
-            BtnRoomCourses.IsChecked = true;
-            ShowRoomCourses();
+            if (landOnProfile)
+            {
+                BtnAccountProfile.IsChecked = true;
+                ShowAccountProfile();
+            }
+            else
+            {
+                BtnRoomCourses.IsChecked = true;
+                ShowRoomCourses();
+            }
         }
 
         private async void LoadUserData()

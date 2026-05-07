@@ -44,8 +44,32 @@ namespace AcademicSentinel.Client.Views.Shared
 
                 if (isSuccess)
                 {
-                    // Check the role to decide which dashboard to open!
                     string userRole = SessionManager.CurrentUser?.Role;
+
+                    // Bug fix: enforce that the role the user picked on the
+                    // login form matches the role on the account. Without this,
+                    // a Student account could log in via the Teacher tab and
+                    // (worse) hit a TeacherDashboard route that happens to load.
+                    string selectedRole =
+                        (RbTeacher.IsChecked == true) ? "Instructor" :
+                        (RbStudent.IsChecked == true) ? "Student" :
+                        null;
+
+                    if (selectedRole != null
+                        && !string.Equals(selectedRole, userRole, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Wipe the just-issued session so a wrong-tab login can't
+                        // be exploited by clicking around afterward.
+                        SessionManager.Logout();
+
+                        MessageBox.Show(
+                            $"This account is a {userRole}. Please switch to the {userRole} tab and try again.",
+                            "Wrong account type",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                        ResetLoginButton();
+                        return;
+                    }
 
                     if (userRole == "Instructor")
                     {
