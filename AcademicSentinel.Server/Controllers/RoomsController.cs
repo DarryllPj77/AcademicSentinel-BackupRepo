@@ -170,8 +170,21 @@ public class RoomsController : ControllerBase
 
         _context.ExamSessions.Add(newSession);
 
-        // Update Room Status to Active
+        // Update Room Status to Active.
         room.Status = "Active";
+
+        // Bug fix — explicitly reset IsMonitoringActive to false at session
+        // creation. A previous session that ended ungracefully (instructor
+        // force-quit, network drop before EndExamSession ran) could leave
+        // this flag stuck on `true`, which made:
+        //   1. RequestJoinSession think monitoring was already running →
+        //      forced first-time joiners through approval needlessly.
+        //   2. GetMonitoringState return true to the SAC the moment a
+        //      student joined → detectors fired violations on a session
+        //      that hadn't actually been started yet.
+        // Monitoring only goes live when the instructor presses "Start
+        // Session Monitoring" → BeginMonitoringCountdown sets the flag.
+        room.IsMonitoringActive = false;
 
         await _context.SaveChangesAsync();
 

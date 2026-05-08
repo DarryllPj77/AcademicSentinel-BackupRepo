@@ -113,6 +113,17 @@ public class MonitoringHub : Hub
 
         MonitoringStates[roomId] = false;
 
+        // Bug fix — keep room.IsMonitoringActive in lockstep with the in-memory
+        // MonitoringStates dict so RequestJoinSession (REST) and GetMonitoringState
+        // (hub) agree on whether monitoring is live. During countdown both must
+        // be false; once the timer fires, both flip true.
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room != null)
+        {
+            room.IsMonitoringActive = false;
+            await _context.SaveChangesAsync();
+        }
+
         // Spec v3/v4/v5 — `SessionCountdownStarted` is the spec name for
         // the initial countdown signal. `SessionStatusChanged` carries the
         // current room status (Pending/Countdown/Active/Ended).
@@ -123,6 +134,20 @@ public class MonitoringHub : Hub
         {
             await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, delaySeconds)));
             MonitoringStates[roomId] = true;
+
+            // Persist the active flag in the DB so the join gate and the
+            // SAC's GetMonitoringState see the same truth as the in-memory
+            // dictionary.
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var liveRoom = await db.Rooms.FindAsync(roomId);
+                if (liveRoom != null)
+                {
+                    liveRoom.IsMonitoringActive = true;
+                    await db.SaveChangesAsync();
+                }
+            }
 
             // Discrete `SessionStarted` event (spec) + `SessionStatusChanged`
             // status broadcast + `MonitoringStateChanged(true)` for SAC's
