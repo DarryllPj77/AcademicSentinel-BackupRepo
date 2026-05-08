@@ -664,8 +664,15 @@ namespace AcademicSentinel.Client.Views.SAC
 
                     SetMonitoringActive(true);
                     _currentPhase = ExamPhase.Active;
-                    // Allowed (not Locked) — late joiner can request leave when finished.
-                    _leaveRequestState = LeaveRequestState.Allowed;
+
+                    // Reset Done state so a rejoining student can press Done
+                    // again on this fresh hub connection. Without this, a
+                    // student who was kicked-then-rejoined or whose hub
+                    // reconnected after a network blip would be stuck with a
+                    // disabled "Done — awaiting instructor" button.
+                    _hasSentDone = false;
+
+                    _leaveRequestState = LeaveRequestState.Locked;
                     _isLeaveRequested = false;
                     _monitoringCountdownEndsAt = null;
 
@@ -866,6 +873,10 @@ namespace AcademicSentinel.Client.Views.SAC
                     }, token);
                 });
 
+                // Per QA decision: instructor approval AUTO-EXITS the SAC.
+                // The student no longer needs to click a second "Permission
+                // Granted - Leave Now" button — the window closes itself and
+                // returns the student to the dashboard.
                 _hubConnection.On<int>("LeaveGranted", grantedStudentId =>
                 {
                     Dispatcher.Invoke(async () =>
@@ -874,35 +885,24 @@ namespace AcademicSentinel.Client.Views.SAC
                         if (grantedStudentId != currentStudentId)
                             return;
 
+                        // Brief acknowledgement so the student sees what happened.
+                        TxtMonitoringStatus.Text = "Approved — returning to dashboard...";
+                        TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                        if (FindName("TxtCompactMonitoringStatus") is TextBlock compactStatus)
+                        {
+                            compactStatus.Text = "Approved — returning to dashboard...";
+                            compactStatus.Foreground = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                        }
+
+                        // Tear everything down and exit.
                         if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
                         _detectorRuntime?.Stop();
-
                         if (_detectorRuntime != null)
-                        {
                             await _detectorRuntime.StopMonitoringAsync();
-                        }
 
-                        await ForceStopSignalRAsync();
-                        StopMonitoringForApprovedLeave();
-                        _leaveRequestState = LeaveRequestState.Unlocked;
-                        _isLeaveRequested = false;
-                        TxtMonitoringStatus.Text = "Permission Granted - Leave Now";
-                        TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                        if (FindName("TxtCompactLeavePermission") is TextBlock leavePerm)
-                        {
-                            leavePerm.Text = "Permission Granted - Leave Now";
-                            leavePerm.Foreground = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                        }
-
-                        if (FindName("BtnRequestLeave") is Button leaveButton)
-                        {
-                            leaveButton.Content = "Permission Granted - Leave Now";
-                            leaveButton.IsEnabled = true;
-                            leaveButton.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                            leaveButton.Foreground = Brushes.White;
-                        }
-
-                        UpdateRequestLeaveButtonState();
+                        // LeaveSessionSafelyAsync handles allowClose, timer
+                        // shutdown, hub teardown, and dashboard navigation.
+                        await LeaveSessionSafelyAsync(currentStudentId);
                     });
                 });
 
@@ -1244,10 +1244,18 @@ namespace AcademicSentinel.Client.Views.SAC
             }
         }
 
-        // Spec v4/v5 — Soft Lock "Done" button.
-        // Sends a SessionCompletionRequest to the server so the instructor sees
-        // the student is finished. Does NOT immediately allow exit; the leave
-        // button still has to go through the existing approval gate.
+        // Spec v4/v5 (final QA decision) — Soft Lock "Done" workflow.
+        //
+        //   1. Student clicks Done.
+        //   2. SAC sends RequestSessionCompletion to the hub; instructor sees
+        //      the student in "Completed Assessment" state via DONE feed entry.
+        //   3. SAC locks Done to "awaiting instructor" and waits.
+        //   4. Instructor reviews and approves (existing GrantLeave flow).
+        //   5. Server fires LeaveGranted; SAC AUTO-EXITS to StudentDashboard.
+        //      The student does NOT need to click anything else.
+        //
+        // There is no "Request to Leave" button anymore — Done is the only
+        // way out of an active session.
         private bool _hasSentDone;
 
         private async void BtnDone_Click(object sender, RoutedEventArgs e)
@@ -1259,7 +1267,6 @@ namespace AcademicSentinel.Client.Views.SAC
             if (_hasSentDone)
                 return;
 
-            // Available only during active monitoring (after countdown).
             if (_sessionEnded || _currentPhase != ExamPhase.Active)
             {
                 MessageBox.Show(
@@ -1278,24 +1285,17 @@ namespace AcademicSentinel.Client.Views.SAC
                 }
 
                 _hasSentDone = true;
-                BtnDone.IsEnabled = false;
-                BtnDone.Content = "Done — awaiting instructor";
-                BtnDone.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
-                BtnDone.Foreground = new SolidColorBrush(
-                    (Color)ColorConverter.ConvertFromString("#424242"));
+                UpdateRequestLeaveButtonState();
 
                 await _hubConnection.InvokeAsync("RequestSessionCompletion", _roomId, studentId);
 
                 DetectionReports.Insert(0,
-                    $"System: You marked the assessment as Done. Instructor has been notified. ({DateTime.Now:h:mm:ss tt})");
+                    $"System: You marked the assessment as Done. Waiting for instructor approval... ({DateTime.Now:h:mm:ss tt})");
             }
             catch (Exception ex)
             {
                 _hasSentDone = false;
-                BtnDone.IsEnabled = true;
-                BtnDone.Content = "Done";
-                BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                BtnDone.Foreground = Brushes.White;
+                UpdateRequestLeaveButtonState();
 
                 MessageBox.Show($"Could not send Done signal: {ex.Message}", "Done",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1411,55 +1411,94 @@ namespace AcademicSentinel.Client.Views.SAC
             ReturnToStudentDashboard();
         }
 
+        // Final softlock state machine (per QA decision):
+        //
+        //   PreSession (waiting room)    → "Leave Session" only      (green)
+        //   Active (live monitoring)     → "Done" only               (green)
+        //   Active + Done already sent   → "Done — awaiting…" disabled (gray)
+        //   Paused by instructor         → BOTH buttons HIDDEN
+        //   Session Ended                → "Leave Session" only      (green)
+        //
+        // The Done button is the only way out of an active session — there is
+        // no "Request to Leave" path anymore. After the instructor approves
+        // (LeaveGranted hub event) the SAC auto-exits to the dashboard.
+        //
+        // Compact view hides Done entirely (per spec / QA): the student must
+        // expand to full mode to press Done. Status text remains visible.
         private void UpdateRequestLeaveButtonState()
         {
-            if (FindName("BtnRequestLeave") is not Button btn)
-                return;
-
             Dispatcher.Invoke(() =>
             {
+                if (BtnRequestLeave == null || BtnDone == null)
+                    return;
+
+                // Default: hide both. Show below as needed.
+                BtnRequestLeave.Visibility = Visibility.Collapsed;
+                BtnDone.Visibility = Visibility.Collapsed;
+
+                // Compact mode never shows action buttons (they distract from
+                // the always-on-top status overlay). Student expands to act.
+                bool isCompactMode = FindName("CompactPanel") is FrameworkElement compact
+                                     && compact.Visibility == Visibility.Visible;
+                if (isCompactMode)
+                    return;
+
                 if (_sessionEnded)
                 {
-                    btn.Content = "Leave Session";
-                    btn.IsEnabled = true;
-                    btn.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                    btn.Foreground = Brushes.White;
+                    BtnRequestLeave.Visibility = Visibility.Visible;
+                    BtnRequestLeave.Content = "Leave Session";
+                    BtnRequestLeave.IsEnabled = true;
+                    BtnRequestLeave.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                    BtnRequestLeave.Foreground = Brushes.White;
                     return;
                 }
 
                 if (_currentPhase == ExamPhase.PreSession)
                 {
-                    btn.Content = "Leave Session";
-                    btn.IsEnabled = true;
-                    btn.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                    btn.Foreground = Brushes.White;
+                    // Student is in the waiting room — free leave allowed.
+                    BtnRequestLeave.Visibility = Visibility.Visible;
+                    BtnRequestLeave.Content = "Leave Session";
+                    BtnRequestLeave.IsEnabled = true;
+                    BtnRequestLeave.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                    BtnRequestLeave.Foreground = Brushes.White;
                     return;
                 }
 
-                if (_leaveRequestState == LeaveRequestState.Unlocked)
+                // Paused = phase Active but monitoring not running.
+                bool isPausedByInstructor =
+                    _currentPhase == ExamPhase.Active && !_isMonitoringActive;
+                if (isPausedByInstructor)
                 {
-                    btn.Content = "Permission Granted - Leave Now";
-                    btn.IsEnabled = true;
-                    btn.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                    btn.Foreground = Brushes.White;
+                    // Spec: PAUSED BY INSTRUCTOR → all buttons disappear.
                     return;
                 }
 
-                if (_leaveRequestState == LeaveRequestState.Pending)
+                // Countdown phase (initial 10s before session goes Active, or
+                // resume countdown after pause) — keep buttons hidden so the
+                // student doesn't click anything while the timer ticks.
+                if (_currentPhase == ExamPhase.Countdown)
+                    return;
+
+                if (_currentPhase == ExamPhase.Active)
                 {
-                    btn.Content = "Waiting for Instructor...";
-                    btn.IsEnabled = false;
-                    btn.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
-                    btn.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#424242"));
-                    return;
+                    // Active monitoring → Done is the ONLY way out.
+                    BtnDone.Visibility = Visibility.Visible;
+                    if (_hasSentDone)
+                    {
+                        BtnDone.Content = "Done — awaiting instructor";
+                        BtnDone.IsEnabled = false;
+                        BtnDone.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                        BtnDone.Foreground = new SolidColorBrush(
+                            (Color)ColorConverter.ConvertFromString("#424242"));
+                    }
+                    else
+                    {
+                        BtnDone.Content = "Done";
+                        BtnDone.IsEnabled = true;
+                        BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                        BtnDone.Foreground = Brushes.White;
+                    }
                 }
-
-                // Default for any non-free-leave state (Active locked, or resume countdown):
-                // strictly "Request to Leave" — never a hard "Cannot Leave" trap.
-                btn.Content = "Request to Leave";
-                btn.IsEnabled = true;
-                btn.Background = new SolidColorBrush(Color.FromRgb(211, 47, 47));
-                btn.Foreground = Brushes.White;
             });
         }
 
@@ -1529,39 +1568,43 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private void UpdateHeaderSessionClock()
         {
-            if (FindName("TxtHeaderSessionClock") is not System.Windows.Controls.TextBlock headerClock)
-                return;
+            // Per QA: countdown lives at the BOTTOM-LEFT of the SAC softlock,
+            // not in the header. We compute the same text and write it into
+            // TxtBottomCountdown. Header clock is cleared (kept in XAML for
+            // backward compat — empty string just hides it visually).
+            string text = ComputeCountdownText();
 
+            if (FindName("TxtHeaderSessionClock") is System.Windows.Controls.TextBlock headerClock)
+                headerClock.Text = string.Empty;
+
+            if (FindName("TxtBottomCountdown") is System.Windows.Controls.TextBlock bottomClock)
+                bottomClock.Text = text;
+        }
+
+        private string ComputeCountdownText()
+        {
             if (_sessionEnded)
-            {
-                headerClock.Text = "SESSION ENDED";
-                return;
-            }
+                return "SESSION ENDED";
 
             if (_monitoringCountdownEndsAt.HasValue)
             {
                 var left = _monitoringCountdownEndsAt.Value - DateTime.Now;
                 if (left < TimeSpan.Zero) left = TimeSpan.Zero;
-                headerClock.Text = $"Starts In: {left:mm\\:ss}";
-                return;
+                return $"Starts In: {left:mm\\:ss}";
             }
 
             if (_monitoringStartedAt.HasValue && _isMonitoringActive)
             {
                 if (!_timerEnabled)
-                {
-                    headerClock.Text = string.Empty;
-                    return;
-                }
+                    return string.Empty;
 
                 var elapsed = DateTime.Now - _monitoringStartedAt.Value;
                 var remaining = _currentMonitoringDuration - elapsed;
                 if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
-                headerClock.Text = $"Timer: {remaining:mm\\:ss}";
-                return;
+                return $"Timer: {remaining:mm\\:ss}";
             }
 
-            headerClock.Text = string.Empty;
+            return string.Empty;
         }
 
         private void BtnExpandCompact_Click(object sender, RoutedEventArgs e)

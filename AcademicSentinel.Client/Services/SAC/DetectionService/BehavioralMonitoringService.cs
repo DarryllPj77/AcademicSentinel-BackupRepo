@@ -158,10 +158,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             if (!_settings.EnableFocusDetection)
                 return;
 
-            // RTFM sustained-loss: independent of foreground-changes, keep an
-            // ongoing timer for "how long has SAC been NOT in front?" Fire
-            // RTFM_SUSTAINED_LOSS once per loss period when it crosses 10s.
-            EvaluateSustainedFocusLoss(isSacWindowActive, findings);
+            // RTFM sustained-loss check disabled per QA feedback — the rate
+            // window (3 in 60s) is sufficient and the sustained-loss event
+            // was firing too noisily for normal exam workflow.
+            // EvaluateSustainedFocusLoss(isSacWindowActive, findings);
 
             var foreground = GetForegroundWindow();
             if (foreground != _lastForegroundWindow)
