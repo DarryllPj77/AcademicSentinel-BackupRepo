@@ -1077,87 +1077,138 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
-                _hubConnection.On<JoinDeniedDto>("OnJoinDenied", async response =>
+                // R2 — Join-Denied lockdown with 5-second countdown.
+                // Hub event name `OnJoinDenied` is the existing server contract;
+                // we also listen for the spec-friendly alias `JoinDenied` so
+                // either server build broadcasts correctly.
+                Func<JoinDeniedDto, Task> handleJoinDenied = async response =>
                 {
-                    // Bug fix: Bug1 - mark denied BEFORE StopAsync so reconnect/closed handlers short-circuit
+                    // Mark denied BEFORE StopAsync so reconnect/closed handlers
+                    // short-circuit and don't fight the countdown.
                     _isDenied = true;
-                    // Bug fix: Bug5 - kill hub connection before UI work to prevent post-denial leave-request abuse
+
+                    // Cut the hub up-front so there's no path back into the
+                    // session while the dialog ticks.
                     if (_hubConnection != null)
                     {
                         try { await _hubConnection.StopAsync(); } catch { }
                     }
 
-                    await Dispatcher.InvokeAsync(() =>
+                    // Stop background tasks (detector + dispatcher timers).
+                    _detectorRuntime?.Stop();
+                    _detectorsRunning = false;
+                    _statusTimer?.Stop();
+                    _compactCountdownTimer?.Stop();
+                    _detectorPollTimer?.Stop();
+
+                    await Dispatcher.InvokeAsync(async () =>
                     {
                         _awaitingJoinApproval = false;
 
                         if (WaitingScreenOverlay != null)
                             WaitingScreenOverlay.Visibility = Visibility.Collapsed;
 
-                        // Denial UI: show the rejection message and hide Done.
-                        // The dialog auto-closes after 3 s and routes back to
-                        // the dashboard — no button needed for the student
-                        // to dismiss it manually.
-                        TxtMonitoringStatus.Text = "Access Denied: The Instructor rejected your join request.";
-                        TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(211, 47, 47));
+                        // No exit button — the countdown auto-closes the window.
                         if (BtnDone != null) BtnDone.Visibility = Visibility.Collapsed;
 
-                        // Bug fix: Denial UI cleanup - hide irrelevant monitoring status label
-                        TxtMonitoringStatus.Visibility = Visibility.Collapsed;
-                        // Bug fix: Denial UI cleanup - hide irrelevant compact monitoring status label
-                        if (FindName("TxtCompactMonitoringStatus") is System.Windows.Controls.TextBlock _denialCompactMonStatus)
-                            _denialCompactMonStatus.Visibility = Visibility.Collapsed;
-                        // Bug fix: Denial UI cleanup - hide irrelevant leave permission status label (xaml name: TxtCompactLeavePermission)
-                        if (FindName("TxtCompactLeavePermission") is System.Windows.Controls.TextBlock _denialLeavePermStatus)
-                            _denialLeavePermStatus.Visibility = Visibility.Collapsed;
+                        var redBrush = new SolidColorBrush(Color.FromRgb(211, 47, 47));
 
-                        // Bug fix: Denial UI cleanup - removed redundant MessageBox; UI button + redirect already communicates denial
-                        // MessageBox.Show("The Instructor Denied your request to join.", "Access Denied", MessageBoxButton.OK, MessageBoxImage.Error);
+                        // 5-second countdown — re-render every second.
+                        for (int remaining = 5; remaining > 0; remaining--)
+                        {
+                            string banner = $"Instructor denied your request to join. Going back to dashboard in {remaining}...";
+                            TxtMonitoringStatus.Text = banner;
+                            TxtMonitoringStatus.Foreground = redBrush;
+                            TxtMonitoringStatus.Visibility = Visibility.Visible;
 
+                            if (FindName("TxtCompactMonitoringStatus") is TextBlock compact)
+                            {
+                                compact.Text = banner;
+                                compact.Foreground = redBrush;
+                                compact.Visibility = Visibility.Visible;
+                            }
+                            if (FindName("TxtHeaderMonitoringStatus") is TextBlock header)
+                            {
+                                header.Text = banner;
+                                header.Foreground = redBrush;
+                            }
+                            await Task.Delay(1000);
+                        }
+
+                        // Bypass OnClosing's softlock guard and exit cleanly.
                         _allowClose = true;
+                        _isPermanentlyDone = true;
+                        _isLeaveApproved = true;
+                        try { new StudentDashboard().Show(); } catch { }
+                        Close();
                     });
+                };
 
-                    // Bug fix: Bug3 - delay before redirect so denial UI state is visible to the student
-                    await Task.Delay(3000);
-                    // Bug fix: Bug3 - return to dashboard after dedicated denial UI state has been shown
-                    await Dispatcher.InvokeAsync(() => ReturnToStudentDashboard());
-                });
+                _hubConnection.On<JoinDeniedDto>("OnJoinDenied", async r => await handleJoinDenied(r));
+                _hubConnection.On<JoinDeniedDto>("JoinDenied",   async r => await handleJoinDenied(r));
 
+                // R1 — End-Session lockdown with 3-second countdown.
+                // Server fires SessionEnded; SAC stops the detector, freezes
+                // the UI to the END banner, ticks down 3 → 2 → 1, then
+                // closes the window so the dashboard regains focus.
                 _hubConnection.On("SessionEnded", () =>
                 {
-                    Dispatcher.Invoke(() =>
+                    _ = Dispatcher.InvokeAsync(async () =>
                     {
+                        // Stop the hardware detector immediately — no further
+                        // polls or violations after the session ends.
                         if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
                         _detectorRuntime?.Stop();
+                        _detectorsRunning = false;
+
                         _sessionEnded = true;
                         _monitoringCountdownEndsAt = null;
                         _monitoringStartedAt = null;
                         _timerEnabled = false;
                         SetMonitoringActive(false);
-                        TxtMonitoringStatus.Text = "Session Ended - You may now leave the session";
-                        TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(97, 97, 97));
 
-                        if (FindName("TxtCompactMonitoringStatus") is System.Windows.Controls.TextBlock compactStatus)
+                        // Hide Done immediately — the countdown is the only
+                        // exit path now, no manual action.
+                        if (BtnDone != null) BtnDone.Visibility = Visibility.Collapsed;
+
+                        // Stop the hub up-front so reconnect/closed handlers
+                        // can't fight the countdown.
+                        _ = ForceStopSignalRAsync();
+
+                        // Stop the WPF dispatcher timers before Close()
+                        // so a queued tick can't touch a disposed visual tree.
+                        _statusTimer?.Stop();
+                        _compactCountdownTimer?.Stop();
+                        _detectorPollTimer?.Stop();
+
+                        var greyBrush = new SolidColorBrush(Color.FromRgb(97, 97, 97));
+
+                        // 3-second countdown — re-render every second.
+                        for (int remaining = 3; remaining > 0; remaining--)
                         {
-                            compactStatus.Text = "Monitoring: Session Ended";
-                            compactStatus.Foreground = new SolidColorBrush(Color.FromRgb(97, 97, 97));
+                            string banner = $"Session Ended. Returning to dashboard in {remaining}...";
+                            TxtMonitoringStatus.Text = banner;
+                            TxtMonitoringStatus.Foreground = greyBrush;
+
+                            if (FindName("TxtCompactMonitoringStatus") is TextBlock compact)
+                            {
+                                compact.Text = banner;
+                                compact.Foreground = greyBrush;
+                            }
+                            if (FindName("TxtHeaderMonitoringStatus") is TextBlock header)
+                            {
+                                header.Text = banner;
+                                header.Foreground = greyBrush;
+                            }
+                            await Task.Delay(1000);
                         }
-                        if (FindName("TxtHeaderMonitoringStatus") is System.Windows.Controls.TextBlock headerStatus)
-                        {
-                            headerStatus.Text = "Monitoring: Session Ended";
-                            headerStatus.Foreground = new SolidColorBrush(Color.FromRgb(97, 97, 97));
-                        }
-                        if (FindName("TxtCompactCountdown") is System.Windows.Controls.TextBlock countdown)
-                            countdown.Text = "";
-                        if (FindName("TxtCompactLeavePermission") is System.Windows.Controls.TextBlock leavePerm)
-                        {
-                            leavePerm.Text = "Leave Permission: Allowed";
-                            leavePerm.Foreground = new SolidColorBrush(Color.FromRgb(97, 97, 97));
-                        }
-                        _ = _hubConnection?.StopAsync();
-                        _hubConnection = null;
-                        UpdateDetectorRuntimeState();
-                        UpdateRequestLeaveButtonState();
+
+                        // Bypass OnClosing's softlock guard and exit cleanly.
+                        _allowClose = true;
+                        _isPermanentlyDone = true;
+                        _isLeaveApproved = true;
+                        try { new StudentDashboard().Show(); } catch { }
+                        Close();
                     });
                 });
 
@@ -1393,17 +1444,16 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 if (_currentPhase == ExamPhase.Active)
                 {
-                    // STATE 2 — Active. Done VISIBLE.
+                    // STATE 2 — Active. Done VISIBLE in BOTH full and compact
+                    // views. Per QA fix: visibility is strictly tied to the
+                    // ExamPhase state machine, not to window dimensions or
+                    // compact-mode panel visibility. The button lives in the
+                    // header bar (always rendered above the panel area) so
+                    // it stays reachable regardless of how the student
+                    // resizes the window.
                     SetStatusUI("Monitoring: ACTIVE",
                         new SolidColorBrush(Color.FromRgb(198, 40, 40)),
                         permissionText, permissionColor);
-
-                    // Compact view hides Done entirely (always-on-top overlay
-                    // shouldn't expose the exit button). Student expands first.
-                    bool isCompactMode = FindName("CompactPanel") is FrameworkElement compact
-                                         && compact.Visibility == Visibility.Visible;
-                    if (isCompactMode)
-                        return;
 
                     BtnDone.Visibility = Visibility.Visible;
                     if (_hasSentDone)
