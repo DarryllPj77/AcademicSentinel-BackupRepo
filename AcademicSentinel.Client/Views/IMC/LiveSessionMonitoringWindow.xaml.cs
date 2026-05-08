@@ -1065,6 +1065,13 @@ namespace AcademicSentinel.Client.Views.IMC
                 _selectedStudentId = _selectedStudent.StudentId;
                 if (FindName("RightDetailPanel") is Border rightDetailPanel)
                     rightDetailPanel.Visibility = Visibility.Visible;
+
+                // Bug fix — ResetToMainMonitoringView (called by the X close
+                // button) collapses BOTH the outer RightDetailPanel AND this
+                // inner StudentDetailPanel. Without explicitly re-showing
+                // the inner panel here, the second click on a student would
+                // open an empty right column.
+                StudentDetailPanel.Visibility = Visibility.Visible;
                 StudentDetailPanel.DataContext = _selectedStudent;
 
                 TxtSelectedName.Text = _selectedStudent.Name;
