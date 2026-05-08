@@ -555,6 +555,38 @@ public class MonitoringHub : Hub
         await Clients.Group(roomId.ToString()).SendAsync("LeaveApprovalUpdated", studentId, true);
     }
 
+    // Instructor denies a Done / RequestLeaveApproval request. The student's
+    // SAC restores its Done button so they can request again later. No state
+    // change other than an audit-trail entry — the room stays Active.
+    public async Task DenyLeaveRequest(int roomId, int studentId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var instructorIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return;
+
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null || room.InstructorId != instructorId)
+            return;
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId = roomId,
+            StudentId = studentId,
+            EventType = "LEAVE_REQUEST_DENIED",
+            Description = "Instructor denied the student's Done request.",
+            SeverityScore = 0,
+            Timestamp = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        // Direct-to-student so only the requesting student sees the denial.
+        await Clients.User(studentId.ToString()).SendAsync("LeaveRequestDenied", studentId);
+    }
+
     public async Task NotifyStudentLeftSafely(int roomId, int studentId)
     {
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;

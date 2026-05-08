@@ -390,12 +390,20 @@
                                                                 Visibility="{Binding IsJoinApprovalPending, Converter={StaticResource BoolToVis}}"
                                                                 Click="BtnDenyJoin_Click"/>
                                                         <Button x:Name="BtnApproveLeave"
-                                                                Content="Approve Leave"
+                                                                Content="Approve"
                                                                 Style="{StaticResource PrimaryBtn}"
                                                                 FontSize="10"
                                                                 Padding="8,4"
+                                                                Margin="0,0,6,0"
                                                                 Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
                                                                 Click="BtnApproveLeave_Click"/>
+                                                        <Button x:Name="BtnDenyLeave"
+                                                                Content="Deny"
+                                                                Style="{StaticResource GhostBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnDenyLeave_Click"/>
                                                     </StackPanel>
                                                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0">
                                                         <materialDesign:PackIcon Kind="AlertCircle"

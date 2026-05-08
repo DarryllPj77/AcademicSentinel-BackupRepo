@@ -652,13 +652,16 @@ namespace AcademicSentinel.Client.Views.IMC
                 _studentsView.Refresh();
             })));
 
-            // Spec v4/v5 — Soft Lock "Done" notification.
-            // Student pressed Done; surface as a DONE entry in the live feed so
-            // the instructor can verify completion before granting leave.
+            // Soft Lock "Done" approval-request loop.
+            // Student pressed Done → surface as a DONE entry in the live feed
+            // AND flip IsLeaveRequested=true so the Approve/Deny buttons
+            // appear next to the student's row in the Participants tab.
             _hubSubscriptions.Add(_hubConnection.On<int>("SessionCompletionRequested", studentId => Dispatcher.Invoke(() =>
             {
                 if (_permanentlyDismissedStudents.Contains(studentId))
                     return;
+
+                _leaveRequestedStateByStudentId[studentId] = true;
 
                 var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 var email = targetStudent?.Email
@@ -667,7 +670,8 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 if (targetStudent != null)
                 {
-                    targetStudent.Status = "Completed Assessment";
+                    targetStudent.IsLeaveRequested = true;   // ← shows Approve/Deny buttons via XAML binding
+                    targetStudent.Status = "Awaiting Approval";
                     targetStudent.StatusColor = "#1B5E20";
                 }
 
@@ -847,6 +851,31 @@ namespace AcademicSentinel.Client.Views.IMC
             catch (Exception ex)
             {
                 MessageBox.Show($"Failed to grant leave: {ex.Message}", "Grant Leave", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        // Deny path — does NOT exit the student. Tells the SAC to restore
+        // its Done button so the student can request again later.
+        private async void BtnDenyLeave_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn || btn.DataContext is not LiveStudentStatus student)
+                return;
+
+            try
+            {
+                await _hubConnection.InvokeAsync("DenyLeaveRequest", _roomId, student.StudentId);
+
+                _leaveRequestedStateByStudentId[student.StudentId] = false;
+                student.IsLeaveRequested = false;
+                student.Status = "Connected";
+                student.StatusColor = "#4CAF50";
+
+                LogActivity(student.Email, "DENY", "Instructor denied the Done request — student can resume work.", "#FF9800");
+                _studentsView.Refresh();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to deny leave: {ex.Message}", "Deny Leave", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 

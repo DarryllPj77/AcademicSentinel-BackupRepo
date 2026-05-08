@@ -903,6 +903,24 @@ namespace AcademicSentinel.Client.Views.SAC
                 _hubConnection.On<int>("LeaveApproved", id => handleLeaveApproved(id));
                 _hubConnection.On<int>("LeaveGranted",  id => handleLeaveApproved(id));
 
+                // Instructor denied the Done request — restore the button so
+                // the student can request again later. Session stays active.
+                _hubConnection.On<int>("LeaveRequestDenied", deniedStudentId =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        int currentStudentId = SessionManager.CurrentUser?.Id ?? 0;
+                        if (deniedStudentId != currentStudentId)
+                            return;
+
+                        _hasSentDone = false;
+                        UpdateUIForPhase();
+
+                        DetectionReports.Insert(0,
+                            $"System: Instructor denied your Done request — you can request again. ({DateTime.Now:h:mm:ss tt})");
+                    });
+                });
+
                 _hubConnection.On<int, int>("SessionCountdownStarted", (delay, duration) =>
                 {
                     _stateCts?.Cancel();
