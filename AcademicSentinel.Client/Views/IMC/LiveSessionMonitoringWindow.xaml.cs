@@ -1105,9 +1105,16 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void BtnCloseDetailPanel_Click(object sender, RoutedEventArgs e)
         {
-            CollapseDetailPanel();
+            // Bug fix — when the instructor closes the Student Details
+            // panel, the right-hand log header was leaving "Logs: <name>"
+            // stuck and the feed kept its per-student filter. Route through
+            // the full ResetToMainMonitoringView() so:
+            //   - TxtLogHeader → "Global Log Feed"
+            //   - _selectedStudent / _selectedStudentId cleared
+            //   - _logsView.Filter cleared (every entry visible again)
+            //   - Participants list selection cleared
+            ResetToMainMonitoringView();
             LogFeedItemsControl.ItemsSource = _logsView;
-            _selectedStudentId = null;
             ApplyAllFilters();
         }
 
