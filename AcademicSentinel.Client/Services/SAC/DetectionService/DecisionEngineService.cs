@@ -38,12 +38,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "FOCUS_LOST":
                         newEvent.SeverityScore = 10;
                         break;
-                    // RTFM aggressive escalations (rate window / sustained loss).
-                    // Spec: "Passive → escalates to Aggressive if repeated".
-                    case "RTFM_RATE":
-                    case "RTFM_SUSTAINED":
-                        newEvent.SeverityScore = 50;
-                        break;
+                    // RTFM_RATE / RTFM_SUSTAINED removed — see BehavioralMonitoringService.
                     case "IDLE":
                     case "INACTIVITY":
                         newEvent.SeverityScore = 10;

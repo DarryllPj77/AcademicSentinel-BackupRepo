@@ -58,30 +58,21 @@
                             Padding="10,6" FontSize="13" Cursor="Hand"
                             Content="□" Click="BtnExpandCompact_Click"/>
 
+                    <!-- The only exit button. Visibility controlled strictly
+                         by the state machine in UpdateUIForPhase(): visible
+                         during Active, hidden in Pre-Exam / Paused / Compact. -->
                     <Button x:Name="BtnDone"
                             Content="Done"
                             Padding="12,7"
-                            MinWidth="100"
-                            Margin="0,0,10,0"
+                            MinWidth="120"
                             FontSize="16"
                             FontWeight="Bold"
                             Cursor="Hand"
                             Background="#1B5E20"
                             Foreground="White"
                             BorderThickness="0"
+                            Visibility="Collapsed"
                             Click="BtnDone_Click"/>
-
-                    <Button x:Name="BtnRequestLeave"
-                            Content="Request to Leave"
-                            Padding="12,7"
-                            MinWidth="138"
-                            FontSize="16"
-                            FontWeight="Bold"
-                            Cursor="Hand"
-                            Background="#D32F2F"
-                            Foreground="White"
-                            BorderThickness="0"
-                            Click="BtnRequestLeave_Click"/>
                 </StackPanel>
             </Grid>
         </Border>

@@ -45,20 +45,15 @@ namespace AcademicSentinel.Client.Views.SAC
             Active
         }
 
-        private enum LeaveRequestState
-        {
-            Locked,
-            Allowed,
-            Pending,
-            Unlocked
-        }
+        // LeaveRequestState enum removed per QA overhaul — there is no
+        // manual "Request to Leave" path anymore. The Done button is the
+        // ONLY exit. _hasSentDone (declared next to BtnDone_Click) carries
+        // the "awaiting instructor approval" sub-state.
 
         private ExamPhase _currentPhase = ExamPhase.PreSession;
-        private LeaveRequestState _leaveRequestState = LeaveRequestState.Locked;
         private bool _allowClose;
         private bool _isPermanentlyDone;
         private bool _isLeaveApproved;
-        private bool _isLeaveRequested;
         private bool _isHandlingFailure = false;
         private bool _isTransitioningState = false;
         private System.Threading.CancellationTokenSource _stateCts;
@@ -102,7 +97,6 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             InitializeComponent();
 
-            _isLeaveRequested = false;
             _isLeaveApproved = false;
             if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
 
@@ -672,8 +666,6 @@ namespace AcademicSentinel.Client.Views.SAC
                     // disabled "Done — awaiting instructor" button.
                     _hasSentDone = false;
 
-                    _leaveRequestState = LeaveRequestState.Locked;
-                    _isLeaveRequested = false;
                     _monitoringCountdownEndsAt = null;
 
                     UpdateRequestLeaveButtonState();
@@ -741,7 +733,6 @@ namespace AcademicSentinel.Client.Views.SAC
                             return;
 
                         _currentPhase = ExamPhase.Countdown;
-                        _leaveRequestState = LeaveRequestState.Locked;
                         UpdateRequestLeaveButtonState();
                     });
                 });
@@ -774,8 +765,6 @@ namespace AcademicSentinel.Client.Views.SAC
                         _monitoringStartedAt = null;
                         if (!_sessionEnded)
                             _currentPhase = ExamPhase.PreSession;
-                        _leaveRequestState = LeaveRequestState.Locked;
-                        _isLeaveRequested = false;
                     }
 
                     string text = isActive ? "ACTIVE" : "INACTIVE";
@@ -796,8 +785,6 @@ namespace AcademicSentinel.Client.Views.SAC
                         _monitoringStartedAt = null;
                         if (!_sessionEnded)
                             _currentPhase = ExamPhase.Active;
-                        _leaveRequestState = LeaveRequestState.Locked;
-                        _isLeaveRequested = false;
 
                         if (_detectorRuntime != null)
                             _detectorRuntime.IsPaused = true;
@@ -821,7 +808,6 @@ namespace AcademicSentinel.Client.Views.SAC
                         _isMonitoringActive = false;
                         _monitoringCountdownEndsAt = DateTime.Now.AddSeconds(10);
                         _currentPhase = ExamPhase.Countdown;
-                        _leaveRequestState = LeaveRequestState.Locked;
                         UpdateDetectorRuntimeState();
                         UpdateRequestLeaveButtonState();
                     });
@@ -856,7 +842,6 @@ namespace AcademicSentinel.Client.Views.SAC
 
                                 SetMonitoringActive(true);
                                 _currentPhase = ExamPhase.Active;
-                                _leaveRequestState = LeaveRequestState.Locked;
                                 UpdateRequestLeaveButtonState();
 
                                 if (_detectorRuntime != null)
@@ -874,16 +859,25 @@ namespace AcademicSentinel.Client.Views.SAC
                 });
 
                 // Per QA decision: instructor approval AUTO-EXITS the SAC.
-                // The student no longer needs to click a second "Permission
-                // Granted - Leave Now" button — the window closes itself and
-                // returns the student to the dashboard.
-                _hubConnection.On<int>("LeaveGranted", grantedStudentId =>
+                // The student no longer needs to click a second button — the
+                // window closes itself and returns to the dashboard.
+                //
+                // Listen for both `LeaveApproved` (new spec name, user's R2)
+                // and `LeaveGranted` (legacy) so this works against either
+                // server build. Both go through the same handler; a re-entry
+                // guard makes it idempotent.
+                bool _leaveExitInFlight = false;
+                Action<int> handleLeaveApproved = grantedStudentId =>
                 {
                     Dispatcher.Invoke(async () =>
                     {
                         int currentStudentId = SessionManager.CurrentUser?.Id ?? 0;
                         if (grantedStudentId != currentStudentId)
                             return;
+
+                        if (_leaveExitInFlight)
+                            return;
+                        _leaveExitInFlight = true;
 
                         // Brief acknowledgement so the student sees what happened.
                         TxtMonitoringStatus.Text = "Approved — returning to dashboard...";
@@ -904,7 +898,10 @@ namespace AcademicSentinel.Client.Views.SAC
                         // shutdown, hub teardown, and dashboard navigation.
                         await LeaveSessionSafelyAsync(currentStudentId);
                     });
-                });
+                };
+
+                _hubConnection.On<int>("LeaveApproved", id => handleLeaveApproved(id));
+                _hubConnection.On<int>("LeaveGranted",  id => handleLeaveApproved(id));
 
                 _hubConnection.On<int, int>("SessionCountdownStarted", (delay, duration) =>
                 {
@@ -915,7 +912,6 @@ namespace AcademicSentinel.Client.Views.SAC
                     _isMonitoringActive = false;
                     _monitoringCountdownEndsAt = DateTime.Now.AddSeconds(Math.Max(0, delay));
                     _currentPhase = ExamPhase.Countdown;
-                    _leaveRequestState = LeaveRequestState.Locked;
                     UpdateDetectorRuntimeState();
                     UpdateRequestLeaveButtonState();
 
@@ -1036,14 +1032,9 @@ namespace AcademicSentinel.Client.Views.SAC
                             headerStatus.Foreground = new SolidColorBrush(Color.FromRgb(198, 40, 40));
                         }
 
-                        // Lock the leave button so the student can't fight the countdown.
-                        if (FindName("BtnRequestLeave") is Button leaveButton)
-                        {
-                            leaveButton.IsEnabled = false;
-                            leaveButton.Content = "Removed from Session";
-                            leaveButton.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
-                            leaveButton.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#424242"));
-                        }
+                        // Hide Done so the student can't fight the countdown.
+                        if (BtnDone != null)
+                            BtnDone.Visibility = Visibility.Collapsed;
 
                         DetectionReports.Insert(0, $"System: Removed by instructor. ({DateTime.Now:h:mm:ss tt})");
 
@@ -1103,14 +1094,13 @@ namespace AcademicSentinel.Client.Views.SAC
                         if (WaitingScreenOverlay != null)
                             WaitingScreenOverlay.Visibility = Visibility.Collapsed;
 
-                        // Bug fix: Bug3 - dedicated denial UI state on monitoring status text
+                        // Denial UI: show the rejection message and hide Done.
+                        // The dialog auto-closes after 3 s and routes back to
+                        // the dashboard — no button needed for the student
+                        // to dismiss it manually.
                         TxtMonitoringStatus.Text = "Access Denied: The Instructor rejected your join request.";
-                        // Bug fix: Bug3 - dedicated denial UI state foreground
                         TxtMonitoringStatus.Foreground = new SolidColorBrush(Color.FromRgb(211, 47, 47));
-                        // Bug fix: Bug3 - dedicated denial UI state on leave button text
-                        BtnRequestLeave.Content = "Back to Dashboard";
-                        // Bug fix: Bug3 - dedicated denial UI state on leave button background
-                        BtnRequestLeave.Background = new SolidColorBrush(Color.FromRgb(211, 47, 47));
+                        if (BtnDone != null) BtnDone.Visibility = Visibility.Collapsed;
 
                         // Bug fix: Denial UI cleanup - hide irrelevant monitoring status label
                         TxtMonitoringStatus.Visibility = Visibility.Collapsed;
@@ -1287,7 +1277,7 @@ namespace AcademicSentinel.Client.Views.SAC
                 _hasSentDone = true;
                 UpdateRequestLeaveButtonState();
 
-                await _hubConnection.InvokeAsync("RequestSessionCompletion", _roomId, studentId);
+                await _hubConnection.InvokeAsync("StudentFinishedExam", _roomId, studentId);
 
                 DetectionReports.Insert(0,
                     $"System: You marked the assessment as Done. Waiting for instructor approval... ({DateTime.Now:h:mm:ss tt})");
@@ -1302,84 +1292,8 @@ namespace AcademicSentinel.Client.Views.SAC
             }
         }
 
-        private async void BtnRequestLeave_Click(object sender, RoutedEventArgs e)
-        {
-            if (_sessionEnded)
-            {
-                int sessionEndedStudentId = SessionManager.CurrentUser?.Id ?? 0;
-                await LeaveSessionSafelyAsync(sessionEndedStudentId);
-                return;
-            }
-
-            int studentId = SessionManager.CurrentUser?.Id ?? 0;
-            if (studentId <= 0)
-            {
-                UpdateRequestLeaveButtonState();
-                return;
-            }
-
-            if (_isLeaveRequested)
-                return;
-
-            switch (_currentPhase)
-            {
-                case ExamPhase.PreSession:
-                    await LeaveSessionSafelyAsync(studentId);
-                    return;
-
-                case ExamPhase.Countdown:
-                    return;
-
-                case ExamPhase.Active:
-                {
-                    if (_leaveRequestState == LeaveRequestState.Locked)
-                    {
-                        Dispatcher.Invoke(() =>
-                        {
-                            if (FindName("BtnRequestLeave") is Button leaveButton)
-                            {
-                                leaveButton.IsEnabled = false;
-                                leaveButton.Content = "Waiting for Instructor...";
-                            }
-                        });
-
-                        try
-                        {
-                            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
-                            {
-                                MessageBox.Show("Not connected to server.", "Request Leave", MessageBoxButton.OK, MessageBoxImage.Warning);
-                                UpdateRequestLeaveButtonState();
-                                return;
-                            }
-
-                            _leaveRequestState = LeaveRequestState.Pending;
-                            _isLeaveRequested = true;
-                            UpdateRequestLeaveButtonState();
-                            await _hubConnection.InvokeAsync("RequestLeave", _roomId, studentId);
-                        }
-                        catch (Exception ex)
-                        {
-                            _leaveRequestState = LeaveRequestState.Locked;
-                            _isLeaveRequested = false;
-                            MessageBox.Show($"Failed to request leave: {ex.Message}", "Request Leave", MessageBoxButton.OK, MessageBoxImage.Warning);
-                            UpdateRequestLeaveButtonState();
-                        }
-
-                        return;
-                    }
-
-                    if (_leaveRequestState == LeaveRequestState.Unlocked)
-                    {
-                        await LeaveSessionSafelyAsync(studentId);
-                    }
-
-                    return;
-                }
-
-                default:
-                    return;
-            }
-        }
+        // BtnRequestLeave_Click removed entirely per QA overhaul. The Leave
+        // button itself is gone from the XAML; Done is the only exit.
 
         private async Task LeaveSessionSafelyAsync(int studentId)
         {
@@ -1411,81 +1325,90 @@ namespace AcademicSentinel.Client.Views.SAC
             ReturnToStudentDashboard();
         }
 
-        // Final softlock state machine (per QA decision):
+        // STRICT 3-state machine per QA overhaul. Driven SOLELY by ExamPhase
+        // and _isMonitoringActive (which together produce Pre-Exam / Active /
+        // Paused). The Done button is the ONLY UI control governed here.
         //
-        //   PreSession (waiting room)    → "Leave Session" only      (green)
-        //   Active (live monitoring)     → "Done" only               (green)
-        //   Active + Done already sent   → "Done — awaiting…" disabled (gray)
-        //   Paused by instructor         → BOTH buttons HIDDEN
-        //   Session Ended                → "Leave Session" only      (green)
+        //   STATE 1  Pre-Exam  : "Monitoring: Waiting"   | "Leave Permission: Blocked" | Done HIDDEN
+        //   STATE 2  Active    : "Monitoring: ACTIVE"    | "Leave Permission: Blocked" | Done VISIBLE
+        //   STATE 3  Paused    : "PAUSED BY INSTRUCTOR"  | "Leave Permission: Blocked" | Done HIDDEN
         //
-        // The Done button is the only way out of an active session — there is
-        // no "Request to Leave" path anymore. After the instructor approves
-        // (LeaveGranted hub event) the SAC auto-exits to the dashboard.
-        //
-        // Compact view hides Done entirely (per spec / QA): the student must
-        // expand to full mode to press Done. Status text remains visible.
-        private void UpdateRequestLeaveButtonState()
+        // The "Allowed" permission text was removed entirely — permission is
+        // ALWAYS "Blocked" now, even in the waiting room. Window resize
+        // (maximize / minimize / compact) NEVER touches button visibility;
+        // those events are handled separately and must call this method
+        // afterward to re-assert the state-driven view.
+        private void UpdateUIForPhase()
         {
             Dispatcher.Invoke(() =>
             {
-                if (BtnRequestLeave == null || BtnDone == null)
+                if (BtnDone == null)
                     return;
 
-                // Default: hide both. Show below as needed.
-                BtnRequestLeave.Visibility = Visibility.Collapsed;
+                // Default — hide Done. Visible below ONLY in Active state.
                 BtnDone.Visibility = Visibility.Collapsed;
 
-                // Compact mode never shows action buttons (they distract from
-                // the always-on-top status overlay). Student expands to act.
-                bool isCompactMode = FindName("CompactPanel") is FrameworkElement compact
-                                     && compact.Visibility == Visibility.Visible;
-                if (isCompactMode)
-                    return;
+                // Permission text is always "Blocked" — no more Allowed state.
+                string permissionText = "Leave Permission: Blocked";
+                var permissionColor = new SolidColorBrush(Color.FromRgb(198, 40, 40));
 
                 if (_sessionEnded)
                 {
-                    BtnRequestLeave.Visibility = Visibility.Visible;
-                    BtnRequestLeave.Content = "Leave Session";
-                    BtnRequestLeave.IsEnabled = true;
-                    BtnRequestLeave.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                    BtnRequestLeave.Foreground = Brushes.White;
+                    SetStatusUI("SESSION ENDED",
+                        new SolidColorBrush(Color.FromRgb(97, 97, 97)),
+                        permissionText, permissionColor);
+                    return;
+                }
+
+                bool isPausedByInstructor =
+                    _currentPhase == ExamPhase.Active && !_isMonitoringActive;
+
+                if (isPausedByInstructor)
+                {
+                    // STATE 3 — Paused. All buttons hidden, status text shows pause.
+                    SetStatusUI("PAUSED BY INSTRUCTOR",
+                        new SolidColorBrush(Color.FromRgb(255, 152, 0)),
+                        permissionText, permissionColor);
                     return;
                 }
 
                 if (_currentPhase == ExamPhase.PreSession)
                 {
-                    // Student is in the waiting room — free leave allowed.
-                    BtnRequestLeave.Visibility = Visibility.Visible;
-                    BtnRequestLeave.Content = "Leave Session";
-                    BtnRequestLeave.IsEnabled = true;
-                    BtnRequestLeave.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                    BtnRequestLeave.Foreground = Brushes.White;
+                    // STATE 1 — Pre-Exam. Done HIDDEN, status "Monitoring: Waiting".
+                    SetStatusUI("Monitoring: Waiting",
+                        new SolidColorBrush(Color.FromRgb(46, 125, 50)),
+                        permissionText, permissionColor);
                     return;
                 }
 
-                // Paused = phase Active but monitoring not running.
-                bool isPausedByInstructor =
-                    _currentPhase == ExamPhase.Active && !_isMonitoringActive;
-                if (isPausedByInstructor)
-                {
-                    // Spec: PAUSED BY INSTRUCTOR → all buttons disappear.
-                    return;
-                }
-
-                // Countdown phase (initial 10s before session goes Active, or
-                // resume countdown after pause) — keep buttons hidden so the
-                // student doesn't click anything while the timer ticks.
                 if (_currentPhase == ExamPhase.Countdown)
+                {
+                    // Countdown is a transient phase between Pre-Exam and Active.
+                    // Keep Done hidden until monitoring is fully Active.
+                    SetStatusUI("Starting in a moment...",
+                        new SolidColorBrush(Color.FromRgb(255, 152, 0)),
+                        permissionText, permissionColor);
                     return;
+                }
 
                 if (_currentPhase == ExamPhase.Active)
                 {
-                    // Active monitoring → Done is the ONLY way out.
+                    // STATE 2 — Active. Done VISIBLE.
+                    SetStatusUI("Monitoring: ACTIVE",
+                        new SolidColorBrush(Color.FromRgb(198, 40, 40)),
+                        permissionText, permissionColor);
+
+                    // Compact view hides Done entirely (always-on-top overlay
+                    // shouldn't expose the exit button). Student expands first.
+                    bool isCompactMode = FindName("CompactPanel") is FrameworkElement compact
+                                         && compact.Visibility == Visibility.Visible;
+                    if (isCompactMode)
+                        return;
+
                     BtnDone.Visibility = Visibility.Visible;
                     if (_hasSentDone)
                     {
-                        BtnDone.Content = "Done — awaiting instructor";
+                        BtnDone.Content = "Waiting for instructor approval...";
                         BtnDone.IsEnabled = false;
                         BtnDone.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
                         BtnDone.Foreground = new SolidColorBrush(
@@ -1501,6 +1424,40 @@ namespace AcademicSentinel.Client.Views.SAC
                 }
             });
         }
+
+        // Centralised status-text writer used only by UpdateUIForPhase. Keeps
+        // every textblock the state machine touches in one place so a window
+        // resize cannot accidentally desync them.
+        private void SetStatusUI(string monitoringText, Brush monitoringBrush,
+                                 string permissionText, Brush permissionBrush)
+        {
+            if (TxtMonitoringStatus != null)
+            {
+                TxtMonitoringStatus.Text = monitoringText;
+                TxtMonitoringStatus.Foreground = monitoringBrush;
+            }
+
+            if (FindName("TxtCompactMonitoringStatus") is TextBlock compactStatus)
+            {
+                compactStatus.Text = monitoringText;
+                compactStatus.Foreground = monitoringBrush;
+            }
+            if (FindName("TxtHeaderMonitoringStatus") is TextBlock headerStatus)
+            {
+                headerStatus.Text = monitoringText;
+                headerStatus.Foreground = monitoringBrush;
+            }
+
+            if (FindName("TxtCompactLeavePermission") is TextBlock leavePerm)
+            {
+                leavePerm.Text = permissionText;
+                leavePerm.Foreground = permissionBrush;
+            }
+        }
+
+        // Backward-compat shim — old call sites still reference the previous
+        // method name. Forward to the new state-driven update.
+        private void UpdateRequestLeaveButtonState() => UpdateUIForPhase();
 
         private void ReturnToStudentDashboard()
         {
@@ -1618,8 +1575,9 @@ namespace AcademicSentinel.Client.Views.SAC
                 headerExpand.Visibility = Visibility.Collapsed;
             if (FindName("SessionContentGrid") is FrameworkElement contentGrid)
                 contentGrid.Margin = new Thickness(30, 24, 30, 24);
-            if (FindName("BtnRequestLeave") is System.Windows.Controls.Button leaveButton)
-                leaveButton.Visibility = Visibility.Visible;
+
+            // R3 fix: never set BtnDone.Visibility from a resize handler.
+            // Visibility is the EXCLUSIVE responsibility of UpdateUIForPhase.
             Left = (SystemParameters.WorkArea.Width - Width) / 2 + SystemParameters.WorkArea.Left;
             Top = (SystemParameters.WorkArea.Height - Height) / 2 + SystemParameters.WorkArea.Top;
 
@@ -1627,6 +1585,9 @@ namespace AcademicSentinel.Client.Views.SAC
                 fullPanel.Visibility = Visibility.Visible;
             if (FindName("CompactPanel") is FrameworkElement compactPanel)
                 compactPanel.Visibility = Visibility.Collapsed;
+
+            // After panel switch, re-assert the state-driven view.
+            UpdateUIForPhase();
 
             Activate();
         }
@@ -1662,8 +1623,10 @@ namespace AcademicSentinel.Client.Views.SAC
 
             if (FindName("BtnHeaderExpand") is Button headerExpand)
                 headerExpand.Visibility = Visibility.Visible;
-            if (FindName("BtnRequestLeave") is Button leaveButton)
-                leaveButton.Visibility = Visibility.Visible;
+
+            // R3 fix: do NOT touch BtnDone.Visibility here. The state machine
+            // is the single source of truth. The expand button is purely a
+            // resize affordance and can stay visible in either layout.
             if (FindName("SessionContentGrid") is FrameworkElement contentGrid)
                 contentGrid.Margin = new Thickness(8, 8, 8, 8);
 
@@ -1674,6 +1637,11 @@ namespace AcademicSentinel.Client.Views.SAC
                 fullPanel.Visibility = Visibility.Collapsed;
             if (FindName("CompactPanel") is FrameworkElement shownCompactPanel)
                 shownCompactPanel.Visibility = Visibility.Visible;
+
+            // After the panel swap, re-run the state machine so the Done
+            // button's visibility reflects the current ExamPhase, not the
+            // resize event we just processed.
+            UpdateUIForPhase();
         }
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -1681,8 +1649,7 @@ namespace AcademicSentinel.Client.Views.SAC
             if (!_allowClose
                 && !_isPermanentlyDone
                 && !_isLeaveApproved
-                && !_awaitingJoinApproval
-                && _leaveRequestState != LeaveRequestState.Unlocked)
+                && !_awaitingJoinApproval)
             {
                 e.Cancel = true;
                 WindowState = WindowState.Minimized;

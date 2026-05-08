@@ -460,11 +460,17 @@ public class MonitoringHub : Hub
     }
 
     // Spec v4/v5 — Soft Lock "Done" button.
-    // Student presses Done when their assessment is finished. This is purely
-    // informational: the instructor sees a "Completed Assessment" entry in the
-    // IMC feed, but monitoring stays active and the leave button stays locked
-    // until the instructor explicitly grants leave (existing GrantLeave flow).
-    public async Task RequestSessionCompletion(int roomId, int studentId)
+    // Student presses Done when their assessment is finished. The instructor
+    // sees a DONE entry in the IMC feed; monitoring stays active until they
+    // approve via GrantLeave, at which point the SAC auto-exits.
+    //
+    // Renamed per QA spec to `StudentFinishedExam`. The legacy name
+    // `RequestSessionCompletion` is preserved as a thin alias for any client
+    // build still using it.
+    public Task RequestSessionCompletion(int roomId, int studentId) =>
+        StudentFinishedExam(roomId, studentId);
+
+    public async Task StudentFinishedExam(int roomId, int studentId)
     {
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
         if (!string.Equals(role, "Student", StringComparison.OrdinalIgnoreCase))
@@ -540,6 +546,10 @@ public class MonitoringHub : Hub
             await db.SaveChangesAsync();
         }
 
+        // Spec rename: `LeaveApproved` is the new name the SAC listens for
+        // and triggers its auto-exit-to-dashboard flow. Legacy `LeaveGranted`
+        // kept for any older build still subscribed.
+        await Clients.User(studentId.ToString()).SendAsync("LeaveApproved", studentId);
         await Clients.User(studentId.ToString()).SendAsync("LeaveGranted", studentId);
         await Clients.Group(roomId.ToString()).SendAsync("StudentLeftSession", studentId);
         await Clients.Group(roomId.ToString()).SendAsync("LeaveApprovalUpdated", studentId, true);

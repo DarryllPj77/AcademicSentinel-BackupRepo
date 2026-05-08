@@ -74,17 +74,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private DateTime _lastProcessScanAt = DateTime.MinValue;
         private HashSet<string> _lastReportedProcesses = new(StringComparer.OrdinalIgnoreCase);
 
-        // RTFM rate-window: spec says 3+ focus-loss events within 60 seconds
-        // escalates from passive to aggressive. Track each loss timestamp.
-        private readonly Queue<DateTime> _focusLossTimestamps = new();
-        private const int FocusLossWindowSeconds = 60;
-        private const int FocusLossEscalationCount = 3;
-
-        // RTFM sustained-loss timer: spec says focus loss > 10 seconds is its
-        // own aggressive trigger. Track when SAC lost the foreground.
-        private DateTime? _focusLostAtUtc;
-        private bool _sustainedLossReportedThisLoss;
-        private const int SustainedFocusLossSeconds = 10;
+        // RTFM_RATE and RTFM_SUSTAINED removed per QA decision — the per-event
+        // ALT_TAB / WINDOW_SWITCH detection is sufficient. Keeping the
+        // _focusLostAtUtc field as an inert reset target for StartMonitoring's
+        // bookkeeping symmetry is unnecessary; both detectors are now gone.
 
         private bool _copyDown;
         private bool _pasteDown;
@@ -119,9 +112,6 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _lastReportedAtByEvent.Clear();
             _copyDown = false;
             _pasteDown = false;
-            _focusLossTimestamps.Clear();
-            _focusLostAtUtc = null;
-            _sustainedLossReportedThisLoss = false;
         }
 
         public void StopMonitoring()
@@ -158,11 +148,6 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             if (!_settings.EnableFocusDetection)
                 return;
 
-            // RTFM sustained-loss check disabled per QA feedback — the rate
-            // window (3 in 60s) is sufficient and the sustained-loss event
-            // was firing too noisily for normal exam workflow.
-            // EvaluateSustainedFocusLoss(isSacWindowActive, findings);
-
             var foreground = GetForegroundWindow();
             if (foreground != _lastForegroundWindow)
             {
@@ -186,7 +171,6 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     {
                         AddEvent(findings, DetectionConstants.EventWindowSwitch, 2,
                             $"Window switched from '{previous}' to '{current}' while monitoring is active.", 0);
-                        RecordFocusLoss(findings);
                         ClearTemporaryExemptWindow();
                     }
                 }
@@ -194,68 +178,12 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 {
                     AddEvent(findings, DetectionConstants.EventWindowSwitch, 2,
                         $"Window switched from '{previous}' to '{current}' while monitoring is active.", 0);
-                    RecordFocusLoss(findings);
                     ClearTemporaryExemptWindow();
                 }
 
                 _lastForegroundWindow = foreground;
                 _lastWindowName = current;
                 _lastForegroundWasSac = isSacWindowActive;
-            }
-        }
-
-        // Add a focus-loss timestamp to the rolling 60-second window. If 3+
-        // losses occurred in the past 60s, emit an aggressive RTFM_RATE event
-        // (spec: "Focus lost 3 times within 60 seconds").
-        private void RecordFocusLoss(ICollection<MonitoringDetectionEvent> findings)
-        {
-            var now = DateTime.UtcNow;
-            _focusLossTimestamps.Enqueue(now);
-
-            // Drop entries older than the window so the queue size = lossesInWindow.
-            while (_focusLossTimestamps.Count > 0
-                   && (now - _focusLossTimestamps.Peek()).TotalSeconds > FocusLossWindowSeconds)
-            {
-                _focusLossTimestamps.Dequeue();
-            }
-
-            if (_focusLossTimestamps.Count >= FocusLossEscalationCount)
-            {
-                AddEvent(findings, DetectionConstants.EventFocusRate, 5,
-                    $"Repeated focus losses: {_focusLossTimestamps.Count} within {FocusLossWindowSeconds}s window.",
-                    cooldownSeconds: 30);
-
-                // Reset the window so the next breach requires a fresh batch.
-                _focusLossTimestamps.Clear();
-            }
-        }
-
-        private void EvaluateSustainedFocusLoss(bool isSacWindowActive, ICollection<MonitoringDetectionEvent> findings)
-        {
-            if (isSacWindowActive)
-            {
-                _focusLostAtUtc = null;
-                _sustainedLossReportedThisLoss = false;
-                return;
-            }
-
-            if (!_focusLostAtUtc.HasValue)
-            {
-                _focusLostAtUtc = DateTime.UtcNow;
-                _sustainedLossReportedThisLoss = false;
-                return;
-            }
-
-            if (_sustainedLossReportedThisLoss)
-                return;
-
-            var elapsed = (DateTime.UtcNow - _focusLostAtUtc.Value).TotalSeconds;
-            if (elapsed >= SustainedFocusLossSeconds)
-            {
-                _sustainedLossReportedThisLoss = true;
-                AddEvent(findings, DetectionConstants.EventFocusSustained, 5,
-                    $"Focus has been outside SAC for {(int)elapsed} seconds (threshold {SustainedFocusLossSeconds}s).",
-                    cooldownSeconds: 30);
             }
         }
 

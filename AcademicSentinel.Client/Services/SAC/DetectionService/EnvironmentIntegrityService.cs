@@ -19,11 +19,23 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
                 try
                 {
-                    isVm = DetectVmFromComputerSystemWmi()
-                        || DetectVmFromVideoControllerWmi()
-                        || DetectVmFromMacPrefixes()
-                        || DetectAndroidEmulatorByProcess()
-                        || DetectAndroidEmulatorByDriver();
+                    // VAC/HAS now uses ONLY guest-side signals — values that
+                    // a host machine cannot produce. The previous driver-scan
+                    // and process-scan paths were catching native hosts that
+                    // simply had VirtualBox/VMware installed (their kernel
+                    // drivers stay loaded even with no VM running) or had an
+                    // emulator running side-by-side with the SAC. Those are
+                    // PBD's job — VAC must answer "am I inside a guest?"
+                    //
+                    // We require TWO independent guest signals to fire, so a
+                    // single noisy WMI string can't trip a false positive.
+                    int guestSignals = 0;
+                    if (DetectVmFromComputerSystemWmi()) guestSignals++;
+                    if (DetectVmFromVideoControllerWmi()) guestSignals++;
+                    if (DetectVmFromBiosWmi()) guestSignals++;
+                    if (DetectVmFromBaseBoardWmi()) guestSignals++;
+
+                    isVm = guestSignals >= 2;
                 }
                 catch
                 {
@@ -54,12 +66,13 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     var model = Convert.ToString(obj["Model"]) ?? string.Empty;
                     var text = $"{manufacturer} {model}";
 
+                    // Guest-only model/manufacturer strings. Catching open
+                    // Android emulators on the HOST is PBD's job, not VAC's
+                    // — the SAC running on Windows is not "inside" BlueStacks
+                    // even when BlueStacks is open.
                     if (ContainsAny(text,
                             "VMware", "VirtualBox", "innotek", "QEMU", "Hyper-V",
-                            "Xen", "Parallels", "KVM", "Bochs",
-                            // Android emulators that surface via Win32_ComputerSystem
-                            "BlueStacks", "BST", "Nox", "BigNox", "MEmu", "LDPlayer",
-                            "Genymotion", "Andy", "Droid4X"))
+                            "Xen", "Parallels", "KVM", "Bochs"))
                         return true;
                 }
             }
@@ -78,11 +91,13 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 foreach (ManagementObject obj in searcher.Get())
                 {
                     var name = Convert.ToString(obj["Name"]) ?? string.Empty;
+                    // Strict guest-only adapter strings. Emulator names
+                    // (BlueStacks/Nox/MEmu) were dropped because their
+                    // graphics drivers stay installed on a host even when no
+                    // emulator is running — that produced false positives.
                     if (ContainsAny(name,
                             "VMware SVGA", "VirtualBox Graphics",
-                            "Parallels Display", "QEMU", "Hyper-V Video",
-                            // BlueStacks ships its own paravirtualized graphics adapter
-                            "BlueStacks", "BstkVMM", "Nox", "MEmu"))
+                            "Parallels Display", "QEMU", "Hyper-V Video"))
                         return true;
                 }
             }
@@ -93,6 +108,75 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             return false;
         }
 
+        // BIOS strings are written by the hypervisor at guest boot — they
+        // cannot appear on a native host machine. Strong, low-false-positive
+        // signal that we're inside a VM.
+        private static bool DetectVmFromBiosWmi()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher(
+                    "SELECT Manufacturer, SMBIOSBIOSVersion, SerialNumber, Version FROM Win32_BIOS");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    var manufacturer = Convert.ToString(obj["Manufacturer"]) ?? string.Empty;
+                    var smbios = Convert.ToString(obj["SMBIOSBIOSVersion"]) ?? string.Empty;
+                    var serial = Convert.ToString(obj["SerialNumber"]) ?? string.Empty;
+                    var version = Convert.ToString(obj["Version"]) ?? string.Empty;
+                    var combined = $"{manufacturer} {smbios} {serial} {version}";
+
+                    // Surface devices ship with "Microsoft Corporation" as the
+                    // legitimate BIOS manufacturer, so we deliberately do NOT
+                    // key off that string. The keywords below are guest-only.
+                    if (ContainsAny(combined,
+                            "VMware", "VirtualBox", "VBOX",
+                            "QEMU", "Parallels", "Xen",
+                            "innotek", "BOCHS"))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return false;
+        }
+
+        // Win32_BaseBoard.Product is the motherboard product string. Real
+        // hardware reports the actual board (e.g. "PRIME B550-PLUS"). VM
+        // guests report virtual board names.
+        private static bool DetectVmFromBaseBoardWmi()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher(
+                    "SELECT Manufacturer, Product FROM Win32_BaseBoard");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    var manufacturer = Convert.ToString(obj["Manufacturer"]) ?? string.Empty;
+                    var product = Convert.ToString(obj["Product"]) ?? string.Empty;
+                    var combined = $"{manufacturer} {product}";
+
+                    if (ContainsAny(combined,
+                            "VMware", "Virtual Machine", "VirtualBox",
+                            "440BX Desktop Reference Platform", // VMware Workstation default
+                            "Oracle Corporation",                // VirtualBox vendor
+                            "Parallels Software", "Xen", "QEMU"))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return false;
+        }
+
+        // Kept available for tests — no longer in the production scan flow
+        // because virtual NIC MAC prefixes are too broad and matched hosts
+        // with bridged adapters (false positives).
         private static bool DetectVmFromMacPrefixes()
         {
             try
