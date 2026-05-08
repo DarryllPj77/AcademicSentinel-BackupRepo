@@ -531,6 +531,16 @@ public class RoomsController : ControllerBase
             .Select(e => (DateTime?)e.Timestamp)
             .FirstOrDefaultAsync();
 
+        // BUG A FIX — Exam Completed = hard block.
+        // Once an instructor has approved a student's "Done" request the exam
+        // is finished for that student permanently. They cannot rejoin (and
+        // therefore cannot trigger another approval loop in the IMC), even
+        // if monitoring is still running for other students.
+        if (lastLeaveGranted.HasValue)
+        {
+            return StatusCode(403, "You have already completed this exam. Rejoining is not allowed.");
+        }
+
         var lastRejoinApproved = await _context.MonitoringEvents
             .Where(e => e.RoomId == roomId
                      && e.StudentId == studentId
@@ -551,19 +561,35 @@ public class RoomsController : ControllerBase
             .Select(e => (DateTime?)e.Timestamp)
             .FirstOrDefaultAsync();
 
-        // Once a leave-grant OR a kick has been issued, every subsequent
-        // reconnect requires a fresh REJOIN_APPROVED event with a newer timestamp.
-        DateTime? lastBlockingEvent =
-            (lastLeaveGranted, lastStudentRemoved) switch
-            {
-                (null, null) => null,
-                (var lg, null) => lg,
-                (null, var sr) => sr,
-                var (lg, sr) => lg > sr ? lg : sr
-            };
+        // BUG B FIX — track the most recent join denial. Without this, a
+        // student whose first attempt was denied could just send another
+        // /request-join and the gate would treat them as a fresh joiner
+        // (no LEAVE_GRANTED, no STUDENT_REMOVED) → auto-approved. Treating
+        // JOIN_DENIED as a blocking event forces re-approval.
+        var lastJoinDenied = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "JOIN_DENIED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
 
+        // Compose the blocking-event high-water mark across all three sources.
+        // Any of {LEAVE_GRANTED, STUDENT_REMOVED, JOIN_DENIED} requires a
+        // fresh REJOIN_APPROVED with a newer timestamp before the gate opens.
+        DateTime? lastBlockingEvent = null;
+        foreach (var ts in new[] { lastStudentRemoved, lastJoinDenied })
+        {
+            if (ts.HasValue && (!lastBlockingEvent.HasValue || ts > lastBlockingEvent))
+                lastBlockingEvent = ts;
+        }
+
+        // Late joiners are also rate-limited by JOIN_DENIED — so if their
+        // first attempt was denied, the second attempt also goes through
+        // approval (not auto-approved as a fresh late joiner).
         bool rejoinNeedsApproval =
-            isRejoin
+            (isRejoin || lastJoinDenied.HasValue)
             && lastBlockingEvent.HasValue
             && (!lastRejoinApproved.HasValue || lastRejoinApproved < lastBlockingEvent);
 

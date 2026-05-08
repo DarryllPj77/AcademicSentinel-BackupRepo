@@ -198,6 +198,26 @@ public class MonitoringHub : Hub
 
             await Groups.AddToGroupAsync(Context.ConnectionId, roomId.ToString());
 
+            // BUG A defense-in-depth — refuse hub re-entry after the student
+            // has already had their Done request approved (LEAVE_GRANTED).
+            // RequestJoinSession's HTTP gate is the primary block, but a
+            // student that bypasses the REST call cannot also slip past the
+            // hub. Limit to the current active session.
+            if (activeSession != null)
+            {
+                bool examAlreadyCompleted = await _context.MonitoringEvents.AnyAsync(e =>
+                    e.RoomId == roomId
+                    && e.StudentId == studentId
+                    && e.EventType == "LEAVE_GRANTED"
+                    && e.Timestamp >= activeSession.StartTime);
+                if (examAlreadyCompleted)
+                {
+                    await Clients.Caller.SendAsync("JoinFailed",
+                        "You have already completed this exam. Rejoining is not allowed.");
+                    return;
+                }
+            }
+
             var participant = await _context.SessionParticipants
                 .Where(p => p.RoomId == roomId && p.StudentId == studentId && (activeSession == null || p.JoinedAt >= activeSession.StartTime))
                 .OrderByDescending(p => p.JoinedAt)

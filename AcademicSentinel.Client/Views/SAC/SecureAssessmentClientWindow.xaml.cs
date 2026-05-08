@@ -611,7 +611,24 @@ namespace AcademicSentinel.Client.Views.SAC
                 }
 
                 var errorMsg = await response.Content.ReadAsStringAsync();
-                MessageBox.Show(errorMsg, "Join Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+
+                // Server returns 403 when the exam is already completed
+                // (LEAVE_GRANTED earlier) — surface a clean "Exam already
+                // completed" dialog instead of the generic Join Error box.
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
+                    && !string.IsNullOrWhiteSpace(errorMsg)
+                    && errorMsg.IndexOf("already completed", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    MessageBox.Show(
+                        "You have already completed this exam.\nYou cannot rejoin this session.",
+                        "Exam Already Completed",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show(errorMsg, "Join Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
             catch (Exception ex)
             {
