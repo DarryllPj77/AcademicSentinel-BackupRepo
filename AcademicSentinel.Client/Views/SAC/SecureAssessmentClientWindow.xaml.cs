@@ -868,27 +868,12 @@ namespace AcademicSentinel.Client.Views.SAC
                                 if (_detectorRuntime != null)
                                     UpdateDetectorRuntimeState();
 
-                                // Belt-and-suspenders: enforce the Active-phase
-                                // contract for Done explicitly. The state machine
-                                // already does this, but a stray late-arriving
-                                // SetMonitoringStateUI from the cancelled countdown
-                                // loop has occasionally raced ahead and re-hidden
-                                // Done before this dispatcher tick lands. Set it
-                                // here unconditionally so ALL students (compact
-                                // OR full mode) see Done the moment monitoring
-                                // resumes.
-                                if (BtnDone != null)
-                                {
-                                    BtnDone.Visibility = Visibility.Visible;
-                                    BtnDone.Content = "Done";
-                                    BtnDone.IsEnabled = true;
-                                    BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                                    BtnDone.Foreground = Brushes.White;
-                                }
-
-                                // Final state-machine pass on the UI thread to
-                                // synchronise everything else (status text, dot,
-                                // permission label, countdown bar).
+                                // Final state-machine pass on the UI thread —
+                                // UpdateUIForPhase enforces the contract:
+                                //   - Compact (minimized) view → Done visible
+                                //   - Full   (maximized) view → Done hidden
+                                // We do NOT set BtnDone.Visibility directly
+                                // here so the compact-only rule isn't bypassed.
                                 UpdateUIForPhase();
 
                                 DetectionReports.Insert(0, $"System: Monitoring resumed. ({DateTime.Now:h:mm:ss tt})");
@@ -1506,17 +1491,28 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 if (_currentPhase == ExamPhase.Active)
                 {
-                    // STATE 2 — Active. Done VISIBLE in BOTH full and compact
-                    // views. Per QA fix: visibility is strictly tied to the
-                    // ExamPhase state machine, not to window dimensions or
-                    // compact-mode panel visibility. The button lives in the
-                    // header bar (always rendered above the panel area) so
-                    // it stays reachable regardless of how the student
-                    // resizes the window.
+                    // STATE 2 — Active.
+                    // Per QA decision: Done is the softlock-overlay's exit
+                    // affordance and lives ONLY in the compact (minimized)
+                    // view. The maximized full window is for context (status,
+                    // detection reports) and intentionally has NO exit
+                    // button — students must shrink the window down to the
+                    // softlock overlay before clicking Done.
                     SetStatusUI("Monitoring: ACTIVE",
                         new SolidColorBrush(Color.FromRgb(198, 40, 40)),
                         permissionText, permissionColor);
 
+                    bool isCompactMode = FindName("CompactPanel") is FrameworkElement compact
+                                         && compact.Visibility == Visibility.Visible;
+
+                    if (!isCompactMode)
+                    {
+                        // Full / maximized view — Done strictly HIDDEN.
+                        BtnDone.Visibility = Visibility.Collapsed;
+                        return;
+                    }
+
+                    // Compact view — Done visible.
                     BtnDone.Visibility = Visibility.Visible;
                     if (_hasSentDone)
                     {
