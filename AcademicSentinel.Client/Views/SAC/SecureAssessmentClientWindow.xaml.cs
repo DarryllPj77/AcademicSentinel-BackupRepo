@@ -857,12 +857,39 @@ namespace AcademicSentinel.Client.Views.SAC
                                 if (_detectorRuntime != null)
                                     _detectorRuntime.IsPaused = false;
 
-                                SetMonitoringActive(true);
+                                // Set state FIRST so SetMonitoringActive's internal
+                                // UpdateUIForPhase already sees the resumed phase.
                                 _currentPhase = ExamPhase.Active;
-                                UpdateRequestLeaveButtonState();
+                                _isMonitoringActive = true;
+                                _hasSentDone = false; // student can press Done again on next monitoring cycle
+
+                                SetMonitoringActive(true);
 
                                 if (_detectorRuntime != null)
                                     UpdateDetectorRuntimeState();
+
+                                // Belt-and-suspenders: enforce the Active-phase
+                                // contract for Done explicitly. The state machine
+                                // already does this, but a stray late-arriving
+                                // SetMonitoringStateUI from the cancelled countdown
+                                // loop has occasionally raced ahead and re-hidden
+                                // Done before this dispatcher tick lands. Set it
+                                // here unconditionally so ALL students (compact
+                                // OR full mode) see Done the moment monitoring
+                                // resumes.
+                                if (BtnDone != null)
+                                {
+                                    BtnDone.Visibility = Visibility.Visible;
+                                    BtnDone.Content = "Done";
+                                    BtnDone.IsEnabled = true;
+                                    BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                                    BtnDone.Foreground = Brushes.White;
+                                }
+
+                                // Final state-machine pass on the UI thread to
+                                // synchronise everything else (status text, dot,
+                                // permission label, countdown bar).
+                                UpdateUIForPhase();
 
                                 DetectionReports.Insert(0, $"System: Monitoring resumed. ({DateTime.Now:h:mm:ss tt})");
 
@@ -1701,7 +1728,12 @@ namespace AcademicSentinel.Client.Views.SAC
                 return;
 
             WindowState = WindowState.Normal;
-            Width = 420;
+            // Compact mode is wide enough to render: shield icon + (gap) +
+            // BtnHeaderExpand + BtnDone(MinWidth=120) + padding without
+            // clipping. The previous 420 px caused Done to render at the
+            // edge in compact view, so students reported needing to expand
+            // first before Done appeared.
+            Width = 480;
             Height = 220;
             ResizeMode = ResizeMode.NoResize;
             Topmost = true;
