@@ -5,7 +5,7 @@
         // ========================================================
         // MAIN SERVER URL
         // ========================================================
-        public const string BaseUrl = "https://localhost:7123";
+        public const string BaseUrl = "https://academic-sentinel-server.onrender.com";
 
         // ========================================================
         // AUTHENTICATION
