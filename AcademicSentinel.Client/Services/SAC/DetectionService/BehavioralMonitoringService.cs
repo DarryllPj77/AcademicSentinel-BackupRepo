@@ -60,25 +60,69 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private const int VK_C = 0x43;
         private const int VK_V = 0x56;
 
+        /// <summary>
+        /// Curated list of genuinely unauthorised applications detected by PBD.
+        /// Browsers and OS utilities live in <see cref="_protectedProcesses"/>
+        /// instead — those must never be flagged because they are required
+        /// for legitimate exam workflows or already covered by another module.
+        /// </summary>
         private static readonly string[] _blacklistedApps =
         {
-            "discord",
-            "obs32",
-            "taskmgr",
-            "processhacker",
-            "procmon",
-            "procexp",
-            "windbg",
-            "x64dbg",
-            "ollydbg",
-            "dnspy",
-            "ida",
-            "fiddler",
+            // Communication / Remote Access
+            "discord", "teamviewer", "anydesk", "ultravnc", "gotomypc",
+
+            // Screen Capture / Streaming
+            "obs32", "obs64",
+
+            // Packet Analysis
+            "fiddler", "wireshark",
+
+            // Debuggers / Reverse Engineering
+            "x64dbg", "ollydbg", "dnspy", "ida", "windbg",
+
+            // Process Monitors
+            "processhacker", "procmon", "procexp",
+
+            // Cheating Tools
             "cheatengine",
-            "teamviewer",
-            "anydesk",
-            "ultravnc",
-            "gotomypc"
+
+            // AI Desktop Apps (standalone .exe only — not browser-based,
+            // so e.g. claude.ai accessed via Chrome stays out of this list).
+            "claude"
+        };
+
+        /// <summary>
+        /// Permanently exempt from PBD regardless of any per-room custom
+        /// blacklist supplied by the instructor. Browsers are needed for the
+        /// LMS, OS utilities are covered by other detectors, and core Windows
+        /// processes must never be killed/flagged. The
+        /// <see cref="ScanAndHandleBlacklistedProcesses"/> filter applies this
+        /// guard before checking the running process set.
+        /// </summary>
+        private static readonly HashSet<string> _protectedProcesses =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            // Chromium-based browsers
+            "chrome", "brave", "msedge", "opera", "operagx",
+            "vivaldi", "arc", "thorium", "chromium",
+            "yandexbrowser", "slimjet", "coccoc",
+
+            // Firefox-based browsers
+            "firefox", "librewolf", "waterfox", "floorp",
+            "palemoon", "basilisk", "seamonkey",
+
+            // Other browsers
+            "iexplore", "maxthon",
+
+            // Already covered by KeyboardHookService SNIP_TOOL event
+            "snippingtool",
+
+            // Disabled via registry at session start — redundant here
+            "taskmgr",
+
+            // Core Windows system processes — must never be blocked
+            "explorer", "dwm", "svchost", "csrss",
+            "winlogon", "lsass"
         };
 
         private readonly DetectionSettings _settings;
@@ -109,13 +153,19 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // Domain extracted from the room's LmsExamUrl, e.g. "feu.instructure.com".
         // Empty when no URL is configured (legacy rooms) — anchoring stays off.
         private string _anchoredLmsDomain = string.Empty;
-        // Window handle of the browser window currently treated as the LMS exam.
-        // IntPtr.Zero before the student opens the LMS or after it closes.
+        // Most recent foreground HWND that matched the anchored LMS domain.
+        // Used purely for CANVAS_CLOSED detection — focus approval is now
+        // domain-by-title only (Fix #1), not HWND comparison.
         private IntPtr _anchoredCanvasWindow = IntPtr.Zero;
-        // True once we've fired CANVAS_NOT_FOUND for this monitoring cycle so
-        // we don't spam the warning every poll while the student takes their
-        // time opening the browser.
-        private bool _canvasNotFoundReported;
+
+        // CANVAS_NOT_FOUND grace + once-per-session gating (Fix #2). The
+        // browser typically takes a few seconds to load the exam page after
+        // a session starts; the LMS domain is not in the window title until
+        // the page actually renders. We swallow CANVAS_NOT_FOUND for 20s and
+        // we fire it AT MOST ONCE per monitoring cycle.
+        private const int CanvasGracePeriodSeconds = 20;
+        private DateTime _canvasNotFoundGraceEndsAt;
+        private bool _canvasNotFoundFired;
 
         public BehavioralMonitoringService(DetectionSettings settings, IEnumerable<string> blacklistedProcessNames)
         {
@@ -149,7 +199,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _anchoredCanvasWindow = string.IsNullOrEmpty(_anchoredLmsDomain)
                 ? IntPtr.Zero
                 : FindLmsWindow(_anchoredLmsDomain);
-            _canvasNotFoundReported = false;
+
+            // Fix #2 — give the browser 20 seconds to load the exam page
+            // before complaining that the LMS isn't open. Resets each
+            // time monitoring starts so a re-armed session gets a fresh
+            // grace window.
+            _canvasNotFoundGraceEndsAt = DateTime.UtcNow
+                .AddSeconds(CanvasGracePeriodSeconds);
+            _canvasNotFoundFired = false;
         }
 
         /// <summary>
@@ -201,6 +258,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _pasteDown = false;
             _temporarilyExemptWindow = IntPtr.Zero;
             _lastReportedIdleLevel = 0;
+            _canvasNotFoundFired = false;
             _lastReportedProcesses.Clear();
             _lastReportedAtByEvent.Clear();
         }
@@ -213,6 +271,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             var findings = new List<MonitoringDetectionEvent>();
 
             DetectFocus(isSacWindowActive, findings);
+            CheckCanvasPresence(findings);
             DetectClipboardAndScreenshot(findings);
             DetectIdle(findings);
             ScanAndHandleBlacklistedProcesses(findings);
@@ -220,6 +279,39 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _lastForegroundWasSac = isSacWindowActive;
 
             return findings;
+        }
+
+        /// <summary>
+        /// Fires <c>CANVAS_NOT_FOUND</c> exactly once per monitoring cycle if
+        /// no window with the anchored LMS domain in its title has been seen
+        /// AFTER the 20-second grace period that starts at <see cref="StartMonitoring"/>.
+        /// Re-anchors silently and clears the fired flag if a matching window
+        /// turns up later, so a student who closes and reopens the browser
+        /// can re-trigger the warning after another grace window.
+        /// </summary>
+        private void CheckCanvasPresence(ICollection<MonitoringDetectionEvent> findings)
+        {
+            if (string.IsNullOrWhiteSpace(_anchoredLmsDomain)) return;
+
+            // Try to locate an LMS window every poll. If we find one, the
+            // anchor is up to date and any prior CANVAS_NOT_FOUND state is
+            // reset so a closed-and-reopened browser can warn again later.
+            var found = FindLmsWindow(_anchoredLmsDomain);
+            if (found != IntPtr.Zero)
+            {
+                _anchoredCanvasWindow = found;
+                _canvasNotFoundFired = false;
+                return;
+            }
+
+            // No LMS window present.
+            if (_canvasNotFoundFired) return;
+            if (DateTime.UtcNow < _canvasNotFoundGraceEndsAt) return;
+
+            _canvasNotFoundFired = true;
+            AddEvent(findings, DetectionConstants.EventCanvasNotFound, 1,
+                $"LMS exam window not detected. Please open {_anchoredLmsDomain} in your browser.",
+                cooldownSeconds: 0);
         }
 
         private void DetectFocus(bool isSacWindowActive, ICollection<MonitoringDetectionEvent> findings)
@@ -285,76 +377,65 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             }
         }
 
-        // LMS-anchored focus detection. Runs every poll while monitoring is
-        // active and an LMS exam URL is configured for the room.
+        /// <summary>
+        /// LMS-anchored focus detection. Approval is purely domain-in-title:
+        /// any foreground window whose title contains the anchored LMS
+        /// domain is approved, regardless of HWND. This prevents false
+        /// WINDOW_SWITCH violations when the student navigates within Canvas
+        /// (Bug Fix #1) — quizzes, modules, and resource pages may all open
+        /// in different windows but their titles still surface the LMS host.
+        ///
+        /// CANVAS_CLOSED detection is kept here: when the most recently
+        /// anchored HWND becomes invalid AND no other LMS-titled window is
+        /// in the foreground, fire CANVAS_CLOSED once (S4 / 40 pts).
+        /// </summary>
         private void DetectFocusAnchored(bool isSacWindowActive, ICollection<MonitoringDetectionEvent> findings)
         {
-            // (1) Detect a closed LMS window — fire CANVAS_CLOSED once and
-            //     attempt re-anchor on the next poll.
-            if (_anchoredCanvasWindow != IntPtr.Zero && !IsWindow(_anchoredCanvasWindow))
-            {
-                AddEvent(findings, DetectionConstants.EventCanvasClosed, 3,
-                    $"LMS exam browser window was closed during the session.",
-                    cooldownSeconds: 5);
-                _anchoredCanvasWindow = IntPtr.Zero;
-            }
-
-            // (2) Try to re-anchor whenever we don't currently have a window.
-            //     This handles: never-opened-yet, browser restart, or a new
-            //     window opened to the same domain.
-            if (_anchoredCanvasWindow == IntPtr.Zero)
-            {
-                _anchoredCanvasWindow = FindLmsWindow(_anchoredLmsDomain);
-                if (_anchoredCanvasWindow != IntPtr.Zero)
-                {
-                    // Successfully re-anchored — clear the not-found warning
-                    // so we'll fire it again only if the LMS disappears later.
-                    _canvasNotFoundReported = false;
-                }
-                else if (!_canvasNotFoundReported)
-                {
-                    // (3) LMS not yet open — one-time warning. The student
-                    //     will resolve it by opening the exam in a browser.
-                    AddEvent(findings, DetectionConstants.EventCanvasNotFound, 1,
-                        $"LMS exam window not detected. Please open {_anchoredLmsDomain} in your browser.",
-                        cooldownSeconds: 30);
-                    _canvasNotFoundReported = true;
-                }
-            }
-
-            // (4) Walk the foreground window. Approved = SAC OR anchored LMS.
-            //     If the foreground hasn't changed, nothing to do.
             var foreground = GetForegroundWindow();
             if (foreground == _lastForegroundWindow)
                 return;
 
-            string previous = _lastWindowName;
-            string current = GetWindowName(foreground);
+            string currentTitle = GetWindowName(foreground);
 
-            // Has focus moved to a window whose title still contains the
-            // LMS domain? If so, silently re-anchor — never violation.
-            // This handles "student switched browser tab to a different
-            // exam page on the same LMS" and "student reopened browser".
-            bool foregroundIsLms =
-                !string.IsNullOrWhiteSpace(current)
-                && current.IndexOf(_anchoredLmsDomain, StringComparison.OrdinalIgnoreCase) >= 0;
+            // Domain-in-title approval — same rule, regardless of HWND.
+            bool isOnLms = !string.IsNullOrWhiteSpace(_anchoredLmsDomain)
+                           && !string.IsNullOrWhiteSpace(currentTitle)
+                           && currentTitle.IndexOf(_anchoredLmsDomain,
+                              StringComparison.OrdinalIgnoreCase) >= 0;
 
-            if (foregroundIsLms)
+            // CANVAS_CLOSED — student previously had an LMS window anchored
+            // (HWND non-zero), that HWND is gone, and the new foreground is
+            // also not on an LMS window. Fire once with cooldown so a brief
+            // browser reload doesn't double-report.
+            if (_anchoredCanvasWindow != IntPtr.Zero
+                && !IsWindow(_anchoredCanvasWindow)
+                && !isOnLms)
             {
-                _anchoredCanvasWindow = foreground; // silent re-anchor
-                _canvasNotFoundReported = false;
+                AddEvent(findings, DetectionConstants.EventCanvasClosed, 4,
+                    "LMS exam browser window was closed during the session.",
+                    cooldownSeconds: 5);
+                _anchoredCanvasWindow = IntPtr.Zero;
             }
-            else if (!isSacWindowActive && foreground != _anchoredCanvasWindow)
+
+            // Silent re-anchor — keep _anchoredCanvasWindow in sync with the
+            // most recent LMS window we've seen so CANVAS_CLOSED can fire
+            // when it later disappears.
+            if (isOnLms)
             {
-                // Focus moved to a non-SAC, non-LMS window — violation.
-                // Tier 2 / 20 pts per spec.
-                AddEvent(findings, DetectionConstants.EventWindowSwitch, 2,
-                    $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{current}'.",
+                _anchoredCanvasWindow = foreground;
+                _canvasNotFoundFired = false; // reset so a future close+grace can warn again
+            }
+
+            // Violation: foreground is NOT SAC and NOT on an LMS-titled window.
+            if (!isSacWindowActive && !isOnLms)
+            {
+                AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
+                    $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{currentTitle}'.",
                     cooldownSeconds: 0);
             }
 
             _lastForegroundWindow = foreground;
-            _lastWindowName = current;
+            _lastWindowName = currentTitle;
             _lastForegroundWasSac = isSacWindowActive;
         }
 
@@ -423,22 +504,26 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 return;
             }
 
+            // Tier 3 — critical (idle > criticalThreshold). Reported as
+            // INACTIVITY with input-tier 3 so the decision engine scores 40.
             if (idleSeconds >= criticalThreshold && _lastReportedIdleLevel < 3)
             {
                 _lastReportedIdleLevel = 3;
-                AddEvent(findings, DetectionConstants.EventIdle, 3,
+                AddEvent(findings, DetectionConstants.EventInactivity, 3,
                     $"Critical inactivity detected ({idleSeconds}s). Mouse and keyboard appear idle.", 10);
                 return;
             }
 
+            // Tier 2 — violation. INACTIVITY with input-tier 2 → 20 pts.
             if (idleSeconds >= violationThreshold && _lastReportedIdleLevel < 2)
             {
                 _lastReportedIdleLevel = 2;
-                AddEvent(findings, DetectionConstants.EventIdle, 2,
+                AddEvent(findings, DetectionConstants.EventInactivity, 2,
                     $"Inactivity detected ({idleSeconds}s). Mouse and keyboard appear idle.", 10);
                 return;
             }
 
+            // Tier 1 — warning. IDLE with input-tier 1 → 10 pts.
             if (idleSeconds >= warningThreshold && _lastReportedIdleLevel < 1)
             {
                 _lastReportedIdleLevel = 1;
@@ -467,8 +552,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            // Protection filter — exclude browsers, OS utilities, and any
+            // process that is already covered by another detection module
+            // BEFORE checking which ones are currently running. Protected
+            // processes cannot be overridden by an instructor's per-room
+            // custom blacklist (Fix #3).
             var detected = _blacklistedApps
                 .Concat(_blacklistedProcessNames)
+                .Where(p => !_protectedProcesses.Contains(p))
                 .Where(running.Contains)
                 .OrderBy(p => p)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);

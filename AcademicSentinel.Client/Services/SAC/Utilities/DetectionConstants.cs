@@ -12,7 +12,8 @@ namespace AcademicSentinel.Client.Services.SAC.Utilities
         public const string EventScreenshot = "SCREENSHOT";
         public const string EventPrintScreen = "PRINTSCREEN";
         public const string EventSnipTool = "SNIP_TOOL";
-        public const string EventIdle = "IDLE";
+        public const string EventIdle = "IDLE";              // S1 — warning tier
+        public const string EventInactivity = "INACTIVITY";  // S2 / S4 — violation / critical tiers
         public const string EventProcessDetected = "PROCESS_DETECTED";
         // HAS sub-events
         public const string EventHasDebugger = "HAS_DEBUGGER";

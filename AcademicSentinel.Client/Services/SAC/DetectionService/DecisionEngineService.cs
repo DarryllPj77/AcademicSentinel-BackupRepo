@@ -25,12 +25,19 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             {
                 var normalized = (newEvent.EventType ?? string.Empty).Trim().ToUpperInvariant();
 
-                // Spec-compliant scoring (BRBDE):
-                //   S1 single passive       = 10  (RTFM, IDLE, single CSAD)
-                //   S2 repeated passive     = 20  (3+ CSAD/RTFM events — handled by repeat counter below)
-                //   S3 aggressive           = 50  (PBD, VAC, HAS, REMOTE — every occurrence)
+                // Capture the AddEvent severity tier before the type-driven
+                // override below clobbers it. INACTIVITY uses this tier to
+                // distinguish violation (2 → 20 pts) from critical (3 → 40 pts).
+                int inputTier = newEvent.SeverityScore;
+
+                // Updated BRBDE scoring tiers:
+                //   S1 — Focus / Idle warning   = 10 pts  (escalates to 20 after 3rd S1)
+                //   S2 — Clipboard / Inactivity = 20 pts
+                //   S3 — Process Blacklist      = 30 pts
+                //   S4 — VM / HAS / Canvas Closed / Inactivity-Critical = 40 pts
                 switch (normalized)
                 {
+                    // ---- RTFM (S1) ----
                     case "RTFM":
                     case "ALT_TAB":
                     case "WINDOW_SWITCH":
@@ -38,24 +45,32 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "FOCUS_LOST":
                         newEvent.SeverityScore = 10;
                         break;
-                    // LMS-anchored focus detection.
+
+                    // ---- LMS-anchored focus (RTFM family — S1) ----
                     case "CANVAS_NOT_FOUND":
-                        // S1 — first-time warning, may auto-resolve when student opens LMS.
-                        newEvent.SeverityScore = 10;
-                        break;
                     case "CANVAS_FOCUS_LOST":
-                        // S2 — focus left the anchored LMS browser window.
-                        newEvent.SeverityScore = 20;
-                        break;
-                    case "CANVAS_CLOSED":
-                        // S3 — student closed the LMS browser mid-session.
-                        newEvent.SeverityScore = 50;
-                        break;
-                    // RTFM_RATE / RTFM_SUSTAINED removed — see BehavioralMonitoringService.
-                    case "IDLE":
-                    case "INACTIVITY":
                         newEvent.SeverityScore = 10;
                         break;
+
+                    // CANVAS_CLOSED is the only Canvas event that escalates
+                    // to S4 — the student tore down the exam window mid-test.
+                    case "CANVAS_CLOSED":
+                        newEvent.SeverityScore = 40;
+                        break;
+
+                    // ---- IDLE (tiered) ----
+                    case "IDLE":
+                        // Always the warning tier, fixed 10 pts.
+                        newEvent.SeverityScore = 10;
+                        break;
+                    case "INACTIVITY":
+                        // Use the input severity to differentiate:
+                        //   tier 3 → critical → S4 (40 pts)
+                        //   tier 2 → violation → S2 (20 pts)
+                        newEvent.SeverityScore = inputTier >= 3 ? 40 : 20;
+                        break;
+
+                    // ---- CSAD (S2) ----
                     case "CSAD":
                     case "CLIPBOARD":
                     case "CLIPBOARD_COPY":
@@ -65,16 +80,17 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "SCREENSHOT":
                     case "PRINTSCREEN":
                     case "SNIP_TOOL":
-                        // S1 passive on first hit; the engine bumps to S2 (20) once
-                        // we've recorded 3+ passive events of any type — see below.
-                        newEvent.SeverityScore = 10;
+                        newEvent.SeverityScore = 20;
                         break;
+
+                    // ---- PBD (S3 — 30 pts) ----
                     case "PBD":
                     case "PROCESS":
                     case "PROCESS_DETECTED":
-                        // PBD is ALWAYS aggressive per spec.
-                        newEvent.SeverityScore = 50;
+                        newEvent.SeverityScore = 30;
                         break;
+
+                    // ---- VAC / HAS (S4 — 40 pts) ----
                     case "VAC":
                     case "HAS":
                     case "VAC_HAS_VIOLATION":
@@ -82,37 +98,37 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "HAS_TIME_TAMPER":
                     case "VM":
                     case "REMOTE":
-                        // S3 aggressive: debugger attached and time-tamper are
-                        // intentional anti-proctoring actions.
-                        newEvent.SeverityScore = 50;
+                    case "REMOTE_DESKTOP_DETECTED":
+                        newEvent.SeverityScore = 40;
                         break;
+
                     case "HAS_CLOCK_DRIFT":
-                        // Mid-tier: 30-90s drift may be legitimate (NTP skew,
-                        // VM hibernation). Score as S2 so it surfaces as a
-                        // suspicious flag but doesn't auto-fail the student.
+                        // Mid-tier: 30–90s drift may be legitimate NTP skew.
+                        // Score as S2 so it surfaces as suspicious without
+                        // auto-failing the student.
                         newEvent.SeverityScore = 20;
                         break;
+
                     default:
                         if (normalized.Contains("RTFM") || normalized.Contains("ALT_TAB") || normalized.Contains("WINDOW_SWITCH") || normalized.Contains("FOCUS"))
                             newEvent.SeverityScore = 10;
                         else if (normalized.Contains("IDLE") || normalized.Contains("INACTIVITY"))
                             newEvent.SeverityScore = 10;
                         else if (normalized.Contains("CSAD") || normalized.Contains("CLIPBOARD") || normalized.Contains("COPY") || normalized.Contains("PASTE") || normalized.Contains("SCREENSHOT") || normalized.Contains("PRINTSCREEN"))
-                            newEvent.SeverityScore = 10;
+                            newEvent.SeverityScore = 20;
                         else if (normalized.Contains("PBD") || normalized.Contains("PROCESS"))
-                            newEvent.SeverityScore = 50;
+                            newEvent.SeverityScore = 30;
                         else if (normalized.Contains("VAC") || normalized.Contains("HAS") || normalized.Contains("VM") || normalized.Contains("REMOTE"))
-                            newEvent.SeverityScore = 50;
+                            newEvent.SeverityScore = 40;
                         else
                             newEvent.SeverityScore = 10;
                         break;
                 }
 
-                // S1 → S2 escalation. Normally requires 3 passive events; in
-                // strict mode every passive event is treated as S2 immediately
-                // (per spec: "higher severity weighting").
-                bool isPassive = newEvent.SeverityScore == 10;
-                if (isPassive)
+                // S1 → S2 escalation. Normally requires 3 S1 events; in
+                // strict mode every S1 event is treated as S2 immediately.
+                bool isS1 = newEvent.SeverityScore == 10;
+                if (isS1)
                 {
                     _passiveEventCount++;
                     if (_strictMode || _passiveEventCount >= 3)
@@ -133,12 +149,18 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             }
         }
 
+        /// <summary>
+        /// Maps the cumulative BRBDE score onto a risk band.
+        ///   <see cref="RiskLevel.Safe"/>       — score &lt; 20
+        ///   <see cref="RiskLevel.Suspicious"/> — 20 ≤ score &lt; 60
+        ///   <see cref="RiskLevel.Cheating"/>   — score ≥ 60
+        /// </summary>
         private static RiskLevel ResolveRiskLevel(int cumulativeScore)
         {
             if (cumulativeScore < 20)
                 return RiskLevel.Safe;
 
-            if (cumulativeScore < 50)
+            if (cumulativeScore < 60)
                 return RiskLevel.Suspicious;
 
             return RiskLevel.Cheating;
