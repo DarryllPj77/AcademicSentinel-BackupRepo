@@ -23,6 +23,14 @@ namespace AcademicSentinel.Client.Views.SAC
     {
         public ObservableCollection<string> DetectionReports { get; set; }
         private bool _isMonitoringActive;
+        // Tracks whether the SAC window is currently in the compact (softlock
+        // overlay) layout. Set explicitly by SwitchToCompactMode and
+        // BtnExpandCompact_Click rather than read from XAML state, because
+        // CompactPanel.Visibility lookups via FindName were returning stale
+        // values during the MonitoringResumed dispatcher chain — that
+        // race caused the Done button to disappear in compact view after a
+        // pause/resume cycle until the user manually maximized.
+        private bool _isInCompactMode;
         private int _roomId;
         private readonly DispatcherTimer _statusTimer;
         private readonly DispatcherTimer _compactCountdownTimer;
@@ -1514,8 +1522,11 @@ namespace AcademicSentinel.Client.Views.SAC
                         new SolidColorBrush(Color.FromRgb(198, 40, 40)),
                         permissionText, permissionColor);
 
-                    bool isCompactMode = FindName("CompactPanel") is FrameworkElement compact
-                                         && compact.Visibility == Visibility.Visible;
+                    // Use the explicitly tracked compact-mode flag instead
+                    // of probing XAML state. FindName-based lookups were
+                    // racing with the resume dispatcher chain and returned
+                    // stale Visibility, hiding Done in compact view.
+                    bool isCompactMode = _isInCompactMode;
 
                     if (!isCompactMode)
                     {
@@ -1706,6 +1717,10 @@ namespace AcademicSentinel.Client.Views.SAC
             if (FindName("CompactPanel") is FrameworkElement compactPanel)
                 compactPanel.Visibility = Visibility.Collapsed;
 
+            // Flip the tracked-compact flag BEFORE the state machine runs so
+            // UpdateUIForPhase observes the new layout, not the prior one.
+            _isInCompactMode = false;
+
             // After panel switch, re-assert the state-driven view.
             UpdateUIForPhase();
 
@@ -1733,7 +1748,13 @@ namespace AcademicSentinel.Client.Views.SAC
         private void SwitchToCompactMode()
         {
             if (FindName("CompactPanel") is FrameworkElement compactPanel && compactPanel.Visibility == Visibility.Visible)
+            {
+                // Defensive: keep the tracked flag in sync with the actual
+                // panel state in case the early return path is hit before
+                // the flag was ever set.
+                _isInCompactMode = true;
                 return;
+            }
 
             WindowState = WindowState.Normal;
             // Compact mode is wide enough to render: shield icon + (gap) +
@@ -1762,6 +1783,10 @@ namespace AcademicSentinel.Client.Views.SAC
                 fullPanel.Visibility = Visibility.Collapsed;
             if (FindName("CompactPanel") is FrameworkElement shownCompactPanel)
                 shownCompactPanel.Visibility = Visibility.Visible;
+
+            // Mark compact mode active BEFORE UpdateUIForPhase so the state
+            // machine's Done-visibility branch reads the fresh value.
+            _isInCompactMode = true;
 
             // After the panel swap, re-run the state machine so the Done
             // button's visibility reflects the current ExamPhase, not the
