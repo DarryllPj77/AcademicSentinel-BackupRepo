@@ -420,7 +420,13 @@ namespace AcademicSentinel.Client.Views.SAC
                 return;
 
             if (compactPanel.Visibility == Visibility.Visible)
+            {
+                // Already compact — keep the tracked flag in sync so that
+                // UpdateUIForPhase's Done-visibility branch never reads a
+                // stale `false` and hides the button after resume.
+                _isInCompactMode = true;
                 return;
+            }
 
             if (!_detectorsRunning)
             {
@@ -892,9 +898,29 @@ namespace AcademicSentinel.Client.Views.SAC
                                 // UpdateUIForPhase enforces the contract:
                                 //   - Compact (minimized) view → Done visible
                                 //   - Full   (maximized) view → Done hidden
-                                // We do NOT set BtnDone.Visibility directly
-                                // here so the compact-only rule isn't bypassed.
                                 UpdateUIForPhase();
+
+                                // Belt-and-suspenders for the Render-hosted
+                                // pause/resume regression: independently
+                                // verify the live XAML state and force-show
+                                // Done if we're in compact + Active, even
+                                // when an upstream path bypassed
+                                // SwitchToCompactMode and never set the flag.
+                                bool compactNow =
+                                    FindName("CompactPanel") is FrameworkElement compactNowPanel
+                                    && compactNowPanel.Visibility == Visibility.Visible;
+                                if (compactNow && _currentPhase == ExamPhase.Active && BtnDone != null)
+                                {
+                                    _isInCompactMode = true;
+                                    BtnDone.Visibility = Visibility.Visible;
+                                    if (!_hasSentDone)
+                                    {
+                                        BtnDone.Content = "Done";
+                                        BtnDone.IsEnabled = true;
+                                        BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
+                                        BtnDone.Foreground = Brushes.White;
+                                    }
+                                }
 
                                 DetectionReports.Insert(0, $"System: Monitoring resumed. ({DateTime.Now:h:mm:ss tt})");
 
@@ -1522,11 +1548,21 @@ namespace AcademicSentinel.Client.Views.SAC
                         new SolidColorBrush(Color.FromRgb(198, 40, 40)),
                         permissionText, permissionColor);
 
-                    // Use the explicitly tracked compact-mode flag instead
-                    // of probing XAML state. FindName-based lookups were
-                    // racing with the resume dispatcher chain and returned
-                    // stale Visibility, hiding Done in compact view.
-                    bool isCompactMode = _isInCompactMode;
+                    // Compact-mode detection: trust whichever signal says
+                    // "we are compact", because both can drift —
+                    //   * _isInCompactMode is missed by code paths that
+                    //     bypass SwitchToCompactMode (e.g. OnDeactivated's
+                    //     early-return when CompactPanel was already shown).
+                    //   * CompactPanel.Visibility lookups via FindName have
+                    //     historically been stale during the MonitoringResumed
+                    //     dispatcher chain on Render-hosted sessions.
+                    // OR-ing both eliminates the regression in either path
+                    // and resyncs the tracked flag for the next call.
+                    bool compactPanelVisible =
+                        FindName("CompactPanel") is FrameworkElement cp
+                        && cp.Visibility == Visibility.Visible;
+                    bool isCompactMode = _isInCompactMode || compactPanelVisible;
+                    _isInCompactMode = isCompactMode;
 
                     if (!isCompactMode)
                     {
