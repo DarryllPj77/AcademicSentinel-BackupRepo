@@ -378,16 +378,25 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         }
 
         /// <summary>
-        /// LMS-anchored focus detection. Approval is purely domain-in-title:
-        /// any foreground window whose title contains the anchored LMS
-        /// domain is approved, regardless of HWND. This prevents false
-        /// WINDOW_SWITCH violations when the student navigates within Canvas
-        /// (Bug Fix #1) — quizzes, modules, and resource pages may all open
-        /// in different windows but their titles still surface the LMS host.
+        /// LMS-anchored focus detection. A foreground window is approved if
+        /// EITHER:
+        /// <list type="bullet">
+        ///   <item>its HWND is the one we previously anchored to the LMS
+        ///   (handles within-Canvas navigation: clicking from a quiz to a
+        ///   module page changes the title but keeps the same window), OR</item>
+        ///   <item>its title contains the anchored LMS domain (handles
+        ///   re-anchoring when the student opens a brand-new browser window
+        ///   on the LMS — the domain typically appears in the title until
+        ///   the page fully loads its custom <c>&lt;title&gt;</c>).</item>
+        /// </list>
+        /// Combining both checks fixes the false-positive observed when
+        /// Canvas page titles like
+        /// <c>"[M1 &amp; M2] Security Fundamentals: 3TSY2526_CS0029 - Brave"</c>
+        /// dropped the domain — the same HWND was still the LMS window.
         ///
-        /// CANVAS_CLOSED detection is kept here: when the most recently
-        /// anchored HWND becomes invalid AND no other LMS-titled window is
-        /// in the foreground, fire CANVAS_CLOSED once (S4 / 40 pts).
+        /// CANVAS_CLOSED fires (S4 / 40 pts) when the anchored HWND is no
+        /// longer a valid window and the new foreground is also not on the
+        /// LMS, so a true "student closed the exam tab" still trips.
         /// </summary>
         private void DetectFocusAnchored(bool isSacWindowActive, ICollection<MonitoringDetectionEvent> findings)
         {
@@ -397,19 +406,29 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
             string currentTitle = GetWindowName(foreground);
 
-            // Domain-in-title approval — same rule, regardless of HWND.
-            bool isOnLms = !string.IsNullOrWhiteSpace(_anchoredLmsDomain)
-                           && !string.IsNullOrWhiteSpace(currentTitle)
-                           && currentTitle.IndexOf(_anchoredLmsDomain,
-                              StringComparison.OrdinalIgnoreCase) >= 0;
+            // Approval check #1 — title contains the LMS domain.
+            bool titleSaysLms = !string.IsNullOrWhiteSpace(_anchoredLmsDomain)
+                                && !string.IsNullOrWhiteSpace(currentTitle)
+                                && currentTitle.IndexOf(_anchoredLmsDomain,
+                                   StringComparison.OrdinalIgnoreCase) >= 0;
 
-            // CANVAS_CLOSED — student previously had an LMS window anchored
-            // (HWND non-zero), that HWND is gone, and the new foreground is
-            // also not on an LMS window. Fire once with cooldown so a brief
-            // browser reload doesn't double-report.
+            // Approval check #2 — foreground is the SAME HWND we previously
+            // anchored to the LMS. Canvas page navigation typically changes
+            // the title without spawning a new window, so trust the HWND
+            // identity. We still validate the HWND is alive via IsWindow(...)
+            // so a stale handle from a closed window can't grant approval.
+            bool sameAnchoredHwnd = _anchoredCanvasWindow != IntPtr.Zero
+                                    && foreground == _anchoredCanvasWindow
+                                    && IsWindow(foreground);
+
+            bool isOnLms = titleSaysLms || sameAnchoredHwnd;
+
+            // CANVAS_CLOSED — anchored HWND is gone AND new foreground isn't
+            // on the LMS. Fires once with a 5s cooldown so a brief browser
+            // reload doesn't double-report.
             if (_anchoredCanvasWindow != IntPtr.Zero
                 && !IsWindow(_anchoredCanvasWindow)
-                && !isOnLms)
+                && !titleSaysLms)
             {
                 AddEvent(findings, DetectionConstants.EventCanvasClosed, 4,
                     "LMS exam browser window was closed during the session.",
@@ -417,16 +436,17 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 _anchoredCanvasWindow = IntPtr.Zero;
             }
 
-            // Silent re-anchor — keep _anchoredCanvasWindow in sync with the
-            // most recent LMS window we've seen so CANVAS_CLOSED can fire
-            // when it later disappears.
-            if (isOnLms)
+            // Silent re-anchor — promote the foreground window to the
+            // canonical LMS HWND whenever we have positive title evidence.
+            // (Same-HWND approval doesn't re-anchor; the existing anchor
+            // is already correct.)
+            if (titleSaysLms)
             {
                 _anchoredCanvasWindow = foreground;
-                _canvasNotFoundFired = false; // reset so a future close+grace can warn again
+                _canvasNotFoundFired = false;
             }
 
-            // Violation: foreground is NOT SAC and NOT on an LMS-titled window.
+            // Violation: foreground is NOT SAC AND not approved as LMS.
             if (!isSacWindowActive && !isOnLms)
             {
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
