@@ -3,15 +3,62 @@ using AcademicSentinel.Server.Data;
 using AcademicSentinel.Server.Hubs;
 using AcademicSentinel.Server.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- JWT AUTHENTICATION SETUP ---
-var jwtKey = builder.Configuration["Jwt:Key"];
-var keyBytes = Encoding.UTF8.GetBytes(jwtKey!);
+// ---------------------------------------------------------------------------
+// PORT BINDING (Render / DigitalOcean App Platform)
+// PaaS providers inject a $PORT env var and expect the container to listen on
+// 0.0.0.0:$PORT over plain HTTP — TLS is terminated at the edge.
+// ---------------------------------------------------------------------------
+var port = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrEmpty(port))
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+}
+
+// ---------------------------------------------------------------------------
+// CONNECTION STRING — env-injected, with Render-style URL parsing
+// Render exposes Postgres as `DATABASE_URL=postgres://user:pass@host:port/db`.
+// Npgsql wants key/value form, so translate when needed. Falls back to
+// appsettings.json for local development.
+// ---------------------------------------------------------------------------
+string? connectionString =
+    Environment.GetEnvironmentVariable("DATABASE_URL")
+    ?? builder.Configuration.GetConnectionString("DefaultConnection");
+
+if (!string.IsNullOrEmpty(connectionString) &&
+    (connectionString.StartsWith("postgres://") || connectionString.StartsWith("postgresql://")))
+{
+    var uri = new Uri(connectionString);
+    var userInfo = uri.UserInfo.Split(':', 2);
+    connectionString =
+        $"Host={uri.Host};Port={(uri.Port > 0 ? uri.Port : 5432)};" +
+        $"Database={uri.AbsolutePath.TrimStart('/')};" +
+        $"Username={Uri.UnescapeDataString(userInfo[0])};" +
+        $"Password={(userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : string.Empty)};" +
+        // Render's managed Postgres requires SSL; trust their self-signed cert.
+        "SSL Mode=Require;Trust Server Certificate=true";
+}
+
+// ---------------------------------------------------------------------------
+// JWT — secrets must come from env in production, never from appsettings.json
+// ---------------------------------------------------------------------------
+var jwtKey = Environment.GetEnvironmentVariable("JWT_KEY")
+             ?? builder.Configuration["Jwt:Key"];
+var jwtIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER")
+                ?? builder.Configuration["Jwt:Issuer"];
+var jwtAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE")
+                  ?? builder.Configuration["Jwt:Audience"];
+
+if (string.IsNullOrWhiteSpace(jwtKey))
+    throw new InvalidOperationException("JWT signing key not configured (set JWT_KEY env var).");
+
+var keyBytes = Encoding.UTF8.GetBytes(jwtKey);
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -22,12 +69,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
+            ValidIssuer = jwtIssuer,
+            ValidAudience = jwtAudience,
             IssuerSigningKey = new SymmetricSecurityKey(keyBytes)
         };
 
-        // ADD THIS NEW BLOCK: Tells SignalR how to grab the token
+        // SignalR sends the JWT as a query-string param during the WebSocket
+        // upgrade because browsers can't set custom headers on WS handshakes.
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
@@ -43,6 +91,28 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+// ---------------------------------------------------------------------------
+// CORS — required for browser-based frontends (and SignalR with credentials).
+// Origins are read from CORS_ALLOWED_ORIGINS (comma-separated) so deployments
+// can be reconfigured without a rebuild.
+// ---------------------------------------------------------------------------
+var corsOrigins = (Environment.GetEnvironmentVariable("CORS_ALLOWED_ORIGINS")
+                   ?? "http://localhost:5173,http://localhost:3000")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AcademicSentinelCors", policy =>
+    {
+        policy.WithOrigins(corsOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              // SignalR WebSockets require credentials; AllowAnyOrigin is
+              // incompatible with AllowCredentials, hence WithOrigins above.
+              .AllowCredentials();
+    });
+});
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -51,14 +121,13 @@ builder.Services.AddSwaggerGen(c =>
 {
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Description = "Enter 'Bearer' [space] and then your token in the text input below. Example: 'Bearer 12345abcdef'",
+        Description = "Enter 'Bearer' [space] and then your token. Example: 'Bearer 12345abcdef'",
         Name = "Authorization",
         In = ParameterLocation.Header,
         Type = SecuritySchemeType.ApiKey,
         Scheme = "Bearer"
     });
-
-    c.AddSecurityRequirement(new OpenApiSecurityRequirement()
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
             new OpenApiSecurityScheme
@@ -72,21 +141,56 @@ builder.Services.AddSwaggerGen(c =>
         }
     });
 });
-// -------------------------
 
-// SignalR
 builder.Services.AddSignalR();
 
-// Image Storage Service
-builder.Services.AddScoped<IImageStorageService, ImageStorageService>();
+// ---------------------------------------------------------------------------
+// IMAGE STORAGE — pick implementation based on env.
+// If Cloudinary creds are present, use the cloud-backed implementation
+// (survives Render's ephemeral filesystem). Otherwise fall back to local
+// disk for local development.
+// ---------------------------------------------------------------------------
+var cloudinaryUrl = Environment.GetEnvironmentVariable("CLOUDINARY_URL");
+if (!string.IsNullOrWhiteSpace(cloudinaryUrl))
+{
+    builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>();
+}
+else
+{
+    builder.Services.AddScoped<IImageStorageService, ImageStorageService>();
+}
 
-// --- ADDED THIS LINE: Email Service Registration ---
 builder.Services.AddTransient<IEmailSender, OutlookEmailSender>();
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseNpgsql(connectionString));
 
 var app = builder.Build();
+
+// ---------------------------------------------------------------------------
+// FORWARDED HEADERS — Render/DO sit a reverse proxy in front of us, so we
+// must trust X-Forwarded-Proto/-For to keep Request.Scheme correct (matters
+// for SignalR negotiation and any URL generation).
+// MUST run before authentication.
+// ---------------------------------------------------------------------------
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    // PaaS proxies are not in our network — clear the safe-list defaults.
+    KnownNetworks = { },
+    KnownProxies = { }
+});
+
+// ---------------------------------------------------------------------------
+// AUTOMATIC EF CORE MIGRATIONS at startup.
+// Wrapped in a scope; aborts startup loudly if migration fails so the
+// platform's failed-deploy signal trips correctly.
+// ---------------------------------------------------------------------------
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.Migrate();
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -94,13 +198,26 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-app.UseStaticFiles(); // Enable serving static files (images)
+// HTTPS redirect: only in dev. The PaaS proxy already enforces HTTPS at
+// the edge; doing it inside the container causes redirect loops.
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+
+app.UseStaticFiles();
+app.UseRouting();
+
+// CORS must be between UseRouting and UseAuthentication for SignalR to work.
+app.UseCors("AcademicSentinelCors");
+
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapControllers();
 
-// Open the URL route for the live connection
+app.MapControllers();
 app.MapHub<MonitoringHub>("/monitoringHub");
+
+// Lightweight health endpoint for Render/DO health checks.
+app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
 
 app.Run();
