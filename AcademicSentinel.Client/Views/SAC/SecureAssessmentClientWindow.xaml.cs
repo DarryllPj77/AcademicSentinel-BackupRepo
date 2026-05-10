@@ -66,6 +66,15 @@ namespace AcademicSentinel.Client.Views.SAC
         private readonly object _joinLiveExamLock = new object();
         private bool _hasJoinedLiveExam;
 
+        /// <summary>
+        /// Per-room custom blacklist sent to the BehavioralMonitoringService.
+        /// Browsers are intentionally NOT here — students need them for the
+        /// LMS, and the service-side <c>_protectedProcesses</c> guard would
+        /// strip them anyway. Same goes for <c>snippingtool</c> (covered by
+        /// the SNIP_TOOL keyboard hook) and <c>taskmgr</c> (disabled via the
+        /// registry at session start). Keeping this list lean makes the
+        /// PROCESS_DETECTED feed surface only genuinely unauthorized apps.
+        /// </summary>
         private static readonly HashSet<string> ProcessBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             // Debuggers / reverse-engineering
@@ -77,11 +86,11 @@ namespace AcademicSentinel.Client.Views.SAC
             "discord", "telegram", "slack", "whatsapp", "skype", "teams", "zoom", "messenger",
             // Screen capture / streaming
             "obs", "obs64", "obs32", "ffmpeg", "camtasia", "snagit", "bandicam",
-            "sharex", "snippingtool", "screensketch", "screenrec",
-            // Secondary browsers (a single browser session belongs to the SAC)
-            "chrome", "firefox", "opera", "msedge", "brave", "vivaldi", "tor",
-            // AI chat / coding assistants
-            "chatgpt", "claude", "copilot", "perplexity", "gemini",
+            "sharex", "screenrec",
+            // AI desktop apps (standalone .exe only — chatgpt.ai / claude.ai
+            // accessed via a browser tab is not a separate process and stays
+            // out of this list).
+            "claude",
             // Android emulators (covers BlueStacks even when VAC misses them)
             "bluestacks", "hd-player", "hd-agent", "bstksvc", "bluestacks_bgp",
             "nox", "noxvmhandle", "noxvmhandleagent",
