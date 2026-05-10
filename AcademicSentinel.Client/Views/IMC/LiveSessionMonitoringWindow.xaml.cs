@@ -607,10 +607,40 @@ namespace AcademicSentinel.Client.Views.IMC
                 if (_permanentlyDismissedStudents.Contains(payload.StudentId))
                     return;
 
+                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
+                var email = targetStudent?.Email
+                            ?? _allParticipants.FirstOrDefault(p => p.StudentId == payload.StudentId)?.StudentEmail
+                            ?? $"Student #{payload.StudentId}";
+
+                // Informational events (e.g. CANVAS_RETURNED) carry zero
+                // severity score and should NOT inflate the student's
+                // violation count, mark them as "ALERT", or render the
+                // red VIOLATION badge. Render a green RETURN entry instead.
+                bool isInformational =
+                    string.Equals(payload.EventType, "CANVAS_RETURNED",
+                        StringComparison.OrdinalIgnoreCase);
+
+                if (isInformational)
+                {
+                    var message = string.IsNullOrWhiteSpace(payload.Description)
+                        ? "Student returned to the LMS exam."
+                        : payload.Description;
+                    LogActivity(email, "RETURN", message, "#1B5E20");
+
+                    // Restore the connected status text so the row doesn't
+                    // stay stuck on a previous "ALERT: WINDOW_SWITCH" caption.
+                    if (targetStudent != null && !targetStudent.IsOffline)
+                    {
+                        targetStudent.Status = "Connected";
+                        targetStudent.StatusColor = "#4CAF50";
+                    }
+                    _studentsView.Refresh();
+                    return;
+                }
+
                 _studentsWithViolations.Add(payload.StudentId);
                 AppendStudentMonitoringEvent(payload.StudentId, payload.EventType, payload.SeverityScore);
 
-                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
                 if (targetStudent != null)
                 {
                     targetStudent.ViolationCount += Math.Max(1, payload.SeverityScore);
@@ -619,11 +649,10 @@ namespace AcademicSentinel.Client.Views.IMC
                     targetStudent.StatusColor = "#D32F2F";
                 }
 
-                var email = targetStudent?.Email ?? _allParticipants.FirstOrDefault(p => p.StudentId == payload.StudentId)?.StudentEmail ?? $"Student #{payload.StudentId}";
-                var message = string.IsNullOrWhiteSpace(payload.Description)
+                var violationMessage = string.IsNullOrWhiteSpace(payload.Description)
                     ? payload.EventType
                     : $"{payload.EventType}: {payload.Description}";
-                LogActivity(email, "VIOLATION", message, "#D32F2F");
+                LogActivity(email, "VIOLATION", violationMessage, "#D32F2F");
                 UpdateDetailPanelForIncomingViolation(payload.StudentId);
                 _studentsView.Refresh();
             })));

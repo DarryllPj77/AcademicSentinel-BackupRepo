@@ -167,6 +167,11 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private DateTime _canvasNotFoundGraceEndsAt;
         private bool _canvasNotFoundFired;
 
+        // Tracks whether the previous foreground evaluation considered the
+        // student to be on the LMS. Used to fire CANVAS_RETURNED exactly on
+        // the false → true transition (instructor-facing positive log entry).
+        private bool _wasPreviouslyOnLms;
+
         public BehavioralMonitoringService(DetectionSettings settings, IEnumerable<string> blacklistedProcessNames)
         {
             _settings = settings ?? new DetectionSettings();
@@ -207,6 +212,11 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _canvasNotFoundGraceEndsAt = DateTime.UtcNow
                 .AddSeconds(CanvasGracePeriodSeconds);
             _canvasNotFoundFired = false;
+
+            // Treat the start of monitoring as "not yet on LMS" so the very
+            // first time the student actually focuses the LMS window we
+            // emit CANVAS_RETURNED (instructor-visible "they're on Canvas").
+            _wasPreviouslyOnLms = false;
         }
 
         /// <summary>
@@ -259,6 +269,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _temporarilyExemptWindow = IntPtr.Zero;
             _lastReportedIdleLevel = 0;
             _canvasNotFoundFired = false;
+            _wasPreviouslyOnLms = false;
             _lastReportedProcesses.Clear();
             _lastReportedAtByEvent.Clear();
         }
@@ -445,6 +456,19 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 _anchoredCanvasWindow = foreground;
                 _canvasNotFoundFired = false;
             }
+
+            // CANVAS_RETURNED — informational positive log entry. Fires on
+            // the false → true transition (student was off the LMS, now
+            // back). Score 0, so no impact on cumulative risk; the IMC
+            // renders it with a green RETURN badge instead of the red
+            // VIOLATION badge.
+            if (isOnLms && !_wasPreviouslyOnLms)
+            {
+                AddEvent(findings, DetectionConstants.EventCanvasReturned, 0,
+                    $"Student returned focus to the LMS exam ({_anchoredLmsDomain}).",
+                    cooldownSeconds: 2);
+            }
+            _wasPreviouslyOnLms = isOnLms;
 
             // Violation: foreground is NOT SAC AND not approved as LMS.
             if (!isSacWindowActive && !isOnLms)

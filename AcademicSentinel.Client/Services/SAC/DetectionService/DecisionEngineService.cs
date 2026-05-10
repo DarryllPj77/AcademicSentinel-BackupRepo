@@ -58,6 +58,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                         newEvent.SeverityScore = 40;
                         break;
 
+                    // CANVAS_RETURNED is purely informational — the student
+                    // came back to the LMS exam window. No score impact, but
+                    // the IMC renders it as a positive log entry so the
+                    // instructor can see when focus returned to Canvas.
+                    case "CANVAS_RETURNED":
+                        newEvent.SeverityScore = 0;
+                        break;
+
                     // ---- IDLE (tiered) ----
                     case "IDLE":
                         // Always the warning tier, fixed 10 pts.
