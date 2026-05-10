@@ -840,20 +840,36 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
+                // Resume mirrors the proven SessionCountdownStarted shape
+                // EXACTLY — same threading, same finalizer calls, same order.
+                // The previous implementation wrapped the finalizer in
+                // Dispatcher.InvokeAsync(async () => ...) which interacted
+                // badly with the compact-mode visibility branch and left the
+                // Done button hidden after resume. Using the start-monitoring
+                // pattern guarantees every student in the session gets Done
+                // back, just like they all get it at session start.
                 _hubConnection.On("MonitoringResumed", () =>
                 {
                     _stateCts?.Cancel();
                     _stateCts = new System.Threading.CancellationTokenSource();
                     var token = _stateCts.Token;
 
-                    Dispatcher.Invoke(() =>
-                    {
-                        _isMonitoringActive = false;
-                        _monitoringCountdownEndsAt = DateTime.Now.AddSeconds(10);
-                        _currentPhase = ExamPhase.Countdown;
-                        UpdateDetectorRuntimeState();
-                        UpdateRequestLeaveButtonState();
-                    });
+                    // Initial state set — assigned directly (matches
+                    // SessionCountdownStarted; field writes are atomic).
+                    _isMonitoringActive = false;
+                    _monitoringCountdownEndsAt = DateTime.Now.AddSeconds(10);
+                    _currentPhase = ExamPhase.Countdown;
+                    _hasSentDone = false; // student can press Done again next cycle
+
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsPaused = true;
+
+                    UpdateDetectorRuntimeState();
+                    UpdateRequestLeaveButtonState();
+
+                    // Inform the student the resume countdown started.
+                    Application.Current.Dispatcher.Invoke(() =>
+                        DetectionReports.Insert(0, $"System: Monitoring resuming... ({DateTime.Now:h:mm:ss tt})"));
 
                     Task.Run(async () =>
                     {
@@ -873,59 +889,27 @@ namespace AcademicSentinel.Client.Views.SAC
                                 await Task.Delay(250, token);
                             }
 
-                            if (token.IsCancellationRequested)
-                                return;
-
-                            await Dispatcher.InvokeAsync(async () =>
+                            if (!token.IsCancellationRequested)
                             {
-                                // Wake the hardware scanner BEFORE SetMonitoringActive so the
-                                // UpdateDetectorRuntimeState call inside it sees an unpaused runtime.
+                                // Finalizer mirrors SessionCountdownStarted
+                                // line-for-line. No Dispatcher.InvokeAsync
+                                // wrapper — SetMonitoringStateUI already
+                                // marshals to the UI thread internally.
+                                _isMonitoringActive = true;
+                                _monitoringCountdownEndsAt = null;
+                                _monitoringStartedAt ??= DateTime.Now;
+                                _currentPhase = ExamPhase.Active;
+
                                 if (_detectorRuntime != null)
                                     _detectorRuntime.IsPaused = false;
 
-                                // Set state FIRST so SetMonitoringActive's internal
-                                // UpdateUIForPhase already sees the resumed phase.
-                                _currentPhase = ExamPhase.Active;
-                                _isMonitoringActive = true;
-                                _hasSentDone = false; // student can press Done again on next monitoring cycle
+                                SetMonitoringStateUI(true, "ACTIVE", System.Windows.Media.Brushes.LimeGreen);
+                                UpdateDetectorRuntimeState();
+                                UpdateRequestLeaveButtonState();
 
-                                SetMonitoringActive(true);
-
-                                if (_detectorRuntime != null)
-                                    UpdateDetectorRuntimeState();
-
-                                // Final state-machine pass on the UI thread —
-                                // UpdateUIForPhase enforces the contract:
-                                //   - Compact (minimized) view → Done visible
-                                //   - Full   (maximized) view → Done hidden
-                                UpdateUIForPhase();
-
-                                // Belt-and-suspenders for the Render-hosted
-                                // pause/resume regression: independently
-                                // verify the live XAML state and force-show
-                                // Done if we're in compact + Active, even
-                                // when an upstream path bypassed
-                                // SwitchToCompactMode and never set the flag.
-                                bool compactNow =
-                                    FindName("CompactPanel") is FrameworkElement compactNowPanel
-                                    && compactNowPanel.Visibility == Visibility.Visible;
-                                if (compactNow && _currentPhase == ExamPhase.Active && BtnDone != null)
-                                {
-                                    _isInCompactMode = true;
-                                    BtnDone.Visibility = Visibility.Visible;
-                                    if (!_hasSentDone)
-                                    {
-                                        BtnDone.Content = "Done";
-                                        BtnDone.IsEnabled = true;
-                                        BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
-                                        BtnDone.Foreground = Brushes.White;
-                                    }
-                                }
-
-                                DetectionReports.Insert(0, $"System: Monitoring resumed. ({DateTime.Now:h:mm:ss tt})");
-
-                                await Task.CompletedTask;
-                            });
+                                Application.Current.Dispatcher.Invoke(() =>
+                                    DetectionReports.Insert(0, $"System: Monitoring resumed. ({DateTime.Now:h:mm:ss tt})"));
+                            }
                         }
                         catch (OperationCanceledException)
                         {
