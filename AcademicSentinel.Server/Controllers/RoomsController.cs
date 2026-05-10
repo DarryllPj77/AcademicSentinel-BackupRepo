@@ -445,6 +445,14 @@ public class RoomsController : ControllerBase
                     || (string.Equals(latestParticipantStatus.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
                         && leaveGrantedStudentIds.Contains(enrollment.StudentId)));
 
+            // Bug fix: a student kicked via RemoveStudentFromCurrentSession has
+            // JoinApprovalStatus = "Removed" on their latest participant row.
+            // Surface that as a distinct ParticipationStatus so the IMC's
+            // participant list stops rendering them as a passive "Disconnected"
+            // member after removal.
+            var isRemovedParticipant = participantDictionary.TryGetValue(enrollment.StudentId, out var latestForRemovalCheck)
+                && string.Equals(latestForRemovalCheck.JoinApprovalStatus, "Removed", StringComparison.OrdinalIgnoreCase);
+
             return new ParticipantDto
             {
                 StudentId = enrollment.StudentId,
@@ -452,9 +460,11 @@ public class RoomsController : ControllerBase
                 StudentName = user?.FullName ?? "No Name Set", // Sending the real name
                 ProfileImageUrl = user?.ProfileImageUrl,
                 EnrollmentSource = enrollment.EnrollmentSource,
-                ParticipationStatus = isCompletedParticipant
-                    ? "Completed"
-                    : participationStatus,
+                ParticipationStatus = isRemovedParticipant
+                    ? "Removed"
+                    : isCompletedParticipant
+                        ? "Completed"
+                        : participationStatus,
                 ConnectionStatus = participantDictionary.TryGetValue(enrollment.StudentId, out var latestParticipant)
                     ? latestParticipant.ConnectionStatus
                     : "Disconnected"
@@ -533,6 +543,12 @@ public class RoomsController : ControllerBase
 
         await _context.SaveChangesAsync();
 
+        // Distinct StudentRemoved broadcast so the IMC can drop the row
+        // immediately. StudentDisconnected alone is ambiguous — a student who
+        // simply lost network would also fire that, but the IMC keeps them in
+        // the list as "Disconnected". Removal is permanent until rejoin
+        // approval, so we need a separate signal.
+        await _hubContext.Clients.Group(roomId.ToString()).SendAsync("StudentRemoved", studentId);
         await _hubContext.Clients.Group(roomId.ToString()).SendAsync("StudentDisconnected", studentId);
         await _hubContext.Clients.User(studentId.ToString()).SendAsync("RemovedFromSession", roomId);
 

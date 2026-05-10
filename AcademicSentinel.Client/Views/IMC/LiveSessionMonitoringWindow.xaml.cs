@@ -808,6 +808,28 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
             })));
 
+            // Bug fix: when an instructor kicks a student via Remove from
+            // Session, the server now broadcasts StudentRemoved. Drop the
+            // participant from this console immediately rather than waiting
+            // for the next periodic LoadParticipantsFromServerAsync refresh.
+            _hubSubscriptions.Add(_hubConnection.On<int>("StudentRemoved", studentId => Dispatcher.InvokeAsync(() =>
+            {
+                _permanentlyDismissedStudents.Add(studentId);
+
+                if (_selectedStudentId == studentId)
+                {
+                    ResetToMainMonitoringView();
+                }
+
+                var student = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                if (student != null)
+                {
+                    ActiveStudents.Remove(student);
+                    _studentsView.Refresh();
+                    UpdateParticipantCount();
+                }
+            })));
+
             _hubSubscriptions.Add(_hubConnection.On<int>("StudentLeftSession", studentId => Dispatcher.InvokeAsync(() =>
             {
                 if (_selectedStudentId == studentId)
@@ -1250,6 +1272,22 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
 
                 LogActivity(_selectedStudent.Email, "KICKED", "Instructor removed student from room.", "#D32F2F");
+
+                // Bug fix: optimistic local removal. Mark the kicked student
+                // as permanently dismissed BEFORE the participants refresh
+                // runs, so even if the server's GET /participants response
+                // races and still reports the row as "Disconnected", the
+                // LoadParticipantsFromServerAsync filter drops it.
+                var removedStudentId = _selectedStudent.StudentId;
+                _permanentlyDismissedStudents.Add(removedStudentId);
+                var existing = ActiveStudents.FirstOrDefault(s => s.StudentId == removedStudentId);
+                if (existing != null)
+                {
+                    ActiveStudents.Remove(existing);
+                    _studentsView.Refresh();
+                    UpdateParticipantCount();
+                }
+
                 _selectedStudent = null;
                 TxtLogHeader.Text = "Global Log Feed";
                 TxtSelectedName.Text = "Select a Student";
