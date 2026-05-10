@@ -229,6 +229,46 @@
                             <CheckBox x:Name="ChkTabSwitch" Style="{StaticResource RuleCheck}" IsChecked="True"
                                       Content="Detect tab switching / Alt+Tab (Focus Detection)"/>
 
+                            <!-- REQUIRED LMS Exam URL field for anchored focus detection. -->
+                            <Border Background="#FFFBEB" CornerRadius="6" Padding="14"
+                                    BorderBrush="#FCD34D" BorderThickness="1"
+                                    Margin="0,12,0,14">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                        <TextBlock Text="LMS Exam URL"
+                                                   FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="#92400E"/>
+                                        <TextBlock Text=" *"
+                                                   FontSize="13" FontWeight="Bold"
+                                                   Foreground="#DC2626"/>
+                                        <Border Background="#DC2626" CornerRadius="3"
+                                                Padding="6,1" Margin="8,0,0,0">
+                                            <TextBlock Text="REQUIRED"
+                                                       FontSize="9" FontWeight="Bold"
+                                                       Foreground="White"/>
+                                        </Border>
+                                    </StackPanel>
+                                    <TextBlock Text="Students will only be allowed to focus on the browser window containing this exam URL."
+                                               FontSize="11" Foreground="#78350F"
+                                               TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+                                    <Border x:Name="LmsUrlBorder"
+                                            BorderBrush="#DC2626" BorderThickness="1.5"
+                                            CornerRadius="4" Background="White">
+                                        <TextBox x:Name="TxtLmsExamUrl"
+                                                 Padding="10,8" FontSize="13"
+                                                 BorderThickness="0" Background="Transparent"
+                                                 TextChanged="TxtLmsExamUrl_TextChanged"/>
+                                    </Border>
+
+                                    <TextBlock x:Name="TxtLmsUrlValidation"
+                                               Text="LMS Exam URL is required"
+                                               FontSize="11" FontWeight="SemiBold"
+                                               Foreground="#DC2626"
+                                               Margin="0,6,0,0"/>
+                                </StackPanel>
+                            </Border>
+
                             <CheckBox x:Name="ChkVirtualMachine" Style="{StaticResource RuleCheck}" IsChecked="True"
                                       Content="Detect virtual machine environments"/>
 

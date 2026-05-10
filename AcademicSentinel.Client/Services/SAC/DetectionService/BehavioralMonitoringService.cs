@@ -31,6 +31,24 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         [DllImport("kernel32.dll")]
         private static extern uint GetTickCount();
 
+        // P/Invoke for the LMS-anchored focus detection.
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowTextLength(IntPtr hWnd);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct LASTINPUTINFO
         {
@@ -87,6 +105,18 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private bool _isMonitoring;
         private DateTime _monitoringStartedAtUtc;
 
+        // ---- LMS-anchored focus detection state ----
+        // Domain extracted from the room's LmsExamUrl, e.g. "feu.instructure.com".
+        // Empty when no URL is configured (legacy rooms) — anchoring stays off.
+        private string _anchoredLmsDomain = string.Empty;
+        // Window handle of the browser window currently treated as the LMS exam.
+        // IntPtr.Zero before the student opens the LMS or after it closes.
+        private IntPtr _anchoredCanvasWindow = IntPtr.Zero;
+        // True once we've fired CANVAS_NOT_FOUND for this monitoring cycle so
+        // we don't spam the warning every poll while the student takes their
+        // time opening the browser.
+        private bool _canvasNotFoundReported;
+
         public BehavioralMonitoringService(DetectionSettings settings, IEnumerable<string> blacklistedProcessNames)
         {
             _settings = settings ?? new DetectionSettings();
@@ -112,6 +142,55 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _lastReportedAtByEvent.Clear();
             _copyDown = false;
             _pasteDown = false;
+
+            // Extract the anchored LMS domain from the configured URL. Done
+            // once per monitoring cycle so a network blip doesn't re-parse.
+            _anchoredLmsDomain = ExtractDomain(_settings.LmsExamUrl);
+            _anchoredCanvasWindow = string.IsNullOrEmpty(_anchoredLmsDomain)
+                ? IntPtr.Zero
+                : FindLmsWindow(_anchoredLmsDomain);
+            _canvasNotFoundReported = false;
+        }
+
+        /// <summary>
+        /// Extracts the host portion of an LMS exam URL using Uri.TryCreate.
+        /// Returns "" if the URL is missing or malformed — anchoring then stays off.
+        /// </summary>
+        private static string ExtractDomain(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return string.Empty;
+            if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var parsed)) return string.Empty;
+            return parsed.Host?.ToLowerInvariant() ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Walks every top-level visible window and returns the first whose
+        /// title contains the LMS domain (case-insensitive). Modern browsers
+        /// surface the active tab's hostname or page title — both contain
+        /// the domain when the exam page is open.
+        /// </summary>
+        private static IntPtr FindLmsWindow(string anchoredDomain)
+        {
+            if (string.IsNullOrEmpty(anchoredDomain)) return IntPtr.Zero;
+
+            IntPtr match = IntPtr.Zero;
+            EnumWindows((hWnd, _) =>
+            {
+                if (!IsWindowVisible(hWnd)) return true;
+                if (GetWindowTextLength(hWnd) <= 0) return true;
+
+                var title = GetWindowName(hWnd);
+                if (string.IsNullOrWhiteSpace(title)) return true;
+
+                if (title.IndexOf(anchoredDomain, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    match = hWnd;
+                    return false; // stop enumerating
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            return match;
         }
 
         public void StopMonitoring()
@@ -148,6 +227,25 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             if (!_settings.EnableFocusDetection)
                 return;
 
+            // ============================================================
+            // Path A — LMS anchored focus detection (per-room URL set).
+            // Approved targets: SAC window OR _anchoredCanvasWindow (the
+            // browser whose title contains _anchoredLmsDomain). Anything
+            // else is a violation.
+            // ============================================================
+            if (!string.IsNullOrEmpty(_anchoredLmsDomain))
+            {
+                DetectFocusAnchored(isSacWindowActive, findings);
+                return;
+            }
+
+            // ============================================================
+            // Path B — legacy focus detection (no LMS URL configured).
+            // Kept for backwards compatibility with rooms whose settings
+            // pre-date the LmsExamUrl column. Server validation now blocks
+            // creating new sessions without a URL, so this path will only
+            // run on legacy seed data.
+            // ============================================================
             var foreground = GetForegroundWindow();
             if (foreground != _lastForegroundWindow)
             {
@@ -185,6 +283,79 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 _lastWindowName = current;
                 _lastForegroundWasSac = isSacWindowActive;
             }
+        }
+
+        // LMS-anchored focus detection. Runs every poll while monitoring is
+        // active and an LMS exam URL is configured for the room.
+        private void DetectFocusAnchored(bool isSacWindowActive, ICollection<MonitoringDetectionEvent> findings)
+        {
+            // (1) Detect a closed LMS window — fire CANVAS_CLOSED once and
+            //     attempt re-anchor on the next poll.
+            if (_anchoredCanvasWindow != IntPtr.Zero && !IsWindow(_anchoredCanvasWindow))
+            {
+                AddEvent(findings, DetectionConstants.EventCanvasClosed, 3,
+                    $"LMS exam browser window was closed during the session.",
+                    cooldownSeconds: 5);
+                _anchoredCanvasWindow = IntPtr.Zero;
+            }
+
+            // (2) Try to re-anchor whenever we don't currently have a window.
+            //     This handles: never-opened-yet, browser restart, or a new
+            //     window opened to the same domain.
+            if (_anchoredCanvasWindow == IntPtr.Zero)
+            {
+                _anchoredCanvasWindow = FindLmsWindow(_anchoredLmsDomain);
+                if (_anchoredCanvasWindow != IntPtr.Zero)
+                {
+                    // Successfully re-anchored — clear the not-found warning
+                    // so we'll fire it again only if the LMS disappears later.
+                    _canvasNotFoundReported = false;
+                }
+                else if (!_canvasNotFoundReported)
+                {
+                    // (3) LMS not yet open — one-time warning. The student
+                    //     will resolve it by opening the exam in a browser.
+                    AddEvent(findings, DetectionConstants.EventCanvasNotFound, 1,
+                        $"LMS exam window not detected. Please open {_anchoredLmsDomain} in your browser.",
+                        cooldownSeconds: 30);
+                    _canvasNotFoundReported = true;
+                }
+            }
+
+            // (4) Walk the foreground window. Approved = SAC OR anchored LMS.
+            //     If the foreground hasn't changed, nothing to do.
+            var foreground = GetForegroundWindow();
+            if (foreground == _lastForegroundWindow)
+                return;
+
+            string previous = _lastWindowName;
+            string current = GetWindowName(foreground);
+
+            // Has focus moved to a window whose title still contains the
+            // LMS domain? If so, silently re-anchor — never violation.
+            // This handles "student switched browser tab to a different
+            // exam page on the same LMS" and "student reopened browser".
+            bool foregroundIsLms =
+                !string.IsNullOrWhiteSpace(current)
+                && current.IndexOf(_anchoredLmsDomain, StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (foregroundIsLms)
+            {
+                _anchoredCanvasWindow = foreground; // silent re-anchor
+                _canvasNotFoundReported = false;
+            }
+            else if (!isSacWindowActive && foreground != _anchoredCanvasWindow)
+            {
+                // Focus moved to a non-SAC, non-LMS window — violation.
+                // Tier 2 / 20 pts per spec.
+                AddEvent(findings, DetectionConstants.EventWindowSwitch, 2,
+                    $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{current}'.",
+                    cooldownSeconds: 0);
+            }
+
+            _lastForegroundWindow = foreground;
+            _lastWindowName = current;
+            _lastForegroundWasSac = isSacWindowActive;
         }
 
         private void ClearTemporaryExemptWindow()

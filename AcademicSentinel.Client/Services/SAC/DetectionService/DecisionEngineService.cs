@@ -38,6 +38,19 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     case "FOCUS_LOST":
                         newEvent.SeverityScore = 10;
                         break;
+                    // LMS-anchored focus detection.
+                    case "CANVAS_NOT_FOUND":
+                        // S1 — first-time warning, may auto-resolve when student opens LMS.
+                        newEvent.SeverityScore = 10;
+                        break;
+                    case "CANVAS_FOCUS_LOST":
+                        // S2 — focus left the anchored LMS browser window.
+                        newEvent.SeverityScore = 20;
+                        break;
+                    case "CANVAS_CLOSED":
+                        // S3 — student closed the LMS browser mid-session.
+                        newEvent.SeverityScore = 50;
+                        break;
                     // RTFM_RATE / RTFM_SUSTAINED removed — see BehavioralMonitoringService.
                     case "IDLE":
                     case "INACTIVITY":

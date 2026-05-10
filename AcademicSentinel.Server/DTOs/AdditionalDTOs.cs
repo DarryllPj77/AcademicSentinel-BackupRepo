@@ -17,6 +17,10 @@ public class RoomSetupDto
     public bool EnableFocusDetection { get; set; }
     public bool EnableVirtualizationCheck { get; set; }
     public bool StrictMode { get; set; }
+
+    // REQUIRED — LMS exam URL anchored focus detection (see RoomDetectionSettings).
+    // Server-side validation on save: must be a valid HTTPS absolute URL.
+    public string LmsExamUrl { get; set; } = string.Empty;
 }
 
 public class StartSessionDto

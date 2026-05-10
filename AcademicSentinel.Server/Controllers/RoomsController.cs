@@ -143,6 +143,15 @@ public class RoomsController : ControllerBase
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
 
+        // REQUIRED — block start if the LMS Exam URL has not been configured.
+        // The SAC's anchored focus detection cannot function without it.
+        var roomSettings = await _context.RoomDetectionSettings
+            .FirstOrDefaultAsync(s => s.RoomId == roomId);
+        if (roomSettings == null || string.IsNullOrWhiteSpace(roomSettings.LmsExamUrl))
+        {
+            return BadRequest("Session cannot be started without a valid LMS Exam URL.");
+        }
+
         // Check if there is already an active session for this room
         var activeSession = await _context.ExamSessions
             .FirstOrDefaultAsync(s => s.RoomId == roomId && s.Status == "Active");
@@ -310,6 +319,12 @@ public class RoomsController : ControllerBase
 
         if (room.Status == "Active") return BadRequest("Cannot modify settings while an exam is running.");
 
+        // REQUIRED — LMS Exam URL must be a valid HTTPS absolute URL with
+        // a real host. Reject empty / invalid / non-HTTPS / hostless inputs.
+        var urlError = ValidateLmsExamUrl(setupRequest.LmsExamUrl);
+        if (urlError != null)
+            return BadRequest(urlError);
+
         var existingSettings = await _context.RoomDetectionSettings.FirstOrDefaultAsync(s => s.RoomId == roomId);
         if (existingSettings != null)
         {
@@ -320,6 +335,7 @@ public class RoomsController : ControllerBase
             existingSettings.EnableFocusDetection = setupRequest.EnableFocusDetection;
             existingSettings.EnableVirtualizationCheck = setupRequest.EnableVirtualizationCheck;
             existingSettings.StrictMode = setupRequest.StrictMode;
+            existingSettings.LmsExamUrl = setupRequest.LmsExamUrl.Trim();
         }
         else
         {
@@ -333,6 +349,7 @@ public class RoomsController : ControllerBase
                 EnableFocusDetection = setupRequest.EnableFocusDetection,
                 EnableVirtualizationCheck = setupRequest.EnableVirtualizationCheck,
                 StrictMode = setupRequest.StrictMode,
+                LmsExamUrl = setupRequest.LmsExamUrl.Trim(),
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -341,6 +358,32 @@ public class RoomsController : ControllerBase
 
         await _context.SaveChangesAsync();
         return Ok("Settings saved successfully.");
+    }
+
+    /// <summary>
+    /// Validates an LMS exam URL for the anchored focus-detection feature.
+    /// Returns null if valid, or an error message describing what's wrong.
+    /// Rules:
+    ///   - non-empty
+    ///   - parses as Uri.UriKind.Absolute
+    ///   - scheme is "https"
+    ///   - host contains a "." (rejects bare strings like "canvas" / "localhost")
+    /// </summary>
+    private static string? ValidateLmsExamUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return "LMS Exam URL is required.";
+
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var parsed))
+            return "LMS Exam URL must be a valid absolute URL.";
+
+        if (!string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return "LMS Exam URL must use HTTPS.";
+
+        if (string.IsNullOrWhiteSpace(parsed.Host) || !parsed.Host.Contains('.'))
+            return "LMS Exam URL must have a valid host (e.g. 'feu.instructure.com').";
+
+        return null;
     }
 
     [HttpGet("{roomId}/participants")]

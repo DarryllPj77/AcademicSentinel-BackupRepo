@@ -1,4 +1,6 @@
-﻿namespace AcademicSentinel.Server.Models;
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace AcademicSentinel.Server.Models;
 
 public class RoomDetectionSettings
 {
@@ -15,6 +17,14 @@ public class RoomDetectionSettings
     public bool EnableFocusDetection { get; set; } = true;
     public bool EnableVirtualizationCheck { get; set; } = true;
     public bool StrictMode { get; set; } = false;
+
+    // REQUIRED — LMS exam URL anchored focus detection.
+    // The SAC uses this to identify the only approved non-SAC focus target
+    // (the browser window whose title contains this URL's domain). The
+    // session cannot be started without a valid URL set here.
+    [Required]
+    [MaxLength(500)]
+    public string LmsExamUrl { get; set; } = string.Empty;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

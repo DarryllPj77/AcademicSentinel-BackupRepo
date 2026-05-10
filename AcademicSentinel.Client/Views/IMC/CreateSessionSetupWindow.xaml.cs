@@ -18,6 +18,11 @@ namespace AcademicSentinel.Client.Views.IMC
         public bool EndSessionWhenTimerEnds { get; private set; } = true;
         public int StartDelaySeconds { get; private set; } = 10;
 
+        // Cache for the latest extracted LMS domain — used to gate the
+        // Save button and to display the "Anchoring to: ..." preview.
+        private string _validatedLmsDomain = string.Empty;
+        private bool _isLmsUrlValid;
+
         // UPDATED: Now requires RoomId!
         public CreateSessionSetupWindow(int roomId, string roomTitle)
         {
@@ -25,6 +30,73 @@ namespace AcademicSentinel.Client.Views.IMC
             _currentRoomId = roomId;
             ChkIdle_CheckedChanged(this, new RoutedEventArgs());
             ChkEnableMonitoringTimer_CheckedChanged(this, new RoutedEventArgs());
+
+            // Run validation once at startup so the empty field shows the
+            // red border + "required" message and the Save button starts
+            // disabled rather than appearing valid by default.
+            ValidateLmsUrlAndUpdateUi();
+        }
+
+        // Real-time validation for the LMS Exam URL field.
+        //   - empty       → red border + "LMS Exam URL is required"
+        //   - bad URL     → red border + "Please enter a valid HTTPS URL"
+        //   - valid URL   → green border + "✓ Anchoring to: <domain>"
+        // Save button is disabled unless the URL is valid.
+        private void TxtLmsExamUrl_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+        {
+            ValidateLmsUrlAndUpdateUi();
+        }
+
+        private void ValidateLmsUrlAndUpdateUi()
+        {
+            if (TxtLmsExamUrl == null || LmsUrlBorder == null || TxtLmsUrlValidation == null)
+                return;
+
+            var raw = (TxtLmsExamUrl.Text ?? string.Empty).Trim();
+            var (isValid, message, domain) = ValidateLmsUrl(raw);
+
+            _isLmsUrlValid = isValid;
+            _validatedLmsDomain = domain;
+
+            if (isValid)
+            {
+                LmsUrlBorder.BorderBrush = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(34, 197, 94));   // green
+                TxtLmsUrlValidation.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(22, 101, 52));
+                TxtLmsUrlValidation.Text = $"✓ Anchoring to: {domain}";
+            }
+            else
+            {
+                LmsUrlBorder.BorderBrush = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(220, 38, 38));   // red
+                TxtLmsUrlValidation.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(220, 38, 38));
+                TxtLmsUrlValidation.Text = message;
+            }
+
+            // Reflect validity on the Save / Continue button.
+            if (BtnStartSession != null)
+            {
+                BtnStartSession.IsEnabled = isValid;
+            }
+        }
+
+        private static (bool valid, string message, string domain) ValidateLmsUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return (false, "LMS Exam URL is required", string.Empty);
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+                return (false, "Please enter a valid HTTPS URL", string.Empty);
+
+            if (!string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                return (false, "Please enter a valid HTTPS URL", string.Empty);
+
+            if (string.IsNullOrWhiteSpace(parsed.Host) || !parsed.Host.Contains('.'))
+                return (false, "Please enter a valid HTTPS URL", string.Empty);
+
+            return (true, string.Empty, parsed.Host.ToLowerInvariant());
         }
 
         // Toggles the Idle Time textbox on and off
@@ -59,6 +131,17 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private async void BtnStartSession_Click(object sender, RoutedEventArgs e)
         {
+            // 0. REQUIRED — LMS Exam URL must be a valid HTTPS URL.
+            ValidateLmsUrlAndUpdateUi();
+            if (!_isLmsUrlValid)
+            {
+                MessageBox.Show(
+                    "Please enter a valid HTTPS LMS Exam URL before starting the session.",
+                    "Missing LMS Exam URL", MessageBoxButton.OK, MessageBoxImage.Warning);
+                TxtLmsExamUrl?.Focus();
+                return;
+            }
+
             // 1. Validate Idle Time if checked
             int idleSeconds = 0;
             if (ChkIdle.IsChecked == true)
@@ -101,7 +184,11 @@ namespace AcademicSentinel.Client.Views.IMC
                 EnableProcessDetection = ChkProcess.IsChecked == true,
                 EnableIdleDetection = ChkIdle.IsChecked == true,
                 IdleThresholdSeconds = idleSeconds,
-                StrictMode = ChkStrictMode.IsChecked == true
+                StrictMode = ChkStrictMode.IsChecked == true,
+                // REQUIRED — LMS Exam URL for anchored focus detection.
+                // Server enforces the same validation rules; this is the
+                // happy-path payload after client-side validation passed.
+                LmsExamUrl = (TxtLmsExamUrl?.Text ?? string.Empty).Trim()
             };
 
             // 3. Send to Server

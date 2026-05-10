@@ -18,5 +18,9 @@ namespace AcademicSentinel.Client.Services.SAC.Utilities
         public const string EventHasDebugger = "HAS_DEBUGGER";
         public const string EventHasTimeTamper = "HAS_TIME_TAMPER";
         public const string EventHasClockDrift = "HAS_CLOCK_DRIFT";
+        // LMS-anchored focus detection
+        public const string EventCanvasNotFound  = "CANVAS_NOT_FOUND";   // S1 = 10 — LMS window not open at session start
+        public const string EventCanvasFocusLost = "CANVAS_FOCUS_LOST";  // S2 = 20 — focus moved away from LMS browser window
+        public const string EventCanvasClosed    = "CANVAS_CLOSED";      // S3 = 50 — LMS browser window closed mid-session
     }
 }

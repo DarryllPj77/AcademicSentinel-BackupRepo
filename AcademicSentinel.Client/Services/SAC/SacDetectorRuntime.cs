@@ -40,7 +40,11 @@ namespace AcademicSentinel.Client.Services.SAC
                 EnableProcessDetection = _options.EnableProcessDetection,
                 IdleWarningThresholdSeconds = Math.Max(5, idleViolation / 2),
                 IdleViolationThresholdSeconds = idleViolation,
-                IdleCriticalThresholdSeconds = Math.Max(idleViolation + 10, idleViolation * 2)
+                IdleCriticalThresholdSeconds = Math.Max(idleViolation + 10, idleViolation * 2),
+                // REQUIRED — LMS-anchored focus detection. Pass through so
+                // BehavioralMonitoringService can extract the domain on
+                // StartMonitoring and anchor a browser window to it.
+                LmsExamUrl = _options.LmsExamUrl
             };
 
             _behavioralMonitoringService = new BehavioralMonitoringService(settings, _options.BlacklistedProcessNames);
@@ -252,6 +256,8 @@ namespace AcademicSentinel.Client.Services.SAC
         public bool EnableProcessDetection { get; set; }
         public bool EnableVirtualizationCheck { get; set; }
         public bool StrictMode { get; set; }
+        // REQUIRED — LMS exam URL for anchored focus detection (per-room).
+        public string LmsExamUrl { get; set; } = string.Empty;
         public HashSet<string> BlacklistedProcessNames { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public Func<bool, bool, Task> OnHardwareStateDetected { get; set; }
         public Action<DetectorFinding> OnPreFlightViolationDetected { get; set; }

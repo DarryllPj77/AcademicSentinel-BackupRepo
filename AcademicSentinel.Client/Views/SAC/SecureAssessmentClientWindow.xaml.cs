@@ -212,6 +212,9 @@ namespace AcademicSentinel.Client.Views.SAC
                 EnableProcessDetection = _roomDetectionSettings.EnableProcessDetection,
                 EnableVirtualizationCheck = _roomDetectionSettings.EnableVirtualizationCheck,
                 StrictMode = _roomDetectionSettings.StrictMode,
+                // REQUIRED — pass the LMS exam URL through so BehavioralMonitoringService
+                // can anchor focus detection to the matching browser window.
+                LmsExamUrl = _roomDetectionSettings.LmsExamUrl ?? string.Empty,
                 BlacklistedProcessNames = new HashSet<string>(ProcessBlacklist, StringComparer.OrdinalIgnoreCase),
                 OnHardwareStateDetected = async (isVm, isRemote) =>
                 {
@@ -1794,6 +1797,7 @@ namespace AcademicSentinel.Client.Views.SAC
             public bool EnableFocusDetection { get; set; }
             public bool EnableVirtualizationCheck { get; set; }
             public bool StrictMode { get; set; }
+            public string LmsExamUrl { get; set; } = string.Empty;
         }
 
         private class MonitoringEventDto
