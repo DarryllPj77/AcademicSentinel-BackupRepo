@@ -49,6 +49,13 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern int GetWindowTextLength(IntPtr hWnd);
 
+        // GetWindowThreadProcessId — used to determine whether the foreground
+        // window belongs to a browser process. Lets us fall back to "trust
+        // any browser window" when CANVAS_NOT_FOUND fired and we never got
+        // a chance to anchor to the LMS by title.
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct LASTINPUTINFO
         {
@@ -123,6 +130,70 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // Core Windows system processes — must never be blocked
             "explorer", "dwm", "svchost", "csrss",
             "winlogon", "lsass"
+        };
+
+        /// <summary>
+        /// Process-name set used by <see cref="IsBrowserProcessForeground"/>
+        /// to decide whether the current foreground window belongs to a
+        /// browser. Mirrors the browser entries of <see cref="_protectedProcesses"/>
+        /// — a separate copy is used so the focus detector can answer
+        /// "is this a browser?" without leaking that semantic into the
+        /// PBD filter. Process names are matched case-insensitively.
+        /// </summary>
+        private static readonly HashSet<string> _browserProcessNames =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            "chrome", "brave", "msedge", "opera", "operagx",
+            "vivaldi", "arc", "thorium", "chromium",
+            "yandexbrowser", "slimjet", "coccoc",
+            "firefox", "librewolf", "waterfox", "floorp",
+            "palemoon", "basilisk", "seamonkey",
+            "iexplore", "maxthon"
+        };
+
+        /// <summary>
+        /// Title-substring blacklist used to detect TAB switches inside the
+        /// same browser HWND. All browser tabs share one HWND, so HWND
+        /// comparison alone can't catch "student stayed in Brave but
+        /// switched from Canvas to Facebook". When the foreground window's
+        /// title contains any of these keywords, anchored-HWND approval is
+        /// overridden and a WINDOW_SWITCH violation fires.
+        ///
+        /// Keep this list focused on common distraction / non-LMS sites —
+        /// adding too many false-positive prone keywords (e.g. "search")
+        /// would reject legitimate Canvas pages that happen to mention them.
+        /// </summary>
+        private static readonly string[] _nonLmsTitleKeywords =
+        {
+            // Social media
+            "facebook", "fb.com",
+            "twitter.com", " - x", "x.com",
+            "tiktok", "instagram", "reddit",
+
+            // Video / streaming
+            "youtube", "twitch", "netflix",
+
+            // Productivity / docs (note: legitimate Canvas pages embed Google
+            // Drive viewers but their titles still surface the LMS course)
+            "google docs", "google sheets", "google slides", "google drive",
+            "dropbox.com", "onedrive",
+            "notion.so", "notion - ",
+
+            // Email
+            "gmail", "outlook.com", "outlook - ",
+
+            // Messaging / chat
+            "messenger", "whatsapp web", "telegram web", "discord",
+
+            // Dev / Q&A
+            "github.com", "stackoverflow", "stack overflow",
+
+            // AI assistants
+            "chatgpt", "openai", "claude.ai",
+            "perplexity", "gemini.google", "copilot.microsoft",
+
+            // Reference
+            "wikipedia"
         };
 
         private readonly DetectionSettings _settings;
@@ -260,6 +331,55 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             return match;
         }
 
+        /// <summary>
+        /// Checks whether the given window handle belongs to a known browser
+        /// process. Used by <see cref="DetectFocusAnchored"/> as a fallback
+        /// when the LMS was never anchored by title (e.g. CANVAS_NOT_FOUND
+        /// fired because the page loaded before SAC could observe its
+        /// domain in the title) — in that case, focus on any browser window
+        /// whose title doesn't match a known non-LMS keyword is treated as
+        /// "probably Canvas, give the student the benefit of the doubt and
+        /// anchor the window."
+        /// </summary>
+        private static bool IsBrowserProcessForeground(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return false;
+
+            try
+            {
+                GetWindowThreadProcessId(hWnd, out uint pid);
+                if (pid == 0) return false;
+
+                using var process = Process.GetProcessById((int)pid);
+                var name = process?.ProcessName;
+                return !string.IsNullOrWhiteSpace(name)
+                       && _browserProcessNames.Contains(name);
+            }
+            catch
+            {
+                // Process may have died between EnumWindows and inspection —
+                // treat as "not a browser" rather than crashing the poll.
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Returns true if <paramref name="title"/> contains any keyword from
+        /// <see cref="_nonLmsTitleKeywords"/>, indicating the foreground window
+        /// is on a known non-LMS site (e.g. Facebook tab). This is the only
+        /// way to detect tab switches inside a single browser HWND.
+        /// </summary>
+        private static bool TitleContainsNonLmsKeyword(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return false;
+            foreach (var kw in _nonLmsTitleKeywords)
+            {
+                if (title.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+            return false;
+        }
+
         public void StopMonitoring()
         {
             EnableTaskManager();
@@ -389,57 +509,72 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         }
 
         /// <summary>
-        /// LMS-anchored focus detection. A foreground window is approved if
-        /// EITHER:
-        /// <list type="bullet">
-        ///   <item>its HWND is the one we previously anchored to the LMS
-        ///   (handles within-Canvas navigation: clicking from a quiz to a
-        ///   module page changes the title but keeps the same window), OR</item>
-        ///   <item>its title contains the anchored LMS domain (handles
-        ///   re-anchoring when the student opens a brand-new browser window
-        ///   on the LMS — the domain typically appears in the title until
-        ///   the page fully loads its custom <c>&lt;title&gt;</c>).</item>
+        /// LMS-anchored focus detection with four-way approval logic:
+        /// <list type="number">
+        ///   <item><b>Title contains LMS domain</b> — strongest evidence,
+        ///   anchors the HWND for future use.</item>
+        ///   <item><b>Same HWND as previously anchored</b> — trusts the
+        ///   browser window identity for within-Canvas navigation where
+        ///   page titles drop the domain.</item>
+        ///   <item><b>Browser-process fallback</b> — when no anchor exists
+        ///   (CANVAS_NOT_FOUND fired), focus on ANY browser window whose
+        ///   title isn't on the non-LMS keyword list is tentatively
+        ///   accepted and anchored.</item>
+        ///   <item><b>Non-LMS keyword override</b> — if the foreground
+        ///   title contains a known distraction-site keyword (Facebook,
+        ///   Google Docs, etc.), the violation fires REGARDLESS of HWND
+        ///   match. This is the only practical way to detect tab switches
+        ///   inside a single browser window.</item>
         /// </list>
-        /// Combining both checks fixes the false-positive observed when
-        /// Canvas page titles like
-        /// <c>"[M1 &amp; M2] Security Fundamentals: 3TSY2526_CS0029 - Brave"</c>
-        /// dropped the domain — the same HWND was still the LMS window.
-        ///
-        /// CANVAS_CLOSED fires (S4 / 40 pts) when the anchored HWND is no
-        /// longer a valid window and the new foreground is also not on the
-        /// LMS, so a true "student closed the exam tab" still trips.
+        /// Fires <c>CANVAS_RETURNED</c> on the false→true transition,
+        /// <c>CANVAS_CLOSED</c> when the anchored HWND becomes invalid, and
+        /// <c>WINDOW_SWITCH</c> for any other non-SAC, non-LMS focus.
         /// </summary>
         private void DetectFocusAnchored(bool isSacWindowActive, ICollection<MonitoringDetectionEvent> findings)
         {
             var foreground = GetForegroundWindow();
-            if (foreground == _lastForegroundWindow)
-                return;
-
             string currentTitle = GetWindowName(foreground);
 
-            // Approval check #1 — title contains the LMS domain.
+            // Skip only if BOTH the HWND and the title are unchanged.
+            // Browser tab switches keep the same HWND but mutate the title,
+            // so we must re-evaluate even when the foreground window object
+            // hasn't changed — that's the only way to catch "still in Brave,
+            // but now on facebook.com instead of Canvas".
+            if (foreground == _lastForegroundWindow
+                && string.Equals(currentTitle, _lastWindowName, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // ---- Compute the four signals ----
             bool titleSaysLms = !string.IsNullOrWhiteSpace(_anchoredLmsDomain)
                                 && !string.IsNullOrWhiteSpace(currentTitle)
                                 && currentTitle.IndexOf(_anchoredLmsDomain,
                                    StringComparison.OrdinalIgnoreCase) >= 0;
 
-            // Approval check #2 — foreground is the SAME HWND we previously
-            // anchored to the LMS. Canvas page navigation typically changes
-            // the title without spawning a new window, so trust the HWND
-            // identity. We still validate the HWND is alive via IsWindow(...)
-            // so a stale handle from a closed window can't grant approval.
             bool sameAnchoredHwnd = _anchoredCanvasWindow != IntPtr.Zero
                                     && foreground == _anchoredCanvasWindow
                                     && IsWindow(foreground);
 
-            bool isOnLms = titleSaysLms || sameAnchoredHwnd;
+            // Negative override — catches tab switches WITHIN the same
+            // browser window. Always overrides positive HWND/process trust.
+            bool titleHasNonLmsKeyword = TitleContainsNonLmsKeyword(currentTitle);
 
-            // CANVAS_CLOSED — anchored HWND is gone AND new foreground isn't
-            // on the LMS. Fires once with a 5s cooldown so a brief browser
-            // reload doesn't double-report.
+            // Browser-process fallback only kicks in when we have no
+            // anchor at all yet — i.e. CANVAS_NOT_FOUND fired and the
+            // student is now finally focusing what should be Canvas.
+            bool browserFallback = _anchoredCanvasWindow == IntPtr.Zero
+                                   && !titleHasNonLmsKeyword
+                                   && IsBrowserProcessForeground(foreground);
+
+            bool isOnLms = !titleHasNonLmsKeyword
+                           && (titleSaysLms || sameAnchoredHwnd || browserFallback);
+
+            // ---- CANVAS_CLOSED: anchored HWND is gone AND new foreground
+            //      isn't on the LMS. 5s cooldown swallows brief reloads.
             if (_anchoredCanvasWindow != IntPtr.Zero
                 && !IsWindow(_anchoredCanvasWindow)
-                && !titleSaysLms)
+                && !isOnLms)
             {
                 AddEvent(findings, DetectionConstants.EventCanvasClosed, 4,
                     "LMS exam browser window was closed during the session.",
@@ -447,21 +582,16 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 _anchoredCanvasWindow = IntPtr.Zero;
             }
 
-            // Silent re-anchor — promote the foreground window to the
-            // canonical LMS HWND whenever we have positive title evidence.
-            // (Same-HWND approval doesn't re-anchor; the existing anchor
-            // is already correct.)
-            if (titleSaysLms)
+            // ---- Re-anchor the HWND on any positive signal so future polls
+            //      can rely on sameAnchoredHwnd / CANVAS_CLOSED detection.
+            if (titleSaysLms || browserFallback)
             {
                 _anchoredCanvasWindow = foreground;
                 _canvasNotFoundFired = false;
             }
 
-            // CANVAS_RETURNED — informational positive log entry. Fires on
-            // the false → true transition (student was off the LMS, now
-            // back). Score 0, so no impact on cumulative risk; the IMC
-            // renders it with a green RETURN badge instead of the red
-            // VIOLATION badge.
+            // ---- CANVAS_RETURNED — student was OFF the LMS, now back.
+            //      Informational only (0 pts); IMC renders green RETURN badge.
             if (isOnLms && !_wasPreviouslyOnLms)
             {
                 AddEvent(findings, DetectionConstants.EventCanvasReturned, 0,
@@ -470,12 +600,18 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             }
             _wasPreviouslyOnLms = isOnLms;
 
-            // Violation: foreground is NOT SAC AND not approved as LMS.
+            // ---- Violation: not SAC, not approved as LMS.
             if (!isSacWindowActive && !isOnLms)
             {
+                // Provide a more specific description when the trigger was
+                // a non-LMS keyword on the same browser HWND — that's a
+                // tab switch inside the browser, not a window switch.
+                string description = (sameAnchoredHwnd && titleHasNonLmsKeyword)
+                    ? $"Focus left the LMS tab in the same browser window. Now viewing '{currentTitle}'."
+                    : $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{currentTitle}'.";
+
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
-                    $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{currentTitle}'.",
-                    cooldownSeconds: 0);
+                    description, cooldownSeconds: 0);
             }
 
             _lastForegroundWindow = foreground;
