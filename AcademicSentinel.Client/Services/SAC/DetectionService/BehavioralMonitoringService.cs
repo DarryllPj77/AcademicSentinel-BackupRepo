@@ -229,14 +229,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // domain-by-title only (Fix #1), not HWND comparison.
         private IntPtr _anchoredCanvasWindow = IntPtr.Zero;
 
-        // CANVAS_NOT_FOUND grace + once-per-session gating (Fix #2). The
-        // browser typically takes a few seconds to load the exam page after
-        // a session starts; the LMS domain is not in the window title until
-        // the page actually renders. We swallow CANVAS_NOT_FOUND for 20s and
-        // we fire it AT MOST ONCE per monitoring cycle.
-        private const int CanvasGracePeriodSeconds = 20;
-        private DateTime _canvasNotFoundGraceEndsAt;
-        private bool _canvasNotFoundFired;
+        // (CANVAS_NOT_FOUND emission removed — see CheckCanvasPresence
+        // below. The anchored-window tracking it performed is retained;
+        // only the violation/grace-timer fields tied to the penalty were
+        // dropped to prevent double-scoring with WINDOW_SWITCH.)
 
         // Tracks whether the previous foreground evaluation considered the
         // student to be on the LMS. Used to fire CANVAS_RETURNED exactly on
@@ -276,13 +272,8 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 ? IntPtr.Zero
                 : FindLmsWindow(_anchoredLmsDomain);
 
-            // Fix #2 — give the browser 20 seconds to load the exam page
-            // before complaining that the LMS isn't open. Resets each
-            // time monitoring starts so a re-armed session gets a fresh
-            // grace window.
-            _canvasNotFoundGraceEndsAt = DateTime.UtcNow
-                .AddSeconds(CanvasGracePeriodSeconds);
-            _canvasNotFoundFired = false;
+            // (CANVAS_NOT_FOUND grace-timer reset removed alongside the
+            //  penalty emission — see CheckCanvasPresence.)
 
             // Treat the start of monitoring as "not yet on LMS" so the very
             // first time the student actually focuses the LMS window we
@@ -388,7 +379,6 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _pasteDown = false;
             _temporarilyExemptWindow = IntPtr.Zero;
             _lastReportedIdleLevel = 0;
-            _canvasNotFoundFired = false;
             _wasPreviouslyOnLms = false;
             _lastReportedProcesses.Clear();
             _lastReportedAtByEvent.Clear();
@@ -413,36 +403,24 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         }
 
         /// <summary>
-        /// Fires <c>CANVAS_NOT_FOUND</c> exactly once per monitoring cycle if
-        /// no window with the anchored LMS domain in its title has been seen
-        /// AFTER the 20-second grace period that starts at <see cref="StartMonitoring"/>.
-        /// Re-anchors silently and clears the fired flag if a matching window
-        /// turns up later, so a student who closes and reopens the browser
-        /// can re-trigger the warning after another grace window.
+        /// Per-poll passive tracker: scans for a top-level window whose title
+        /// contains the anchored LMS domain and refreshes
+        /// <see cref="_anchoredCanvasWindow"/> when one is found. The
+        /// <c>CANVAS_NOT_FOUND</c> violation emission that used to live here
+        /// was removed because it double-scored with <c>WINDOW_SWITCH</c>
+        /// whenever a stale anchored-window state coincided with a focus
+        /// change. Tracking remains intact — WINDOW_SWITCH and CANVAS_CLOSED
+        /// detection still rely on this refresh.
         /// </summary>
         private void CheckCanvasPresence(ICollection<MonitoringDetectionEvent> findings)
         {
             if (string.IsNullOrWhiteSpace(_anchoredLmsDomain)) return;
 
-            // Try to locate an LMS window every poll. If we find one, the
-            // anchor is up to date and any prior CANVAS_NOT_FOUND state is
-            // reset so a closed-and-reopened browser can warn again later.
             var found = FindLmsWindow(_anchoredLmsDomain);
             if (found != IntPtr.Zero)
             {
                 _anchoredCanvasWindow = found;
-                _canvasNotFoundFired = false;
-                return;
             }
-
-            // No LMS window present.
-            if (_canvasNotFoundFired) return;
-            if (DateTime.UtcNow < _canvasNotFoundGraceEndsAt) return;
-
-            _canvasNotFoundFired = true;
-            AddEvent(findings, DetectionConstants.EventCanvasNotFound, 1,
-                $"LMS exam window not detected. Please open {_anchoredLmsDomain} in your browser.",
-                cooldownSeconds: 0);
         }
 
         private void DetectFocus(bool isSacWindowActive, ICollection<MonitoringDetectionEvent> findings)
@@ -587,7 +565,6 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             if (titleSaysLms || browserFallback)
             {
                 _anchoredCanvasWindow = foreground;
-                _canvasNotFoundFired = false;
             }
 
             // ---- CANVAS_RETURNED — student was OFF the LMS, now back.
