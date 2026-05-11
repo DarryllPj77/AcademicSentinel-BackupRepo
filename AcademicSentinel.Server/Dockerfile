@@ -3,7 +3,7 @@
 # Multi-stage build for AcademicSentinel.Server (.NET 10, ASP.NET Core).
 # Optimized for Render free tier and DigitalOcean App Platform:
 #   - layer cache via separate restore step
-#   - non-root runtime user
+#   - non-root runtime user (using Microsoft's built-in 'app' user)
 #   - trimmed runtime image
 #   - listens on $PORT (Render injects this) -- handled in Program.cs
 # ---------------------------------------------------------------------------
@@ -36,12 +36,13 @@ ENV ASPNETCORE_ENVIRONMENT=Production \
     DOTNET_RUNNING_IN_CONTAINER=true \
     DOTNET_NOLOGO=1
 
-# Run as a non-root user (security baseline + matches DO App Platform policy).
-RUN useradd --uid 1000 --user-group --no-create-home --shell /usr/sbin/nologin appuser
-USER appuser
+# Run as the built-in non-root user for .NET 8+ images.
+# This prevents the Exit Code 4 crash caused by UID collisions.
+USER app
 
 EXPOSE 8080
 
-COPY --from=build --chown=appuser:appuser /app/publish .
+# Copy the published app and give ownership to the 'app' user
+COPY --from=build --chown=app:app /app/publish .
 
 ENTRYPOINT ["dotnet", "AcademicSentinel.Server.dll"]
