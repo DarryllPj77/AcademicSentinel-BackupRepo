@@ -157,7 +157,11 @@ var isCloudinaryConfigured = !string.IsNullOrWhiteSpace(cloudinaryUrl);
 
 if (isCloudinaryConfigured)
 {
-    builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>();
+    // Singleton: the Cloudinary client is thread-safe and the constructor
+    // does HTTP-client setup that we don't want to repeat per request.
+    // Scoping it forced re-init on every upload — and any constructor
+    // exception then surfaced as an opaque 500 instead of startup failure.
+    builder.Services.AddSingleton<IImageStorageService, CloudinaryImageStorageService>();
 }
 else if (builder.Environment.IsProduction())
 {

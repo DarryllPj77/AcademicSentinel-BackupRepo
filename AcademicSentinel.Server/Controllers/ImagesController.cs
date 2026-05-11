@@ -29,7 +29,7 @@ public class ImagesController : ControllerBase
     /// </summary>
     [HttpPost("profile")]
     [Authorize]
-    public async Task<IActionResult> UploadProfileImage(IFormFile image)
+    public async Task<IActionResult> UploadProfileImage([FromForm] IFormFile image)
     {
         if (image == null || image.Length == 0)
             return BadRequest("No image file provided.");
@@ -129,8 +129,15 @@ public class ImagesController : ControllerBase
     /// </summary>
     [HttpPost("room/{roomId}")]
     [Authorize(Roles = "Instructor")]
-    public async Task<IActionResult> UploadRoomImage(int roomId, IFormFile image)
+    public async Task<IActionResult> UploadRoomImage(int roomId, [FromForm] IFormFile image)
     {
+        // Outer try/catch surfaces the real exception message in Production
+        // instead of letting ASP.NET Core's default 500 handler swallow it.
+        // Without this wrapper, the WPF client saw "InternalServerError"
+        // with an empty Details body and had no way to diagnose Cloudinary
+        // or DB failures.
+        try
+        {
         _logger.LogInformation("UploadRoomImage start: roomId={RoomId}, fileName={FileName}, size={Size}, contentType={ContentType}, backend={Backend}",
             roomId, image?.FileName, image?.Length, image?.ContentType, _imageStorageService.GetType().Name);
 
@@ -194,6 +201,13 @@ public class ImagesController : ControllerBase
             SizeBytes = uploadResult.SizeBytes,
             UploadedAt = uploadResult.UploadedAt
         });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UploadRoomImage UNHANDLED exception for roomId={RoomId}", roomId);
+            // Production-safe: include the message but not the stack trace.
+            return StatusCode(500, $"Server-side upload failure: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>

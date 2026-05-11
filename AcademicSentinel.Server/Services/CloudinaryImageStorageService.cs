@@ -32,7 +32,22 @@ public class CloudinaryImageStorageService : IImageStorageService
             throw new InvalidOperationException(
                 "CLOUDINARY_URL is not configured but CloudinaryImageStorageService was registered.");
 
-        _cloudinary = new Cloudinary(url) { Api = { Secure = true } };
+        // Validate URL shape up-front so misconfiguration fails at startup
+        // (where the message lands in Render's log), not at first upload
+        // (where it gets swallowed as a 500 with no body).
+        if (!url.StartsWith("cloudinary://", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"CLOUDINARY_URL must start with 'cloudinary://'. Got: '{url.Substring(0, Math.Min(20, url.Length))}...'.");
+
+        try
+        {
+            _cloudinary = new Cloudinary(url) { Api = { Secure = true } };
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to initialize Cloudinary client. CLOUDINARY_URL format appears invalid. Inner: {ex.Message}", ex);
+        }
     }
 
     public Task<ImageUploadResult> SaveUserProfileImageAsync(int userId, IFormFile imageFile) =>
@@ -54,13 +69,14 @@ public class CloudinaryImageStorageService : IImageStorageService
             // legacy Folder parameter behavior changed across folder modes
             // (fixed vs dynamic) — using PublicId alone keeps retrieval
             // deterministic regardless of which mode the cloud is on.
+            // Keep the parameter set minimal — UseFilename/UniqueFilename
+            // are not strictly required when PublicId is set explicitly, and
+            // their presence has caused version-specific binding errors.
             var uploadParams = new ImageUploadParams
             {
                 File = new FileDescription(imageFile.FileName, stream),
                 PublicId = fullPublicId,
                 Overwrite = true,
-                UseFilename = false,
-                UniqueFilename = false,
                 // Strip EXIF and re-encode to a sane size — defends against
                 // megapixel uploads chewing through bandwidth quota.
                 Transformation = new Transformation()
