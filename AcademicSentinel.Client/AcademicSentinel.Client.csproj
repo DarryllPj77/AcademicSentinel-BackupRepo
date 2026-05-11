@@ -1,50 +1,68 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
-    <Nullable>disable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <UseWPF>true</UseWPF>
-  </PropertyGroup>
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net10.0-windows</TargetFramework>
+		<Nullable>disable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWPF>true</UseWPF>
+		<AssemblyName>AcademicSentinel</AssemblyName>
+		<ApplicationIcon>Assets\FourCUDAIcon256.ico</ApplicationIcon>
+		<AssemblyTitle>Academic Sentinel</AssemblyTitle>
+		<AssemblyDescription>Live Session Monitoring System</AssemblyDescription>
+		<Company>Your University Name</Company>
+		<AssemblyVersion>1.0.0.0</AssemblyVersion>
+		<FileVersion>1.0.0.0</FileVersion>
+	</PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="log4net" Version="3.3.0" />
-    <PackageReference Include="MaterialDesignThemes" Version="5.3.1" />
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.5" />
-    <PackageReference Include="QuestPDF" Version="2026.2.4" />
-    <PackageReference Include="System.Management" Version="9.0.0" />
-  </ItemGroup>
+	<ItemGroup>
+		<PackageReference Include="log4net" Version="3.3.0" />
+		<PackageReference Include="MaterialDesignThemes" Version="5.3.1" />
+		<PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.5" />
+		<PackageReference Include="QuestPDF" Version="2026.2.4" />
+		<PackageReference Include="System.Management" Version="9.0.0" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <Resource Include="Resources\Noto\NotoSans-Bold.ttf" />
-    <Resource Include="Resources\Noto\NotoSans-BoldItalic.ttf" />
-    <Resource Include="Resources\Noto\NotoSans-Italic.ttf" />
-    <Resource Include="Resources\Noto\NotoSans-Regular.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-Black.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-BlackItalic.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-Bold.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-BoldItalic.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-Italic.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-Light.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-LightItalic.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-Medium.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-MediumItalic.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-Regular.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-Thin.ttf" />
-    <Resource Include="Resources\Roboto\Roboto-ThinItalic.ttf" />
-    <Resource Include="Resources\Roboto\RobotoCondensed-Bold.ttf" />
-    <Resource Include="Resources\Roboto\RobotoCondensed-BoldItalic.ttf" />
-    <Resource Include="Resources\Roboto\RobotoCondensed-Italic.ttf" />
-    <Resource Include="Resources\Roboto\RobotoCondensed-Light.ttf" />
-    <Resource Include="Resources\Roboto\RobotoCondensed-LightItalic.ttf" />
-    <Resource Include="Resources\Roboto\RobotoCondensed-Regular.ttf" />
-  </ItemGroup>
+	<ItemGroup>
+		<Resource Include="Resources\Noto\NotoSans-Bold.ttf" />
+		<Resource Include="Resources\Noto\NotoSans-BoldItalic.ttf" />
+		<Resource Include="Resources\Noto\NotoSans-Italic.ttf" />
+		<Resource Include="Resources\Noto\NotoSans-Regular.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-Black.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-BlackItalic.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-Bold.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-BoldItalic.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-Italic.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-Light.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-LightItalic.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-Medium.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-MediumItalic.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-Regular.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-Thin.ttf" />
+		<Resource Include="Resources\Roboto\Roboto-ThinItalic.ttf" />
+		<Resource Include="Resources\Roboto\RobotoCondensed-Bold.ttf" />
+		<Resource Include="Resources\Roboto\RobotoCondensed-BoldItalic.ttf" />
+		<Resource Include="Resources\Roboto\RobotoCondensed-Italic.ttf" />
+		<Resource Include="Resources\Roboto\RobotoCondensed-Light.ttf" />
+		<Resource Include="Resources\Roboto\RobotoCondensed-LightItalic.ttf" />
+		<Resource Include="Resources\Roboto\RobotoCondensed-Regular.ttf" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <Compile Update="Views\Shared\LoginWindow.xaml.cs">
-      <SubType>Code</SubType>
-    </Compile>
-  </ItemGroup>
+	<ItemGroup>
+		<Resource Include="Assets\FourCUDAIcon16.ico" />
+		<Resource Include="Assets\FourCUDAIcon32.ico" />
+		<Resource Include="Assets\FourCUDAIcon48.ico" />
+		<Resource Include="Assets\FourCUDAIcon64.ico" />
+		<Resource Include="Assets\FourCUDAIcon256.ico" />
+		<SplashScreen Include="Assets\splash.png">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</SplashScreen>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Compile Update="Views\Shared\LoginWindow.xaml.cs">
+			<SubType>Code</SubType>
+		</Compile>
+	</ItemGroup>
 
 </Project>
