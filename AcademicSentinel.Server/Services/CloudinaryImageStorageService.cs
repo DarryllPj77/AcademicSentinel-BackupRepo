@@ -36,12 +36,12 @@ public class CloudinaryImageStorageService : IImageStorageService
     }
 
     public Task<ImageUploadResult> SaveUserProfileImageAsync(int userId, IFormFile imageFile) =>
-        UploadAsync(imageFile, ProfileFolder, $"user_{userId}");
+        UploadAsync(imageFile, $"{ProfileFolder}/user_{userId}");
 
     public Task<ImageUploadResult> SaveRoomImageAsync(int roomId, IFormFile imageFile) =>
-        UploadAsync(imageFile, RoomFolder, $"room_{roomId}");
+        UploadAsync(imageFile, $"{RoomFolder}/room_{roomId}");
 
-    private async Task<ImageUploadResult> UploadAsync(IFormFile imageFile, string folder, string publicId)
+    private async Task<ImageUploadResult> UploadAsync(IFormFile imageFile, string fullPublicId)
     {
         if (!IsValidImageFile(imageFile, out var error))
             return new ImageUploadResult { Success = false, ErrorMessage = error };
@@ -49,12 +49,18 @@ public class CloudinaryImageStorageService : IImageStorageService
         try
         {
             await using var stream = imageFile.OpenReadStream();
+            // Use a single fully-qualified PublicId (folder + name baked in)
+            // rather than splitting into Folder + PublicId. Cloudinary's
+            // legacy Folder parameter behavior changed across folder modes
+            // (fixed vs dynamic) — using PublicId alone keeps retrieval
+            // deterministic regardless of which mode the cloud is on.
             var uploadParams = new ImageUploadParams
             {
                 File = new FileDescription(imageFile.FileName, stream),
-                PublicId = publicId,
-                Folder = folder,
+                PublicId = fullPublicId,
                 Overwrite = true,
+                UseFilename = false,
+                UniqueFilename = false,
                 // Strip EXIF and re-encode to a sane size — defends against
                 // megapixel uploads chewing through bandwidth quota.
                 Transformation = new Transformation()

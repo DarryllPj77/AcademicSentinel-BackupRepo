@@ -147,18 +147,45 @@ builder.Services.AddSignalR();
 // ---------------------------------------------------------------------------
 // IMAGE STORAGE — pick implementation based on env.
 // If Cloudinary creds are present, use the cloud-backed implementation
-// (survives Render's ephemeral filesystem). Otherwise fall back to local
-// disk for local development.
+// (survives Render's ephemeral filesystem). In Production we hard-fail
+// startup if Cloudinary is not configured: Render's free tier wipes uploaded
+// files on every restart, so silently falling back to local disk would just
+// produce mysterious 404s on course images later.
 // ---------------------------------------------------------------------------
 var cloudinaryUrl = Environment.GetEnvironmentVariable("CLOUDINARY_URL");
-if (!string.IsNullOrWhiteSpace(cloudinaryUrl))
+var isCloudinaryConfigured = !string.IsNullOrWhiteSpace(cloudinaryUrl);
+
+if (isCloudinaryConfigured)
 {
     builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>();
+}
+else if (builder.Environment.IsProduction())
+{
+    throw new InvalidOperationException(
+        "CLOUDINARY_URL is not set. Production deployments must use Cloudinary " +
+        "because the host filesystem is ephemeral. Set CLOUDINARY_URL in the " +
+        "deployment environment (format: cloudinary://api_key:api_secret@cloud_name).");
 }
 else
 {
     builder.Services.AddScoped<IImageStorageService, ImageStorageService>();
 }
+
+// ---------------------------------------------------------------------------
+// MULTIPART / FORM LIMITS — explicit ceilings for image uploads. Default
+// MultipartBodyLengthLimit is 128 MB which is fine, but setting it
+// explicitly makes the policy auditable and protects against any PaaS
+// proxy that would otherwise truncate.
+// ---------------------------------------------------------------------------
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 10 * 1024 * 1024; // 10 MB
+    options.ValueLengthLimit = 10 * 1024 * 1024;
+});
+builder.WebHost.ConfigureKestrel(serverOptions =>
+{
+    serverOptions.Limits.MaxRequestBodySize = 10 * 1024 * 1024; // 10 MB
+});
 
 builder.Services.AddTransient<IEmailSender, OutlookEmailSender>();
 
@@ -180,6 +207,19 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
     KnownNetworks = { },
     KnownProxies = { }
 });
+
+// ---------------------------------------------------------------------------
+// Startup diagnostics — surface which storage backend is wired up so the
+// Render logs make misconfiguration obvious instead of silent.
+// ---------------------------------------------------------------------------
+{
+    var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+    startupLogger.LogInformation(
+        "Image storage backend: {Backend}",
+        isCloudinaryConfigured ? "Cloudinary (persistent)" : "Local disk (EPHEMERAL — files lost on restart)");
+    startupLogger.LogInformation("Environment: {Env}", app.Environment.EnvironmentName);
+    startupLogger.LogInformation("CORS allowed origins: {Origins}", string.Join(", ", corsOrigins));
+}
 
 // ---------------------------------------------------------------------------
 // AUTOMATIC EF CORE MIGRATIONS at startup.

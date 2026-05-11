@@ -15,11 +15,13 @@ public class ImagesController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IImageStorageService _imageStorageService;
+    private readonly ILogger<ImagesController> _logger;
 
-    public ImagesController(AppDbContext context, IImageStorageService imageStorageService)
+    public ImagesController(AppDbContext context, IImageStorageService imageStorageService, ILogger<ImagesController> logger)
     {
         _context = context;
         _imageStorageService = imageStorageService;
+        _logger = logger;
     }
 
     /// <summary>
@@ -129,30 +131,50 @@ public class ImagesController : ControllerBase
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> UploadRoomImage(int roomId, IFormFile image)
     {
+        _logger.LogInformation("UploadRoomImage start: roomId={RoomId}, fileName={FileName}, size={Size}, contentType={ContentType}, backend={Backend}",
+            roomId, image?.FileName, image?.Length, image?.ContentType, _imageStorageService.GetType().Name);
+
         if (image == null || image.Length == 0)
+        {
+            _logger.LogWarning("UploadRoomImage: empty file payload for roomId={RoomId}", roomId);
             return BadRequest("No image file provided.");
+        }
 
         var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         if (userIdString == null) return Unauthorized();
 
         int instructorId = int.Parse(userIdString);
 
-        // Validate image
         if (!_imageStorageService.IsValidImageFile(image, out var errorMessage))
+        {
+            _logger.LogWarning("UploadRoomImage validation failed for roomId={RoomId}: {Error}", roomId, errorMessage);
             return BadRequest(errorMessage);
+        }
 
-        // Get room
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
 
-        // Verify instructor owns the room
         if (room.InstructorId != instructorId)
             return Forbid();
 
-        // Save image
-        var uploadResult = await _imageStorageService.SaveRoomImageAsync(roomId, image);
+        ImageUploadResult uploadResult;
+        try
+        {
+            uploadResult = await _imageStorageService.SaveRoomImageAsync(roomId, image);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UploadRoomImage threw for roomId={RoomId}", roomId);
+            return StatusCode(500, $"Upload backend threw: {ex.Message}");
+        }
+
         if (!uploadResult.Success)
+        {
+            _logger.LogWarning("UploadRoomImage backend rejected roomId={RoomId}: {Error}", roomId, uploadResult.ErrorMessage);
             return BadRequest(uploadResult.ErrorMessage);
+        }
+
+        _logger.LogInformation("UploadRoomImage ok: roomId={RoomId}, url={Url}", roomId, uploadResult.Url);
 
         // Update room with image metadata
         room.RoomImageUrl = uploadResult.Url;

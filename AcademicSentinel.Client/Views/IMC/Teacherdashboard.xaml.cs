@@ -98,7 +98,17 @@ namespace AcademicSentinel.Client.Views.IMC
                                     RoomId = room.Id,
                                     CourseLogo = room.EnrollmentCode ?? "N/A",
                                     CourseDescription = room.SubjectName,
-                                    CourseImagePath = !string.IsNullOrEmpty(room.RoomImageUrl) ? $"{ApiEndpoints.BaseUrl}{room.RoomImageUrl}" : null,
+                                    // Image URL handling: when the server uses Cloudinary
+                                    // (production / Render), RoomImageUrl is a fully
+                                    // qualified https://res.cloudinary.com/... URL and
+                                    // must be used as-is. Local disk storage returns a
+                                    // relative path like "/images/rooms/foo.png" that
+                                    // still needs the BaseUrl prefix.
+                                    CourseImagePath = string.IsNullOrEmpty(room.RoomImageUrl)
+                                        ? null
+                                        : (room.RoomImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                                            ? room.RoomImageUrl
+                                            : $"{ApiEndpoints.BaseUrl}{room.RoomImageUrl}"),
                                     IsSelected = false
                                 });
                             }
@@ -146,7 +156,11 @@ namespace AcademicSentinel.Client.Views.IMC
                             // This is the "brain" fix so RoomDetailWindow can see it!
                             SessionManager.CurrentUser.ProfileImageUrl = userProfile.ProfileImageUrl;
 
-                            string fullImageUrl = $"{ApiEndpoints.BaseUrl}{userProfile.ProfileImageUrl}";
+                            // Cloudinary URLs are fully qualified; local-disk URLs
+                            // are relative and need BaseUrl prefixing.
+                            string fullImageUrl = userProfile.ProfileImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                                ? userProfile.ProfileImageUrl
+                                : $"{ApiEndpoints.BaseUrl}{userProfile.ProfileImageUrl}";
 
                             // 2. Download and load the image
                             BitmapImage bitmap = new BitmapImage();
