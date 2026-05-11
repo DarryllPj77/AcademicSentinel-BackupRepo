@@ -1256,14 +1256,28 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (_selectedStudent == null) return;
 
-            if (MessageBox.Show($"Remove {_selectedStudent.Name} from this room?", "Confirm Removal", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            // Capture every value we need from _selectedStudent BEFORE any
+            // await, then never read _selectedStudent again. Reason: the
+            // server broadcasts StudentRemoved to the room group on a
+            // successful kick, and our own SignalR handler races back on
+            // the dispatcher and calls ResetToMainMonitoringView(), which
+            // nulls _selectedStudent. Without these locals, the next
+            // reference after the PostAsync await would NullReference.
+            // (Symptom on Render: "Error removing participant: Object
+            // reference not set to an instance of an object" — the kick
+            // itself succeeded, only the UI follow-up exploded.)
+            var removedStudentId = _selectedStudent.StudentId;
+            var removedStudentName = _selectedStudent.Name;
+            var removedStudentEmail = _selectedStudent.Email;
+
+            if (MessageBox.Show($"Remove {removedStudentName} from this room?", "Confirm Removal", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
                 return;
 
             try
             {
                 using var client = new HttpClient();
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
-                var response = await client.PostAsync($"{ApiEndpoints.Rooms}/{_roomId}/sessions/remove/{_selectedStudent.StudentId}", null);
+                var response = await client.PostAsync($"{ApiEndpoints.Rooms}/{_roomId}/sessions/remove/{removedStudentId}", null);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -1271,14 +1285,13 @@ namespace AcademicSentinel.Client.Views.IMC
                     return;
                 }
 
-                LogActivity(_selectedStudent.Email, "KICKED", "Instructor removed student from room.", "#D32F2F");
+                LogActivity(removedStudentEmail, "KICKED", "Instructor removed student from room.", "#D32F2F");
 
-                // Bug fix: optimistic local removal. Mark the kicked student
-                // as permanently dismissed BEFORE the participants refresh
-                // runs, so even if the server's GET /participants response
-                // races and still reports the row as "Disconnected", the
+                // Optimistic local removal. Mark the kicked student as
+                // permanently dismissed BEFORE the participants refresh runs,
+                // so even if the server's GET /participants response races
+                // and still reports the row as "Disconnected", the
                 // LoadParticipantsFromServerAsync filter drops it.
-                var removedStudentId = _selectedStudent.StudentId;
                 _permanentlyDismissedStudents.Add(removedStudentId);
                 var existing = ActiveStudents.FirstOrDefault(s => s.StudentId == removedStudentId);
                 if (existing != null)
@@ -1288,10 +1301,13 @@ namespace AcademicSentinel.Client.Views.IMC
                     UpdateParticipantCount();
                 }
 
+                // _selectedStudent may already be null at this point if the
+                // SignalR StudentRemoved handler raced ahead — that's fine,
+                // these UI writes are idempotent.
                 _selectedStudent = null;
-                TxtLogHeader.Text = "Global Log Feed";
-                TxtSelectedName.Text = "Select a Student";
-                LogFeedItemsControl.ItemsSource = _logsView;
+                if (TxtLogHeader != null) TxtLogHeader.Text = "Global Log Feed";
+                if (TxtSelectedName != null) TxtSelectedName.Text = "Select a Student";
+                if (LogFeedItemsControl != null) LogFeedItemsControl.ItemsSource = _logsView;
                 ApplyAllFilters();
                 await LoadParticipantsFromServerAsync();
             }
