@@ -19,7 +19,7 @@ services:
     ports:
       - "80:8080"
     environment:
-      - DATABASE_URL=postgres://postgres:MySecureThesisPassword123!@db:5432/academicsentinel
+      - ConnectionStrings__DefaultConnection=Host=db;Port=5432;Username=postgres;Password=MySecureThesisPassword123!;Database=academicsentinel;Ssl Mode=Disable;
       - Jwt__Key=YourSuperSecretJwtKeyForThesis2026!
       - ASPNETCORE_ENVIRONMENT=Production
       - CLOUDINARY_URL=cloudinary://364994355236151:S6dpKkyimggZmNWkK16kg_bNSGs@dhhaflmqu
