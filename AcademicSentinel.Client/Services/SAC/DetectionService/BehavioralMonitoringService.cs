@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using Microsoft.Win32;
 
@@ -468,15 +469,19 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     }
                     else
                     {
+                        string prevLabel = GetSanitizedWindowLabel(previousForeground);
+                        string currLabel = GetSanitizedWindowLabel(foreground);
                         AddEvent(findings, DetectionConstants.EventWindowSwitch, 2,
-                            $"Window switched from '{previous}' to '{current}' while monitoring is active.", 0);
+                            $"Window switched from '{prevLabel}' to '{currLabel}' while monitoring is active.", 0);
                         ClearTemporaryExemptWindow();
                     }
                 }
                 else if (!isSacWindowActive)
                 {
+                    string prevLabel = GetSanitizedWindowLabel(previousForeground);
+                    string currLabel = GetSanitizedWindowLabel(foreground);
                     AddEvent(findings, DetectionConstants.EventWindowSwitch, 2,
-                        $"Window switched from '{previous}' to '{current}' while monitoring is active.", 0);
+                        $"Window switched from '{prevLabel}' to '{currLabel}' while monitoring is active.", 0);
                     ClearTemporaryExemptWindow();
                 }
 
@@ -580,12 +585,16 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // ---- Violation: not SAC, not approved as LMS.
             if (!isSacWindowActive && !isOnLms)
             {
-                // Provide a more specific description when the trigger was
-                // a non-LMS keyword on the same browser HWND — that's a
-                // tab switch inside the browser, not a window switch.
+                // Sanitize the foreground label so non-browser switches log
+                // only the clean app name (no document paths / chat channels
+                // / etc.) and browser tab switches still surface "[Tab] -
+                // [Browser]". For an in-browser tab switch (sameAnchoredHwnd
+                // + non-LMS keyword) the sanitized label already conveys the
+                // new tab; we phrase it as a tab switch.
+                string sanitizedForeground = GetSanitizedWindowLabel(foreground);
                 string description = (sameAnchoredHwnd && titleHasNonLmsKeyword)
-                    ? $"Focus left the LMS tab in the same browser window. Now viewing '{currentTitle}'."
-                    : $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{currentTitle}'.";
+                    ? $"Focus left the LMS tab in the same browser window. Now viewing '{sanitizedForeground}'."
+                    : $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{sanitizedForeground}'.";
 
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
                     description, cooldownSeconds: 0);
@@ -809,6 +818,134 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
             string value = title.ToString().Trim();
             return string.IsNullOrWhiteSpace(value) ? "Unknown" : value;
+        }
+
+        // ============================================================
+        // Sanitization helpers — produce privacy-safe labels for use in
+        // WINDOW_SWITCH violation descriptions. Raw OS window titles often
+        // leak private data (file paths, document names, chat-channel
+        // names, etc.); the rules below normalize the output:
+        //
+        //   * Browsers           → "{Tab name} - {Browser product name}"
+        //   * All other apps     → only the application's product name
+        //                          (FileDescription, falling back to
+        //                          ProcessName). The raw title is dropped.
+        //
+        // HWND→PID→Process is used instead of string parsing so the
+        // solution generalizes to any app without hardcoded lists.
+        // ============================================================
+
+        private static readonly Regex _browserNotifPrefix =
+            new(@"^\(\d+\)\s*", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Returns a sanitized, privacy-safe label for the given window
+        /// suitable for logging in a violation description.
+        /// </summary>
+        private static string GetSanitizedWindowLabel(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return "Unknown application";
+
+            string rawTitle = GetWindowName(hWnd);
+
+            try
+            {
+                GetWindowThreadProcessId(hWnd, out uint pid);
+                if (pid == 0) return "Unknown application";
+
+                using var process = Process.GetProcessById((int)pid);
+                if (process == null) return "Unknown application";
+
+                string processName = process.ProcessName ?? string.Empty;
+                string appDisplayName = TryGetFileDescription(process) ?? processName;
+                if (string.IsNullOrWhiteSpace(appDisplayName))
+                    appDisplayName = "Unknown application";
+
+                bool isBrowser = !string.IsNullOrEmpty(processName)
+                                 && _browserProcessNames.Contains(processName);
+
+                if (!isBrowser)
+                {
+                    // Privacy rule for non-browsers: discard the raw title
+                    // entirely (it may contain file paths, doc names, chat
+                    // channels, etc.) and return only the clean app name.
+                    return appDisplayName;
+                }
+
+                string tab = ExtractBrowserTabName(rawTitle, appDisplayName, processName);
+                if (string.IsNullOrWhiteSpace(tab))
+                    return appDisplayName;
+
+                return $"{tab} - {appDisplayName}";
+            }
+            catch
+            {
+                // Process may have exited between PID lookup and inspection,
+                // or MainModule access may have been denied (UAC / bitness
+                // mismatch). Return a generic placeholder rather than
+                // crashing the polling loop.
+                return "Unknown application";
+            }
+        }
+
+        /// <summary>
+        /// Safe accessor for the executable's FileDescription. Catches the
+        /// Win32Exception that .NET throws when the calling process can't
+        /// read MainModule (cross-bitness, protected-process, etc.).
+        /// </summary>
+        private static string? TryGetFileDescription(Process process)
+        {
+            try
+            {
+                var module = process.MainModule;
+                var info = module?.FileVersionInfo;
+                var desc = info?.FileDescription;
+                return string.IsNullOrWhiteSpace(desc) ? null : desc.Trim();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Strips a browser title down to just the tab name:
+        ///   * Removes leading notification counters like "(3) ".
+        ///   * Drops the trailing " - {Browser}" / " — {Browser}" segment
+        ///     when the trailer matches the browser display name or
+        ///     process name (so the final formatted output doesn't repeat
+        ///     the browser name twice).
+        /// </summary>
+        private static string ExtractBrowserTabName(string rawTitle, string browserDisplayName, string processName)
+        {
+            if (string.IsNullOrWhiteSpace(rawTitle) || rawTitle == "Unknown")
+                return string.Empty;
+
+            string title = _browserNotifPrefix.Replace(rawTitle, string.Empty).Trim();
+
+            // Try common separators in priority order. Most Chromium /
+            // Gecko builds use a hyphen with surrounding spaces.
+            string[] separators = { " - ", " — ", " – " };
+            foreach (var sep in separators)
+            {
+                int idx = title.LastIndexOf(sep, StringComparison.Ordinal);
+                if (idx <= 0) continue;
+
+                string trailer = title.Substring(idx + sep.Length).Trim();
+                bool trailerIsBrowser =
+                    (!string.IsNullOrEmpty(browserDisplayName)
+                     && trailer.IndexOf(browserDisplayName, StringComparison.OrdinalIgnoreCase) >= 0)
+                    || (!string.IsNullOrEmpty(processName)
+                        && trailer.IndexOf(processName, StringComparison.OrdinalIgnoreCase) >= 0);
+
+                if (trailerIsBrowser)
+                {
+                    title = title.Substring(0, idx).Trim();
+                    break;
+                }
+            }
+
+            return title;
         }
 
         private static int GetSystemIdleSeconds()
