@@ -6,6 +6,9 @@
 		<Nullable>disable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<UseWPF>true</UseWPF>
+		<!-- UI Automation references for browser-URL reading in
+		     BehavioralMonitoringService (BrowserUrlReader). -->
+		<UseWindowsForms>false</UseWindowsForms>
 		<AssemblyName>AcademicSentinel</AssemblyName>
 		<ApplicationIcon>Assets\FourCUDAIcon256.ico</ApplicationIcon>
 		<AssemblyTitle>Academic Sentinel</AssemblyTitle>
@@ -21,6 +24,15 @@
 		<PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.5" />
 		<PackageReference Include="QuestPDF" Version="2026.2.4" />
 		<PackageReference Include="System.Management" Version="9.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- UI Automation — used to read the URL from the Chromium browser
+		     address bar so the URL anchor validator can enforce
+		     Same-Domain / Deep-Path cheating prevention. These ship as part
+		     of the .NET Windows Desktop reference assemblies. -->
+		<Reference Include="UIAutomationClient" />
+		<Reference Include="UIAutomationTypes" />
 	</ItemGroup>
 
 	<ItemGroup>

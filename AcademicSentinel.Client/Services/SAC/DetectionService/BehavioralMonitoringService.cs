@@ -225,6 +225,17 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // Domain extracted from the room's LmsExamUrl, e.g. "feu.instructure.com".
         // Empty when no URL is configured (legacy rooms) — anchoring stays off.
         private string _anchoredLmsDomain = string.Empty;
+        // Deep-path URL anchor built from the full LmsExamUrl. When non-null
+        // it overrides domain-only matching: the foreground browser's
+        // address-bar URL must satisfy host + core-path + restricted-segment
+        // rules. Closes the Same-Domain Cheating gap where a student opened
+        // docs.google.com/document/... while the anchor was a Google Form.
+        private UrlAnchorValidator.AnchorSpec _urlAnchor;
+        // Signature of the originally authorized tab. Used to enforce the
+        // No-Multiple-Tabs rule: even if a second tab loads the exam URL,
+        // it must match this signature or the access is treated as a switch.
+        private string _anchoredTabSignature;
+
         // Most recent foreground HWND that matched the anchored LMS domain.
         // Used purely for CANVAS_CLOSED detection — focus approval is now
         // domain-by-title only (Fix #1), not HWND comparison.
@@ -269,6 +280,12 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // Extract the anchored LMS domain from the configured URL. Done
             // once per monitoring cycle so a network blip doesn't re-parse.
             _anchoredLmsDomain = ExtractDomain(_settings.LmsExamUrl);
+            // Build the deep-path URL anchor from the full teacher URL.
+            // Null when the URL is malformed or the platform's path shape
+            // isn't recognized — in that case detection falls back to the
+            // legacy domain-only check.
+            _urlAnchor = UrlAnchorValidator.BuildAnchor(_settings.LmsExamUrl);
+            _anchoredTabSignature = null;
             _anchoredCanvasWindow = string.IsNullOrEmpty(_anchoredLmsDomain)
                 ? IntPtr.Zero
                 : FindLmsWindow(_anchoredLmsDomain);
@@ -381,6 +398,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _temporarilyExemptWindow = IntPtr.Zero;
             _lastReportedIdleLevel = 0;
             _wasPreviouslyOnLms = false;
+            _anchoredTabSignature = null;
             _lastReportedProcesses.Clear();
             _lastReportedAtByEvent.Clear();
         }
@@ -553,6 +571,58 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             bool isOnLms = !titleHasNonLmsKeyword
                            && (titleSaysLms || sameAnchoredHwnd || browserFallback);
 
+            // ---- URL-BASED DEEP-PATH OVERRIDE ----
+            // When the teacher's URL parsed into a valid anchor AND the
+            // foreground is a browser, the address-bar URL is THE source of
+            // truth. This closes Same-Domain Cheating: titles can't tell
+            // docs.google.com/forms/... apart from docs.google.com/document/...
+            // but the URL absolutely can.
+            //
+            // If UIA read fails (browser still painting, protected process,
+            // etc.), the read returns null and we fall through to the
+            // legacy title-based isOnLms above.
+            string urlViolationReason = null;
+            if (_urlAnchor != null && IsBrowserProcessForeground(foreground))
+            {
+                string activeUrl = BrowserUrlReader.TryGetForegroundBrowserUrl(foreground);
+                if (!string.IsNullOrEmpty(activeUrl))
+                {
+                    var urlResult = UrlAnchorValidator.Validate(_urlAnchor, activeUrl);
+                    if (urlResult.IsAuthorized)
+                    {
+                        // URL passed all gates. Enforce No-Multiple-Tabs:
+                        // the first authorized hit captures the tab
+                        // signature; any subsequent authorized hit with a
+                        // different signature counts as a tab switch.
+                        string currentSig = UrlAnchorValidator
+                            .MakeTabSignature(foreground, _monitoringStartedAtUtc.Ticks);
+                        if (_anchoredTabSignature == null)
+                        {
+                            _anchoredTabSignature = currentSig;
+                            isOnLms = true;
+                        }
+                        else if (string.Equals(_anchoredTabSignature, currentSig, StringComparison.Ordinal))
+                        {
+                            isOnLms = true;
+                        }
+                        else
+                        {
+                            isOnLms = false;
+                            urlViolationReason =
+                                "Same exam URL but a different tab — only the originally anchored tab is permitted.";
+                        }
+                    }
+                    else
+                    {
+                        // URL failed host / core-path / restricted-segment /
+                        // suffix gate — definitive violation. Override the
+                        // title-based isOnLms regardless of HWND match.
+                        isOnLms = false;
+                        urlViolationReason = urlResult.Reason;
+                    }
+                }
+            }
+
             // ---- CANVAS_CLOSED: anchored HWND is gone AND new foreground
             //      isn't on the LMS. 5s cooldown swallows brief reloads.
             if (_anchoredCanvasWindow != IntPtr.Zero
@@ -592,9 +662,22 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 // + non-LMS keyword) the sanitized label already conveys the
                 // new tab; we phrase it as a tab switch.
                 string sanitizedForeground = GetSanitizedWindowLabel(foreground);
-                string description = (sameAnchoredHwnd && titleHasNonLmsKeyword)
-                    ? $"Focus left the LMS tab in the same browser window. Now viewing '{sanitizedForeground}'."
-                    : $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{sanitizedForeground}'.";
+                string description;
+                if (urlViolationReason != null)
+                {
+                    // Deep-path URL gate rejected — use the structured
+                    // reason from the validator, which is more specific than
+                    // any title-based phrasing.
+                    description = $"Browser navigated to a non-exam URL. {urlViolationReason} Now viewing '{sanitizedForeground}'.";
+                }
+                else if (sameAnchoredHwnd && titleHasNonLmsKeyword)
+                {
+                    description = $"Focus left the LMS tab in the same browser window. Now viewing '{sanitizedForeground}'.";
+                }
+                else
+                {
+                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{sanitizedForeground}'.";
+                }
 
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
                     description, cooldownSeconds: 0);

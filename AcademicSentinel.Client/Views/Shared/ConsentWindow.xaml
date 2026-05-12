@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Privacy Notice &amp; Consent"
         Icon="/Assets/FourCUDAIcon256.ico"
-        Height="520" Width="600"
+        Height="580" Width="600"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize">
     <Grid Margin="30">
@@ -14,48 +14,78 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Privacy Notice &amp; Consent"
-                   FontSize="20" FontWeight="Bold" Margin="0,0,0,15"/>
+        <TextBlock Grid.Row="0" Text="Academic Sentinel — Privacy Notice &amp; Consent"
+                   FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <TextBlock TextWrapping="Wrap" FontSize="13" LineHeight="22">
                 <Run FontWeight="Bold">What Academic Sentinel Monitors:</Run>
                 <LineBreak/>
-                • Active application/window switching during IMC sessions only
+                • Active application and window switching during IMC sessions only
                 <LineBreak/>
                 • Canvas LMS activity (open, closed, returned)
                 <LineBreak/>
                 • Session participation status
                 <LineBreak/><LineBreak/>
+
                 <Run FontWeight="Bold">What Academic Sentinel Does NOT Collect:</Run>
                 <LineBreak/>
                 • Screenshots or screen recordings
                 <LineBreak/>
-                • Personal files or documents
+                • Personal files, documents, or browser history
                 <LineBreak/>
                 • Keystrokes or passwords
                 <LineBreak/>
-                • Activity outside of active IMC sessions
+                • Any activity outside of active IMC sessions
                 <LineBreak/><LineBreak/>
+
+                <Run FontWeight="Bold">Your Device is Safe:</Run>
+                <LineBreak/>
+                • This application does NOT alter, damage, or affect any files
+                  or settings on your computer
+                <LineBreak/>
+                • You may uninstall the application at any time after the
+                  session with no consequences
+                <LineBreak/><LineBreak/>
+
                 <Run FontWeight="Bold">Data Usage:</Run>
                 <LineBreak/>
-                Collected data is used solely for academic research purposes
-                as part of a thesis study. All data is confidential and will
-                not be shared with third parties.
+                All monitoring data is stored on a secured server and used
+                solely for academic research purposes as part of a thesis
+                study at FEU Institute of Technology, 2026. Data will not
+                be shared with third parties.
                 <LineBreak/><LineBreak/>
-                <Run FontWeight="Bold">Voluntary Participation:</Run>
+
+                <Run FontWeight="Bold" Foreground="DarkGreen">Why Participate?</Run>
                 <LineBreak/>
-                Your participation is voluntary. You may discontinue use at
-                any time by closing the application.
+                • Your class instructor has authorized this beta test session
+                <LineBreak/>
+                • The first 2 students to get a perfect score on the exam
+                  will each receive ₱100.00 as a reward 🎉
+                <LineBreak/>
+                • Help shape the future of academic technology at FEU
                 <LineBreak/><LineBreak/>
-                By clicking "I Agree", you consent to the monitoring
-                described above during active IMC sessions.
+
+                <Run FontWeight="Bold" Foreground="DarkRed">Important Notice:</Run>
+                <LineBreak/>
+                <Run FontStyle="Italic">
+                You are free to do as you wish during the session —
+                but be aware that ALL window and application activity
+                is being monitored and recorded in real time by your instructor.
+                </Run>
+                <LineBreak/><LineBreak/>
+
+                By clicking "I Agree", you confirm that you have read and
+                understood this notice and consent to monitoring during
+                active IMC sessions.
             </TextBlock>
         </ScrollViewer>
 
         <CheckBox Grid.Row="2" x:Name="chkAgree"
-                  Content="I have read and agree to the Privacy Notice"
-                  Margin="0,15,0,10" FontSize="13"/>
+                  Margin="0,15,0,10" FontSize="13">
+            <TextBlock Text="I have read and understood the Privacy Notice and I agree to participate."
+                       TextWrapping="Wrap"/>
+        </CheckBox>
 
         <StackPanel Grid.Row="3" Orientation="Horizontal"
                     HorizontalAlignment="Right">
