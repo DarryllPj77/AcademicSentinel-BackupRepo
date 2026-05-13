@@ -344,10 +344,10 @@
                         <Border Width="60" Height="3" CornerRadius="2"
                                 Background="{StaticResource FEUGoldBrush}"
                                 HorizontalAlignment="Center" Margin="0,0,0,28"/>
-                        <TextBlock Text="FourCUDA"
+                        <TextBlock Text="AcademicSentinel"
                                    FontSize="28" FontWeight="Bold"
                                    Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                        <TextBlock Text="Anti-Cheating Exam System"
+                        <TextBlock Text="Academic Integrity Platform"
                                    FontSize="13" Foreground="#A5D6A7"
                                    HorizontalAlignment="Center" Margin="0,0,0,6"/>
                         <TextBlock Text="Empowering Education Through Technology"
