@@ -16,9 +16,13 @@
 
     <Grid Margin="24">
         <Grid.RowDefinitions>
+            <!-- 0: header  | 1: summary chips  | 2: event-type filter  -->
+            <!-- 3: logs grid  | 4: violation breakdown  | 5: footer    -->
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -56,13 +60,28 @@
             </StackPanel>
         </Border>
 
-        <!-- Logs table -->
-        <Border Grid.Row="2" BorderBrush="#BDBDBD" BorderThickness="1"
+        <!-- Event-type filter (row 2) -->
+        <Grid Grid.Row="2" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="Filter by Event Type:" FontSize="13"
+                       FontWeight="SemiBold" Foreground="{StaticResource FEUSubTextBrush}"
+                       VerticalAlignment="Center" Margin="0,0,12,0"/>
+            <ComboBox Grid.Column="1" x:Name="EventTypeFilter"
+                      HorizontalAlignment="Left" MinWidth="240" FontSize="13"
+                      SelectionChanged="EventTypeFilter_SelectionChanged"/>
+        </Grid>
+
+        <!-- Logs table (row 3) -->
+        <Border Grid.Row="3" BorderBrush="#BDBDBD" BorderThickness="1"
                 CornerRadius="6" ClipToBounds="True">
             <DataGrid x:Name="LogsDataGrid"
                       AutoGenerateColumns="False"
                       IsReadOnly="True"
                       CanUserAddRows="False"
+                      CanUserSortColumns="True"
                       HeadersVisibility="Column"
                       RowHeaderWidth="0"
                       GridLinesVisibility="All"
@@ -94,16 +113,61 @@
                     </Style>
                 </DataGrid.CellStyle>
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat='MMM dd, yyyy hh:mm:ss tt'}" Width="180"/>
-                    <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="160"/>
-                    <DataGridTextColumn Header="Severity" Binding="{Binding SeverityScore}" Width="80"/>
-                    <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="*"/>
+                    <!-- SortMemberPath is set explicitly so the bound property
+                         is used even when StringFormat is applied. -->
+                    <DataGridTextColumn Header="Timestamp"
+                                        Binding="{Binding Timestamp, StringFormat='MMM dd, yyyy hh:mm:ss tt'}"
+                                        SortMemberPath="Timestamp" Width="180"/>
+                    <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}"
+                                        SortMemberPath="EventType" Width="160"/>
+                    <DataGridTextColumn Header="Severity" Binding="{Binding SeverityScore}"
+                                        SortMemberPath="SeverityScore" Width="80"/>
+                    <DataGridTextColumn Header="Description" Binding="{Binding Description}"
+                                        SortMemberPath="Description" Width="*"/>
                 </DataGrid.Columns>
             </DataGrid>
         </Border>
 
-        <!-- Footer -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <!-- Violation breakdown (row 4) — dynamically populated; only
+             event types with count > 0 are shown. -->
+        <Border Grid.Row="4" Background="White" CornerRadius="10"
+                BorderBrush="#D0D0D0" BorderThickness="1.5"
+                Padding="16,12" Margin="0,16,0,0">
+            <StackPanel>
+                <TextBlock Text="Event Summary" FontSize="13" FontWeight="SemiBold"
+                           Foreground="{StaticResource FEUSubTextBrush}" Margin="0,0,0,8"/>
+                <ItemsControl x:Name="ViolationSummaryItems">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#F1F8E9" CornerRadius="14"
+                                    BorderBrush="#C5E1A5" BorderThickness="1"
+                                    Padding="12,4" Margin="0,0,8,8">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding EventType}" FontWeight="SemiBold"
+                                               FontSize="12" Foreground="#1B5E20"/>
+                                    <TextBlock Text=" | " FontSize="12"
+                                               Foreground="{StaticResource FEUSubTextBrush}"/>
+                                    <TextBlock Text="{Binding Count}" FontWeight="Bold"
+                                               FontSize="12" Foreground="#D32F2F"/>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock x:Name="ViolationSummaryEmpty" Text="No violations recorded."
+                           FontSize="12" FontStyle="Italic"
+                           Foreground="{StaticResource FEUSubTextBrush}"
+                           Visibility="Collapsed"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Footer (row 5) -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="BtnClose" Click="BtnClose_Click"
                     Padding="20,10" Margin="0,0,10,0" FontWeight="SemiBold"
                     Background="Transparent" Foreground="#616161"
