@@ -13,10 +13,22 @@ namespace AcademicSentinel.Client.Views.Shared
     {
         private readonly AuthService _authService;
 
-        public LoginWindow()
+        // update the LoginWindow to separate teacher and student login
+        public LoginWindow(string role = null)
         {
             InitializeComponent();
             _authService = new AuthService();
+
+            if (role == "Teacher")
+            {
+                RbTeacher.IsChecked = true;
+                RbStudent.Visibility = Visibility.Collapsed; // Hide student tab
+            }
+            else if (role == "Student")
+            {
+                RbStudent.IsChecked = true;
+                RbTeacher.Visibility = Visibility.Collapsed; // Hide teacher tab
+            }
         }
 
         private void Window_MouseDown(object sender, MouseButtonEventArgs e)

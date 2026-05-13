@@ -1,5 +1,6 @@
-﻿using System.Windows;
+﻿using AcademicSentinel.Client.Constants;
 using AcademicSentinel.Client.Views.Shared;
+using System.Windows;
 
 namespace AcademicSentinel.Client
 {
@@ -22,7 +23,8 @@ namespace AcademicSentinel.Client
 
             ShutdownMode = ShutdownMode.OnLastWindowClose;
 
-            var login = new LoginWindow();
+            // Add AppMode for separating student and teacher login
+            var login = new LoginWindow(AppMode.Role);
             login.Show();
         }
     }

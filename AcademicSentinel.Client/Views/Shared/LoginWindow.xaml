@@ -16,7 +16,6 @@
         FontFamily="{materialDesign:MaterialDesignFont}">
 
     <Window.Resources>
-        <!-- ====================== FEU TECH COLORS ====================== -->
         <Color x:Key="FEUGreen">#1B5E20</Color>
         <Color x:Key="FEUGreenLight">#2E7D32</Color>
         <Color x:Key="FEUGreenDark">#0D3B12</Color>
@@ -29,7 +28,6 @@
         <SolidColorBrush x:Key="FEUGoldBrush" Color="{StaticResource FEUGold}"/>
         <SolidColorBrush x:Key="FEUGoldLightBrush" Color="{StaticResource FEUGoldLight}"/>
 
-        <!-- ====================== TEXT INPUT STYLE ====================== -->
         <Style x:Key="LoginTextBox" TargetType="TextBox">
             <Setter Property="Padding" Value="16,14"/>
             <Setter Property="FontSize" Value="14"/>
@@ -67,7 +65,6 @@
             </Setter>
         </Style>
 
-        <!-- ====================== PASSWORD INPUT STYLE ====================== -->
         <Style x:Key="LoginPasswordBox" TargetType="PasswordBox">
             <Setter Property="Padding" Value="16,14"/>
             <Setter Property="FontSize" Value="14"/>
@@ -105,7 +102,6 @@
             </Setter>
         </Style>
 
-        <!-- ====================== PRIMARY BUTTON ====================== -->
         <Style x:Key="PrimaryButton" TargetType="Button">
             <Setter Property="Background" Value="{StaticResource FEUGreenBrush}"/>
             <Setter Property="Foreground" Value="White"/>
@@ -136,7 +132,6 @@
             </Setter>
         </Style>
 
-        <!-- ====================== LINK TEXT STYLE ====================== -->
         <Style x:Key="LinkText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource FEUGreenDarkBrush}"/>
             <Setter Property="FontWeight" Value="Bold"/>
@@ -150,48 +145,31 @@
         </Style>
     </Window.Resources>
 
-    <!-- ====================== MAIN OUTER CARD ====================== -->
-    <Border CornerRadius="18"
-            Background="White"
-            Margin="10">
+    <Border CornerRadius="18" Background="White" Margin="10">
         <Border.Effect>
             <DropShadowEffect BlurRadius="30" ShadowDepth="0" Opacity="0.18" Color="Black"/>
         </Border.Effect>
         <Border.Clip>
-            <RectangleGeometry RadiusX="18" RadiusY="18"
-                               Rect="0,0,960,620"/>
+            <RectangleGeometry RadiusX="18" RadiusY="18" Rect="0,0,960,620"/>
         </Border.Clip>
 
         <Grid>
             <Grid.ColumnDefinitions>
-                <!-- LEFT: Login Form -->
                 <ColumnDefinition Width="*"/>
-                <!-- RIGHT: Branding Panel with FEUTECH.png logo -->
                 <ColumnDefinition Width="420"/>
             </Grid.ColumnDefinitions>
 
-            <!-- ====================== LEFT LOGIN FORM ====================== -->
             <Grid Grid.Column="0">
-
-                <!-- Close Button (top-left) -->
                 <Button x:Name="BtnClose"
-                        HorizontalAlignment="Left"
-                        VerticalAlignment="Top"
-                        Margin="16,16,0,0"
-                        Width="34" Height="34"
-                        Cursor="Hand"
-                        Click="BtnClose_Click">
+                        HorizontalAlignment="Left" VerticalAlignment="Top"
+                        Margin="16,16,0,0" Width="34" Height="34"
+                        Cursor="Hand" Click="BtnClose_Click">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
-                            <Border x:Name="closeBorder"
-                                    Background="Transparent"
-                                    CornerRadius="17"
-                                    Width="34" Height="34">
-                                <TextBlock Text="✕"
-                                           FontSize="14"
-                                           Foreground="#9E9E9E"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Center"/>
+                            <Border x:Name="closeBorder" Background="Transparent"
+                                    CornerRadius="17" Width="34" Height="34">
+                                <TextBlock Text="✕" FontSize="14" Foreground="#9E9E9E"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
@@ -202,44 +180,34 @@
                     </Button.Template>
                 </Button>
 
-                <!-- Login Form Content -->
-                <StackPanel VerticalAlignment="Center"
-                            Margin="56,0">
+                <StackPanel VerticalAlignment="Center" Margin="56,0">
 
-                    <!-- Welcome Header -->
                     <TextBlock Text="Welcome Back"
                                FontSize="28" FontWeight="Bold"
-                               Foreground="#1B1B1B"
-                               Margin="0,0,0,6"/>
-
+                               Foreground="#1B1B1B" Margin="0,0,0,6"/>
                     <TextBlock Text="Sign in to your account"
-                               FontSize="13"
-                               Foreground="#9E9E9E"
-                               Margin="0,0,0,20"/>
+                               FontSize="13" Foreground="#9E9E9E" Margin="0,0,0,20"/>
 
-                    <!-- Role Toggle -->
-                    <Border Background="#F0F2F5" CornerRadius="10" Padding="4" Margin="0,0,0,24">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <RadioButton x:Name="RbTeacher" Grid.Column="0"
+                    <!-- ===== ROLE TOGGLE (FIXED) ===== -->
+                    <Border Background="#F0F2F5" CornerRadius="10" Padding="4"
+                            Margin="0,0,0,24"
+                            HorizontalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="RbTeacher"
                                          GroupName="RoleGroup" IsChecked="True"
                                          Checked="RoleToggle_Changed">
                                 <RadioButton.Template>
                                     <ControlTemplate TargetType="RadioButton">
                                         <Border x:Name="roleBorder" Background="Transparent"
-                                                CornerRadius="8" Padding="12,10" Cursor="Hand">
+                                                CornerRadius="8" Padding="12,10"
+                                                Cursor="Hand" MinWidth="120">
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                                 <materialDesign:PackIcon x:Name="roleIcon" Kind="HumanMaleBoard"
-                                                                         Width="18" Height="18"
-                                                                         Foreground="#9E9E9E"
+                                                                         Width="18" Height="18" Foreground="#9E9E9E"
                                                                          VerticalAlignment="Center" Margin="0,0,6,0"/>
                                                 <TextBlock x:Name="roleText" Text="Teacher"
                                                            FontSize="13" FontWeight="Medium"
-                                                           Foreground="#9E9E9E"
-                                                           VerticalAlignment="Center"/>
+                                                           Foreground="#9E9E9E" VerticalAlignment="Center"/>
                                             </StackPanel>
                                         </Border>
                                         <ControlTemplate.Triggers>
@@ -258,22 +226,22 @@
                                     </ControlTemplate>
                                 </RadioButton.Template>
                             </RadioButton>
-                            <RadioButton x:Name="RbStudent" Grid.Column="1"
+
+                            <RadioButton x:Name="RbStudent"
                                          GroupName="RoleGroup"
                                          Checked="RoleToggle_Changed">
                                 <RadioButton.Template>
                                     <ControlTemplate TargetType="RadioButton">
                                         <Border x:Name="roleBorder" Background="Transparent"
-                                                CornerRadius="8" Padding="12,10" Cursor="Hand">
+                                                CornerRadius="8" Padding="12,10"
+                                                Cursor="Hand" MinWidth="120">
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                                 <materialDesign:PackIcon x:Name="roleIcon" Kind="SchoolOutline"
-                                                                         Width="18" Height="18"
-                                                                         Foreground="#9E9E9E"
+                                                                         Width="18" Height="18" Foreground="#9E9E9E"
                                                                          VerticalAlignment="Center" Margin="0,0,6,0"/>
                                                 <TextBlock x:Name="roleText" Text="Student"
                                                            FontSize="13" FontWeight="Medium"
-                                                           Foreground="#9E9E9E"
-                                                           VerticalAlignment="Center"/>
+                                                           Foreground="#9E9E9E" VerticalAlignment="Center"/>
                                             </StackPanel>
                                         </Border>
                                         <ControlTemplate.Triggers>
@@ -292,49 +260,36 @@
                                     </ControlTemplate>
                                 </RadioButton.Template>
                             </RadioButton>
-                        </Grid>
+                        </StackPanel>
                     </Border>
 
-                    <!-- Email / Username Field -->
                     <TextBlock Text="Email Address"
                                FontSize="12" FontWeight="SemiBold"
-                               Foreground="#616161"
-                               Margin="0,0,0,8"/>
+                               Foreground="#616161" Margin="0,0,0,8"/>
                     <TextBox x:Name="TxtLoginEmail"
                              Style="{StaticResource LoginTextBox}"
                              materialDesign:HintAssist.Hint="Enter your email address"
                              Margin="0,0,0,20"/>
 
-                    <!-- Password Field -->
                     <TextBlock Text="Password"
                                FontSize="12" FontWeight="SemiBold"
-                               Foreground="#616161"
-                               Margin="0,0,0,8"/>
+                               Foreground="#616161" Margin="0,0,0,8"/>
                     <PasswordBox x:Name="TxtLoginPassword"
                                  Style="{StaticResource LoginPasswordBox}"
                                  materialDesign:HintAssist.Hint="Enter your password"
                                  Margin="0,0,0,10"/>
 
-                    <!-- Forgot Password Link -->
                     <TextBlock x:Name="LinkForgotPassword"
-                               HorizontalAlignment="Right"
-                               Margin="0,0,0,28"
-                               Foreground="#1B5E20"
-                               FontSize="12"
-                               FontWeight="Bold"
-                               Cursor="Hand"
-                               MouseLeftButtonDown="LinkForgotPassword_Click">
+                               HorizontalAlignment="Right" Margin="0,0,0,28"
+                               Foreground="#1B5E20" FontSize="12" FontWeight="Bold"
+                               Cursor="Hand" MouseLeftButtonDown="LinkForgotPassword_Click">
                         <Run Text="Forgot Password?"/>
                     </TextBlock>
 
-                    <!-- Login Button -->
-                    <Button x:Name="BtnLogin"
-                            Content="Log In"
+                    <Button x:Name="BtnLogin" Content="Log In"
                             Style="{StaticResource PrimaryButton}"
-                            Click="BtnLogin_Click"
-                            Margin="0,0,0,28"/>
+                            Click="BtnLogin_Click" Margin="0,0,0,28"/>
 
-                    <!-- Divider -->
                     <Grid Margin="0,0,0,24">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -346,15 +301,10 @@
                         <Border Grid.Column="2" Height="1" Background="#E0E0E0" VerticalAlignment="Center"/>
                     </Grid>
 
-                    <!-- Create Account Link -->
-                    <StackPanel Orientation="Horizontal"
-                                HorizontalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                         <TextBlock Text="Don't have an account? "
-                                   FontSize="13"
-                                   Foreground="#9E9E9E"
-                                   VerticalAlignment="Center"/>
-                        <TextBlock x:Name="LinkCreateAccount"
-                                   Text="Create one here"
+                                   FontSize="13" Foreground="#9E9E9E" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="LinkCreateAccount" Text="Create one here"
                                    Style="{StaticResource LinkText}"
                                    MouseLeftButtonDown="LinkCreateAccount_Click"
                                    VerticalAlignment="Center"/>
@@ -362,7 +312,6 @@
                 </StackPanel>
             </Grid>
 
-            <!-- ====================== RIGHT BRANDED PANEL with FEUTECH.png LOGO ====================== -->
             <Border Grid.Column="1" CornerRadius="0,18,18,0">
                 <Border.Background>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -371,11 +320,8 @@
                         <GradientStop Color="#2E7D32" Offset="1"/>
                     </LinearGradientBrush>
                 </Border.Background>
-
                 <Grid>
-                    <!-- Decorative Gold Accent Lines -->
-                    <Border Opacity="0.06"
-                            CornerRadius="0,18,18,0">
+                    <Border Opacity="0.06" CornerRadius="0,18,18,0">
                         <Border.Background>
                             <VisualBrush TileMode="Tile" Viewport="0,0,60,60" ViewportUnits="Absolute">
                                 <VisualBrush.Visual>
@@ -388,53 +334,30 @@
                         </Border.Background>
                     </Border>
 
-                    <StackPanel VerticalAlignment="Center"
-                                HorizontalAlignment="Center"
-                                Margin="40">
-
-                        <!-- FEU TECH Logo -->
-                        <Border HorizontalAlignment="Center"
-                                Margin="0,0,0,30">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="40">
+                        <Border HorizontalAlignment="Center" Margin="0,0,0,30">
                             <Image x:Name="LogoImage"
                                    Source="pack://application:,,,/Assets/FEUTECH.png"
                                    Width="180"
                                    RenderOptions.BitmapScalingMode="HighQuality"/>
                         </Border>
-
-                        <!-- Gold Divider -->
-                        <Border Width="60" Height="3"
-                                CornerRadius="2"
+                        <Border Width="60" Height="3" CornerRadius="2"
                                 Background="{StaticResource FEUGoldBrush}"
-                                HorizontalAlignment="Center"
-                                Margin="0,0,0,28"/>
-
-                        <!-- Tagline -->
+                                HorizontalAlignment="Center" Margin="0,0,0,28"/>
                         <TextBlock Text="FourCUDA"
                                    FontSize="28" FontWeight="Bold"
-                                   Foreground="White"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,0,0,8"/>
-
+                                   Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,8"/>
                         <TextBlock Text="Anti-Cheating Exam System"
-                                   FontSize="13"
-                                   Foreground="#A5D6A7"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,0,0,6"/>
-
+                                   FontSize="13" Foreground="#A5D6A7"
+                                   HorizontalAlignment="Center" Margin="0,0,0,6"/>
                         <TextBlock Text="Empowering Education Through Technology"
-                                   FontSize="11"
-                                   Foreground="#81C784"
-                                   HorizontalAlignment="Center"
-                                   FontStyle="Italic"
-                                   Opacity="0.8"/>
+                                   FontSize="11" Foreground="#81C784"
+                                   HorizontalAlignment="Center" FontStyle="Italic" Opacity="0.8"/>
                     </StackPanel>
 
-                    <!-- Bottom Gold Bar Accent -->
-                    <Border VerticalAlignment="Bottom"
-                            Height="4"
+                    <Border VerticalAlignment="Bottom" Height="4"
                             Background="{StaticResource FEUGoldBrush}"
-                            Opacity="0.7"
-                            CornerRadius="0,0,18,0"/>
+                            Opacity="0.7" CornerRadius="0,0,18,0"/>
                 </Grid>
             </Border>
         </Grid>
