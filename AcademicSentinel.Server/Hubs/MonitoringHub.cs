@@ -15,12 +15,14 @@ public class MonitoringHub : Hub
 {
     private readonly AppDbContext _context;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<MonitoringHub> _logger;
     private static readonly ConcurrentDictionary<int, bool> MonitoringStates = new();
 
-    public MonitoringHub(AppDbContext context, IServiceScopeFactory scopeFactory)
+    public MonitoringHub(AppDbContext context, IServiceScopeFactory scopeFactory, ILogger<MonitoringHub> logger)
     {
         _context = context;
         _scopeFactory = scopeFactory;
+        _logger = logger;
     }
 
     // =======================================================
@@ -283,6 +285,11 @@ public class MonitoringHub : Hub
                 return;
             }
 
+            _logger.LogInformation("JoinLiveExam: roomId={RoomId}, studentId={StudentId}, existingParticipant={Existing}, connectionStatus={ConnStatus}, approvalStatus={ApprovalStatus}",
+                roomId, studentId, participant != null,
+                participant?.ConnectionStatus ?? "(none)",
+                participant?.JoinApprovalStatus ?? "(none)");
+
             // SECURITY FIX: Rejoin must require teacher approval.
             // A participant whose previous state is "Disconnected" is NOT
             // allowed to silently reconnect — this was the auto-rejoin hole.
@@ -292,6 +299,7 @@ public class MonitoringHub : Hub
                 && string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(participant.JoinApprovalStatus, "Approved", StringComparison.OrdinalIgnoreCase))
             {
+                _logger.LogInformation("JoinLiveExam: routing student {StudentId} through rejoin approval gate", studentId);
                 participant.JoinApprovalStatus = "Pending";
                 participant.IsCurrentlyActive = false;
 
@@ -379,6 +387,13 @@ public class MonitoringHub : Hub
         var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
 
+        // Render-side diagnostic — confirm the handler fired, who dropped,
+        // and which branch we routed into. Read these in Render's log
+        // stream to verify deployments are picking up the new code.
+        _logger.LogInformation("OnDisconnectedAsync fired. userId={UserId}, role={Role}, connId={ConnId}, exception={ExceptionType}",
+            userIdString ?? "(null)", role ?? "(null)", Context.ConnectionId,
+            exception?.GetType().Name ?? "(none)");
+
         if (string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase)
             && userIdString != null
             && int.TryParse(userIdString, out var instructorId))
@@ -456,6 +471,9 @@ public class MonitoringHub : Hub
                                 && p.ConnectionStatus != "Completed"
                                 && p.ConnectionStatus != "Disconnected")
                     .ToListAsync();
+
+                _logger.LogInformation("Student disconnect path: studentId={StudentId}, foundActiveParticipants={Count}",
+                    studentId, activeParticipants.Count);
 
                 foreach (var participant in activeParticipants)
                 {
