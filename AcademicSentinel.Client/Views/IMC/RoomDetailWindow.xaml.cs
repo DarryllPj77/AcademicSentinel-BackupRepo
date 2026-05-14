@@ -178,10 +178,71 @@ namespace AcademicSentinel.Client.Views.IMC
                 {
                     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
                     var response = await client.GetAsync($"{ApiEndpoints.Rooms}/{CurrentRoomId}/status");
-                    // Data mapping for student counts can go here
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        ToggleSessionPanels(activeSessionLive: false);
+                        return;
+                    }
+
+                    // Status endpoint returns { roomId, status, isMonitoringActive,
+                    // subjectName }. "Active" means a monitoring session is in
+                    // progress for this room — typically because the instructor
+                    // dropped without ending it. Show the rejoin panel instead
+                    // of the "Initializing New Session" panel so the teacher's
+                    // only sensible next action is to rejoin.
+                    var dto = await response.Content.ReadFromJsonAsync<RoomStatusDto>();
+                    bool isLive = dto != null
+                                  && string.Equals(dto.status, "Active", StringComparison.OrdinalIgnoreCase);
+                    ToggleSessionPanels(activeSessionLive: isLive);
                 }
             }
-            catch (Exception ex) { Console.WriteLine(ex.Message); }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                ToggleSessionPanels(activeSessionLive: false);
+            }
+        }
+
+        /// <summary>
+        /// Mutually exclusive visibility — only one of the two top panels
+        /// (rejoin vs. create-new) is shown at a time.
+        /// </summary>
+        private void ToggleSessionPanels(bool activeSessionLive)
+        {
+            if (ActiveSessionPanel != null)
+                ActiveSessionPanel.Visibility = activeSessionLive ? Visibility.Visible : Visibility.Collapsed;
+            if (NewSessionPanel != null)
+                NewSessionPanel.Visibility = activeSessionLive ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        /// <summary>
+        /// Opens the LiveSessionMonitoringWindow against the room's in-progress
+        /// session. The 2-arg constructor (used by the past-session row click)
+        /// already locates the active session server-side, so we reuse it here.
+        /// </summary>
+        private void BtnRejoinSession_Click(object sender, RoutedEventArgs e)
+        {
+            var liveWindow = new LiveSessionMonitoringWindow(CurrentRoomId, TxtRoomTitle.Text);
+            this.Hide();
+            liveWindow.Closed += (_, __) =>
+            {
+                this.Show();
+                _ = LoadPastSessionsAsync();
+                FetchRoomStatus();
+            };
+            liveWindow.Show();
+        }
+
+        /// <summary>
+        /// Thin DTO mirror of GET /api/rooms/{id}/status. Local-only — kept
+        /// nested to avoid polluting the wider Models namespace.
+        /// </summary>
+        private sealed class RoomStatusDto
+        {
+            public int roomId { get; set; }
+            public string status { get; set; }
+            public bool isMonitoringActive { get; set; }
+            public string subjectName { get; set; }
         }
 
         private void BtnCreateSession_Click(object sender, RoutedEventArgs e)

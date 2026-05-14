@@ -258,8 +258,58 @@
                 </Grid>
             </Border>
 
+            <!-- Active-session rejoin panel — shown only when the room's
+                 status is "Active", typically after the teacher dropped
+                 connection during a live session. The "Initializing New"
+                 panel below is hidden in that case so the teacher's only
+                 sensible action is to rejoin the in-progress monitoring. -->
+            <Border x:Name="ActiveSessionPanel" Grid.Row="2" Margin="24,16,24,0"
+                    Background="#FFF8E1" CornerRadius="12" Padding="28,24"
+                    BorderBrush="#FFB300" BorderThickness="2"
+                    Visibility="Collapsed">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Pulsing indicator dot -->
+                    <Border Grid.Column="0" Width="14" Height="14" CornerRadius="7"
+                            Background="#D32F2F" VerticalAlignment="Center"
+                            Margin="0,0,14,0">
+                        <Border.Triggers>
+                            <EventTrigger RoutedEvent="Loaded">
+                                <BeginStoryboard>
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                         From="1.0" To="0.25" Duration="0:0:0.8"
+                                                         AutoReverse="True"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </Border.Triggers>
+                    </Border>
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Text="Monitoring Session In Progress"
+                                   FontSize="16" FontWeight="Bold"
+                                   Foreground="#E65100"/>
+                        <TextBlock x:Name="TxtActiveSessionSubtitle"
+                                   Text="You appear to be disconnected from an active session for this room. Rejoin to resume monitoring."
+                                   FontSize="13" Foreground="#5D4037"
+                                   TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    </StackPanel>
+
+                    <Button Grid.Column="2" Content="Rejoin Session"
+                            Style="{StaticResource PrimaryBtn}"
+                            Click="BtnRejoinSession_Click"
+                            VerticalAlignment="Center"/>
+                </Grid>
+            </Border>
+
             <!-- Initializing New Monitoring Session -->
-            <Border Grid.Row="2" Margin="24,16,24,0"
+            <Border x:Name="NewSessionPanel" Grid.Row="2" Margin="24,16,24,0"
                     Background="White" CornerRadius="12" Padding="28,32">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
