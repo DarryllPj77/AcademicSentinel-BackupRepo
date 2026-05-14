@@ -65,7 +65,10 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
             };
 
             PopulateEventTypeFilter(sortedLogs);
-            PopulateViolationSummary(sortedLogs);
+            // Initial render of the breakdown — uses the current filter
+            // ("All Events" by default, so this is the full master list).
+            // Subsequent renders are triggered by the ComboBox handler.
+            PopulateViolationSummary();
         }
 
         // -----------------------------------------------------------------
@@ -94,12 +97,24 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
         }
 
         // -----------------------------------------------------------------
-        // Violation breakdown — LINQ GroupBy with strict "count > 0" filter.
-        // Result is bound to the WrapPanel ItemsControl in the XAML.
+        // Violation breakdown — LINQ GroupBy against the FILTERED view.
+        //
+        // Enumerating _logsView (an ICollectionView) yields only the rows
+        // that pass the current filter predicate, so the summary chips
+        // automatically reflect whatever the ComboBox is set to:
+        //   "All Events"     → every event type that occurred
+        //   "All Violations" → only rows with SeverityScore > 0
+        //   "{specific}"     → just that one event type
+        // No predicate duplication: the same FilterByEventType used by
+        // the DataGrid IS the one used here.
         // -----------------------------------------------------------------
-        private void PopulateViolationSummary(IEnumerable<SessionLogDto> logs)
+        private void PopulateViolationSummary()
         {
-            var summary = logs
+            var filteredLogs = _logsView == null
+                ? Enumerable.Empty<SessionLogDto>()
+                : _logsView.Cast<SessionLogDto>();
+
+            var summary = filteredLogs
                 .Where(l => !string.IsNullOrWhiteSpace(l.EventType))
                 .GroupBy(l => l.EventType, StringComparer.OrdinalIgnoreCase)
                 .Select(g => new ViolationSummaryRow
@@ -146,7 +161,13 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
         private void EventTypeFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             _eventTypeFilter = EventTypeFilter.SelectedItem as string ?? AllEventsOption;
+
+            // Refresh the DataGrid view first (this is what applies the new
+            // filter predicate), then recompute the breakdown chips. The
+            // order matters: PopulateViolationSummary enumerates _logsView,
+            // so the view must have already re-evaluated the predicate.
             _logsView?.Refresh();
+            PopulateViolationSummary();
         }
 
         private void BtnClose_Click(object sender, RoutedEventArgs e)
