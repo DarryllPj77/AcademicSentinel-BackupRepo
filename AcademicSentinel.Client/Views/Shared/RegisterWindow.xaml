@@ -214,13 +214,13 @@
                                 Margin="0,0,0,28"/>
 
                         <!-- Tagline -->
-                        <TextBlock Text="FourCUDA"
+                        <TextBlock Text="Academic Sentinel"
                                    FontSize="28" FontWeight="Bold"
                                    Foreground="White"
                                    HorizontalAlignment="Center"
                                    Margin="0,0,0,8"/>
 
-                        <TextBlock Text="Anti-Cheating Exam System"
+                        <TextBlock Text="Monitoring Exam System"
                                    FontSize="13"
                                    Foreground="#A5D6A7"
                                    HorizontalAlignment="Center"

@@ -71,7 +71,7 @@
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock x:Name="TxtHelpTitle" Text="Teacher Help Guide"
                                FontSize="22" FontWeight="Bold" Foreground="#1B5E20"/>
-                    <TextBlock x:Name="TxtHelpSubtitle" Text="Learn how to use the Academic Sentinel Anti-Cheating System"
+                    <TextBlock x:Name="TxtHelpSubtitle" Text="Learn how to use the Academic Sentinel Monitoring System"
                                FontSize="13" Foreground="#9E9E9E" Margin="0,2,0,0"/>
                 </StackPanel>
 
@@ -389,7 +389,7 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                 <materialDesign:PackIcon Kind="ShieldCheckOutline" Width="18" Height="18"
                                          Foreground="#1B5E20" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBlock Text="Academic Sentinel Anti-Cheating System"
+                <TextBlock Text="Academic Sentinel Monitoring System"
                            FontSize="12" Foreground="#9E9E9E" VerticalAlignment="Center"/>
             </StackPanel>
         </Border>

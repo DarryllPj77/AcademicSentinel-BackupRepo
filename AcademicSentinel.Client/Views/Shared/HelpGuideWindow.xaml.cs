@@ -23,7 +23,7 @@ namespace AcademicSentinel.Client.Views.Shared
             else
             {
                 TxtHelpTitle.Text = "Teacher Help Guide";
-                TxtHelpSubtitle.Text = "Learn how to use the Academic Sentinel Anti-Cheating System";
+                TxtHelpSubtitle.Text = "Learn how to use the Academic Sentinel Monitoring System";
                 TeacherGuidePanel.Visibility = Visibility.Visible;
                 StudentGuidePanel.Visibility = Visibility.Collapsed;
             }
