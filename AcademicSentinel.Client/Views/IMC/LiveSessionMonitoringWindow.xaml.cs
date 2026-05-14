@@ -160,18 +160,24 @@ namespace AcademicSentinel.Client.Views.IMC
                     _isMonitoringStarted = true;
                     _isSessionEnded = false;
 
-                    // Monitoring is either ACTIVE or paused server-side; the
-                    // hub's MonitoringStateChanged / MonitoringPaused events
-                    // will keep us in sync going forward, but we need the
-                    // initial state right now.
-                    SetMonitoringControlButtonState(status.isMonitoringActive
-                        ? MonitoringControlState.Active
-                        : MonitoringControlState.Paused);
+                    // REJOIN POLICY: always default to the Active (red
+                    // "Pause Monitoring") button state when the room is
+                    // live. The student SAC keeps detecting through the
+                    // teacher disconnect, so from the teacher's mental
+                    // model monitoring IS running — the button should
+                    // reflect "click to pause" (red), and a subsequent
+                    // click can pause/resume as normal. This avoids the
+                    // confusing "orange Resume Monitoring" state that
+                    // appeared on rejoin when the server's IsMonitoringActive
+                    // flag was momentarily false (e.g. mid-handoff).
+                    //
+                    // The live MonitoringStateChanged / MonitoringPaused
+                    // hub events will correct the state if the teacher
+                    // legitimately paused before disconnecting.
+                    SetMonitoringControlButtonState(MonitoringControlState.Active);
 
                     if (FindName("TxtMonitoringState") is TextBlock label)
-                        label.Text = status.isMonitoringActive
-                            ? "Monitoring: Active (Rejoined)"
-                            : "Monitoring: Paused (Rejoined)";
+                        label.Text = "Monitoring: Active (Rejoined)";
                 }
             }
             catch
