@@ -366,40 +366,32 @@ public class MonitoringHub : Hub
 
                 if (activeRoom != null)
                 {
-                    var activeSession = await db.ExamSessions
-                        .Where(s => s.RoomId == activeRoom.Id && s.Status == "Active")
-                        .OrderByDescending(s => s.StartTime)
-                        .FirstOrDefaultAsync();
-
-                    // FIX: Ghost Sessions. Status must transition to a
-                    // value the history endpoint keeps. "Interrupted"
-                    // distinguishes a teacher-drop from a clean "Completed"
-                    // close, while still appearing in Past Sessions.
-                    activeRoom.Status = "Ended";
-                    if (activeSession != null)
-                    {
-                        activeSession.Status = "Interrupted";
-                        activeSession.EndTime = DateTime.UtcNow;
-                    }
-
-                    // Audit-trail event for the room history.
+                    // BEHAVIOR CHANGE: Per requirement, an instructor drop
+                    // must NOT end the session. Monitoring continues on every
+                    // connected student, detection stays armed (no implicit
+                    // pause), and the room stays Active so the instructor
+                    // can reconnect and resume control. Only the audit-trail
+                    // event + TeacherDisconnected broadcast remain; the
+                    // session.Status / room.Status mutations and the
+                    // SessionInterrupted broadcast were removed because they
+                    // were the path that force-closed the student SAC.
                     db.MonitoringEvents.Add(new MonitoringEvent
                     {
                         RoomId = activeRoom.Id,
                         StudentId = 0,
                         EventType = "TEACHER_DISCONNECTED",
-                        Description = "Instructor lost connection mid-session — session marked Interrupted.",
+                        Description = "Instructor lost connection mid-session — session stays Active, monitoring continues.",
                         SeverityScore = 0,
                         Timestamp = DateTime.UtcNow
                     });
 
                     await db.SaveChangesAsync();
 
-                    // Distinct TeacherDisconnected so the SAC can render its
-                    // own "Connection to Instructor Lost" banner; legacy
-                    // SessionInterrupted kept so older clients still tear down.
+                    // SAC renders the yellow "Connection to Instructor Lost"
+                    // banner on this event and keeps detecting. IMC instances
+                    // (if any other instructor consoles share the room) can
+                    // also surface a warning.
                     await Clients.Group(activeRoom.Id.ToString()).SendAsync("TeacherDisconnected", activeRoom.Id);
-                    await Clients.Group(activeRoom.Id.ToString()).SendAsync("SessionInterrupted", activeRoom.Id);
                 }
             }
             catch (DbUpdateConcurrencyException)

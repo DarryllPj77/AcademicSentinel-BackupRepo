@@ -1064,21 +1064,18 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
+                // BEHAVIOR CHANGE: a teacher-disconnect must NOT force the
+                // student back to the dashboard. Monitoring continues, the
+                // detector stays armed, and the SAC just keeps the yellow
+                // banner up until the instructor reconnects. The server has
+                // stopped emitting SessionInterrupted on teacher drop; this
+                // handler is kept as a no-op safety net in case any legacy
+                // code path or older build still sends it.
                 _hubConnection.On<int>("SessionInterrupted", interruptedRoomId =>
                 {
-                    if (interruptedRoomId != _roomId)
-                        return;
-
-                    Dispatcher.Invoke(() =>
-                    {
-                        if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
-                        _detectorRuntime?.Stop();
-                        MessageBox.Show("Session interrupted by instructor disconnect. You will be returned to the dashboard.", "Session Interrupted", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        _isLeaveApproved = true;
-                        _ = ForceStopSignalRAsync();
-                        new StudentDashboard().Show();
-                        Close();
-                    });
+                    if (interruptedRoomId != _roomId) return;
+                    Dispatcher.Invoke(() => ShowTeacherDisconnectedBanner(
+                        "Connection to Instructor Lost. Reconnecting..."));
                 });
 
                 // Hub fires TeacherDisconnected the instant the instructor's
