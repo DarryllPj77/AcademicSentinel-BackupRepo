@@ -414,23 +414,38 @@ public class MonitoringHub : Hub
 
             try
             {
-                var hasCompletedSessionParticipant = await db.SessionParticipants
-                    .AnyAsync(p => p.StudentId == studentId && p.ConnectionStatus == "Completed");
-
-                if (hasCompletedSessionParticipant)
-                {
-                    await base.OnDisconnectedAsync(exception);
-                    return;
-                }
-
+                // BUG FIX: The previous "hasCompletedSessionParticipant"
+                // short-circuit was a GLOBAL check — if this student had
+                // ever completed ANY session in their history, every future
+                // disconnect was silently swallowed. That left participants
+                // stuck at ConnectionStatus="Connected" in the IMC, no
+                // STUDENT_DISCONNECTED log was written, and the JoinLiveExam
+                // rejoin-approval gate could not fire because it keys off
+                // ConnectionStatus="Disconnected". Per-participant filtering
+                // below already excludes cleanly-completed sessions (their
+                // row sits at "Completed", not "Connected"), so the global
+                // short-circuit was both wrong and redundant.
+                //
+                // Find every participant row for this student whose status
+                // is neither cleanly Completed nor already Disconnected.
+                // Anything that's Connected, Pending (rejoin in flight),
+                // or in any transitional state gets cleaned up here.
                 var activeParticipants = await db.SessionParticipants
-                    .Where(p => p.StudentId == studentId && p.ConnectionStatus == "Connected")
+                    .Where(p => p.StudentId == studentId
+                                && p.ConnectionStatus != "Completed"
+                                && p.ConnectionStatus != "Disconnected")
                     .ToListAsync();
 
                 foreach (var participant in activeParticipants)
                 {
                     participant.ConnectionStatus = "Disconnected";
                     participant.DisconnectedAt = DateTime.UtcNow;
+                    // Clear any prior "Approved" rejoin so the next
+                    // reconnect attempt re-enters the approval gate
+                    // (closes the auto-rejoin hole described in the bug
+                    // report).
+                    participant.JoinApprovalStatus = null;
+                    participant.IsCurrentlyActive = false;
 
                     // Structured event type so the StudentLogsPreviewDialog's
                     // violations breakdown groups student drops as their own
