@@ -11,8 +11,9 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
 {
     public partial class StudentLogsPreviewDialog : Window
     {
-        // Default option label shown in the ComboBox when no filter is active.
+        // Master filter labels — always pinned to the top of the ComboBox.
         private const string AllEventsOption = "All Events";
+        private const string AllViolationsOption = "All Violations";
 
         // Backing ICollectionView for the DataGrid. Filtering goes through
         // this view rather than mutating the underlying log list, so the
@@ -68,8 +69,13 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
         }
 
         // -----------------------------------------------------------------
-        // ComboBox population — only event types that actually occurred,
-        // sorted alphabetically, with "All Events" pinned at the top.
+        // ComboBox population. Order:
+        //   1) "All Events"      — pinned master option, no filter.
+        //   2) "All Violations"  — pinned master option, severity > 0 only.
+        //   3) Specific event types that actually occurred in this student's
+        //      log, sorted alphabetically. Both system entries (e.g.
+        //      SYSTEM, CANVAS_RETURNED) AND violation entries appear here,
+        //      so the teacher can drill down to any single offense type.
         // -----------------------------------------------------------------
         private void PopulateEventTypeFilter(IEnumerable<SessionLogDto> logs)
         {
@@ -80,7 +86,7 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
                 .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            var items = new List<string> { AllEventsOption };
+            var items = new List<string> { AllEventsOption, AllViolationsOption };
             items.AddRange(distinctTypes);
 
             EventTypeFilter.ItemsSource = items;
@@ -114,12 +120,26 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
 
         // -----------------------------------------------------------------
         // ICollectionView filter predicate. True keeps the row visible.
+        // Three resolution paths:
+        //   * "All Events"     — let everything through (system entries,
+        //                        informational returns, violations).
+        //   * "All Violations" — only rows with SeverityScore > 0. This is
+        //                        the structural definition of a violation
+        //                        in our scoring engine: zero-point events
+        //                        (SYSTEM, CANVAS_RETURNED, lifecycle
+        //                        markers) are filtered out.
+        //   * Specific type    — exact case-insensitive EventType match.
         // -----------------------------------------------------------------
         private bool FilterByEventType(object item)
         {
+            if (item is not SessionLogDto log) return false;
+
             if (string.Equals(_eventTypeFilter, AllEventsOption, StringComparison.Ordinal))
                 return true;
-            if (item is not SessionLogDto log) return false;
+
+            if (string.Equals(_eventTypeFilter, AllViolationsOption, StringComparison.Ordinal))
+                return log.SeverityScore > 0;
+
             return string.Equals(log.EventType, _eventTypeFilter, StringComparison.OrdinalIgnoreCase);
         }
 
