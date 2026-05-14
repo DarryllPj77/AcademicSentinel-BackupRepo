@@ -677,6 +677,30 @@ namespace AcademicSentinel.Client.Views.IMC
                 _studentsView.Refresh();
             })));
 
+            // Dedicated StudentDisconnected subscription — the hub broadcasts
+            // this alongside StudentConnectionLost. Wiring both ensures the
+            // IMC reacts regardless of which name a future server build
+            // standardizes on, and avoids depending on event ordering.
+            _hubSubscriptions.Add(_hubConnection.On<int>("StudentDisconnected", studentId => Dispatcher.Invoke(() =>
+            {
+                if (_safelyLeftStudentIds.Contains(studentId) || _permanentlyDismissedStudents.Contains(studentId))
+                    return;
+
+                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                if (targetStudent != null)
+                {
+                    targetStudent.IsOffline = true;
+                    targetStudent.Status = "Disconnected";
+                    targetStudent.StatusColor = "#D32F2F";
+                    targetStudent.IsLeaveRequested = false;
+                    _studentsView.Refresh();
+                }
+                // Don't double-log here — the StudentConnectionLost handler
+                // above writes the Global Feed entry. This handler exists
+                // only to keep the visual state red in case the disconnect
+                // event lands without its companion.
+            })));
+
             // Single registration only — the previous duplicate registration here
             // caused every join/reconnect to be logged twice in the Global Log Feed.
             _hubSubscriptions.Add(_hubConnection.On<int, string>("StudentJoinedOrReconnected", (studentId, studentName) => Dispatcher.InvokeAsync(() =>
