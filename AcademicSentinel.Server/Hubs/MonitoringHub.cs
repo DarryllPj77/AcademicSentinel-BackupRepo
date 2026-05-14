@@ -299,6 +299,78 @@ public class MonitoringHub : Hub
                 participant?.ConnectionStatus ?? "(none)",
                 participant?.JoinApprovalStatus ?? "(none)");
 
+            // ============================================================
+            // STALE-RECONNECT DETECTION (timing-race fix)
+            //
+            // SignalR's default ClientTimeoutInterval is 30s. If a student's
+            // SAC is force-killed / loses network and the SAC's
+            // WithAutomaticReconnect path reconnects faster than that, the
+            // server's OnDisconnectedAsync for the OLD ConnectionId has not
+            // fired yet — so the participant row still says "Connected" and
+            // the rejoin gate below would be bypassed.
+            //
+            // Detection: another ConnectionId for the same student is still
+            // in the active-connections map. That means a previous WS is
+            // either dead or has been replaced by this new call — either
+            // way, the student dropped at some point and is now reconnecting.
+            //
+            // Resolution: synthesize the disconnect we missed:
+            //   - flip the participant to Disconnected
+            //   - clear approval flags so the gate below fires
+            //   - write the STUDENT_DISCONNECTED audit event
+            //   - drain the stale map entry
+            //   - broadcast Student(Connection)Disconnected so the IMC
+            //     updates the participant tile to red and writes the
+            //     Global Log Feed entry BEFORE the rejoin-approval card
+            //     pops up.
+            // ============================================================
+            bool hasStaleConnection = false;
+            var staleConnectionIds = new List<string>();
+            foreach (var kv in _activeStudentConnections)
+            {
+                if (kv.Value.StudentId == studentId && kv.Key != Context.ConnectionId)
+                {
+                    hasStaleConnection = true;
+                    staleConnectionIds.Add(kv.Key);
+                }
+            }
+
+            if (hasStaleConnection && participant != null
+                && !string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("JoinLiveExam: stale reconnect detected for studentId={StudentId} (prior connection(s)={Count}). Synthesizing disconnect before rejoin gate.",
+                    studentId, staleConnectionIds.Count);
+
+                participant.ConnectionStatus = "Disconnected";
+                participant.DisconnectedAt = DateTime.UtcNow;
+                participant.JoinApprovalStatus = null;
+                participant.IsCurrentlyActive = false;
+
+                _context.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    RoomId = roomId,
+                    StudentId = studentId,
+                    EventType = "STUDENT_DISCONNECTED",
+                    Description = "Student disconnected from session (detected on reconnect attempt).",
+                    SeverityScore = 0,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                await _context.SaveChangesAsync();
+
+                // Drain every stale map entry for this student so the late
+                // OnDisconnectedAsync (fires when the old TCP finally
+                // closes) won't corrupt the now-live participant state.
+                foreach (var staleId in staleConnectionIds)
+                    _activeStudentConnections.TryRemove(staleId, out _);
+
+                // Notify the IMC immediately. Existing handlers update the
+                // participant tile to red "Disconnected" and append the
+                // non-violation log entry to the Global Log Feed.
+                await Clients.Group(roomId.ToString()).SendAsync("StudentDisconnected", studentId);
+                await Clients.Group(roomId.ToString()).SendAsync("StudentConnectionLost", studentId);
+            }
+
             // SECURITY FIX: Rejoin must require teacher approval.
             // A participant whose previous state is "Disconnected" is NOT
             // allowed to silently reconnect — this was the auto-rejoin hole.
@@ -479,6 +551,29 @@ public class MonitoringHub : Hub
             if (studentId == 0)
             {
                 _logger.LogWarning("Disconnect: could not resolve studentId from claim OR connection map. connId={ConnId}", Context.ConnectionId);
+                await base.OnDisconnectedAsync(exception);
+                return;
+            }
+
+            // STALE-TIMEOUT GUARD (timing-race fix, companion to JoinLiveExam).
+            //
+            // If another live ConnectionId still exists in the map for the
+            // same student, the student already reconnected with a fresh
+            // socket. This callback is the LATE timeout of the previously
+            // dropped connection. Marking the participant as Disconnected
+            // here would corrupt the live state — skip silently.
+            bool studentHasNewerConnection = false;
+            foreach (var kv in _activeStudentConnections)
+            {
+                if (kv.Value.StudentId == studentId)
+                {
+                    studentHasNewerConnection = true;
+                    break;
+                }
+            }
+            if (studentHasNewerConnection)
+            {
+                _logger.LogInformation("Disconnect: ignoring stale timeout for studentId={StudentId} (already reconnected via a newer ConnectionId).", studentId);
                 await base.OnDisconnectedAsync(exception);
                 return;
             }
