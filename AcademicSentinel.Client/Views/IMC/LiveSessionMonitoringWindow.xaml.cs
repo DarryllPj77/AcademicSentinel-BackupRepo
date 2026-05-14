@@ -643,16 +643,37 @@ namespace AcademicSentinel.Client.Views.IMC
                     ResetToMainMonitoringView();
                 }
 
+                // Resolve the student's display name from whichever source
+                // is currently populated. The participant list refresh may
+                // have wiped ActiveStudents momentarily; falling back to
+                // the cached _allParticipants ensures the log line fires
+                // with a real name instead of being silently dropped.
                 var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
-                if (targetStudent == null)
-                    return;
+                string displayName = targetStudent?.Name
+                    ?? _allParticipants?.FirstOrDefault(p => p.StudentId == studentId)?.StudentName
+                    ?? _allParticipants?.FirstOrDefault(p => p.StudentId == studentId)?.StudentEmail
+                    ?? $"Student #{studentId}";
+                string displayEmail = targetStudent?.Email
+                    ?? _allParticipants?.FirstOrDefault(p => p.StudentId == studentId)?.StudentEmail
+                    ?? "SYSTEM";
 
-                targetStudent.IsOffline = true;
-                targetStudent.Status = "Offline/Disconnected";
-                targetStudent.StatusColor = "#D32F2F";
-                targetStudent.IsLeaveRequested = false;
+                if (targetStudent != null)
+                {
+                    targetStudent.IsOffline = true;
+                    targetStudent.Status = "Disconnected";
+                    targetStudent.StatusColor = "#D32F2F";
+                    targetStudent.IsLeaveRequested = false;
+                }
+
                 _leaveRequestedStateByStudentId[studentId] = false;
-                LogActivity("SYSTEM", "SYSTEM", $"⚠ CONNECTION LOST. {targetStudent.Name} disconnected unexpectedly.", "#D32F2F");
+
+                // ALWAYS log to the Global Feed — even if the student was
+                // momentarily absent from ActiveStudents (race with the
+                // periodic refresh). This is the entry the instructor
+                // expects to see for "STUDENT_DISCONNECTED" scenarios.
+                LogActivity(displayEmail, "STUDENT_DISCONNECTED",
+                    $"⚠ CONNECTION LOST. {displayName} disconnected unexpectedly.", "#D32F2F");
+
                 _studentsView.Refresh();
             })));
 
@@ -1060,7 +1081,12 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 ActiveStudents.Clear();
 
-                // 1. Add normal connected/disconnected students from the DB
+                // 1. Add normal connected/disconnected students from the DB.
+                //    Bug fix: previously this hardcoded Status="Connected"
+                //    for every row, which silently overwrote the red
+                //    "Offline/Disconnected" UI set by the StudentConnectionLost
+                //    SignalR handler each time the 4-second refresh ran.
+                //    Status text/color now derive from ParticipationStatus.
                 foreach (var p in participants.Where(p =>
                     (string.Equals(p.ParticipationStatus, "Joined", StringComparison.OrdinalIgnoreCase)
                      || string.Equals(p.ParticipationStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
@@ -1071,6 +1097,27 @@ namespace AcademicSentinel.Client.Views.IMC
                         continue;
 
                     var isLeaveRequested = _leaveRequestedStateByStudentId.TryGetValue(p.StudentId, out var requested) && requested;
+                    bool isDisconnected = string.Equals(p.ParticipationStatus, "Disconnected", StringComparison.OrdinalIgnoreCase);
+
+                    // Status precedence: leave-request > disconnected > connected.
+                    string statusText;
+                    string statusColor;
+                    if (isLeaveRequested)
+                    {
+                        statusText = "Wants to Leave";
+                        statusColor = "#FF9800";
+                    }
+                    else if (isDisconnected)
+                    {
+                        statusText = "Disconnected";
+                        statusColor = "#D32F2F";
+                    }
+                    else
+                    {
+                        statusText = "Connected";
+                        statusColor = "#4CAF50";
+                    }
+
                     ActiveStudents.Add(new LiveStudentStatus
                     {
                         StudentId = p.StudentId,
@@ -1083,8 +1130,9 @@ namespace AcademicSentinel.Client.Views.IMC
                                 : $"{ApiEndpoints.BaseUrl}{p.ProfileImageUrl}"),
                         HasViolation = _studentsWithViolations.Contains(p.StudentId),
                         IsLeaveRequested = isLeaveRequested,
-                        Status = isLeaveRequested ? "Wants to Leave" : "Connected",
-                        StatusColor = isLeaveRequested ? "#FF9800" : "#4CAF50"
+                        IsOffline = isDisconnected,
+                        Status = statusText,
+                        StatusColor = statusColor
                     });
                 }
 
