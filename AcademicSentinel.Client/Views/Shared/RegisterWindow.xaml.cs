@@ -86,7 +86,7 @@ namespace AcademicSentinel.Client.Views.Shared
             if (isSuccess)
             {
                 MessageBox.Show("Registration successful! You can now log in.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
-                new LoginWindow().Show();
+                new LoginWindow(AppMode.Role).Show();
                 this.Close();
             }
             else
@@ -99,9 +99,10 @@ namespace AcademicSentinel.Client.Views.Shared
 
         private void BtnClose_Click(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
 
+        // FIXED — passes AppMode.Role to LoginWindow
         private void LinkLoginHere_Click(object sender, MouseButtonEventArgs e)
         {
-            new LoginWindow().Show();
+            new LoginWindow(AppMode.Role).Show();
             this.Close();
         }
 
