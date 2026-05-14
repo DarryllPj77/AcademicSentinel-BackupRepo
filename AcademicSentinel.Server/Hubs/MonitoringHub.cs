@@ -18,6 +18,15 @@ public class MonitoringHub : Hub
     private readonly ILogger<MonitoringHub> _logger;
     private static readonly ConcurrentDictionary<int, bool> MonitoringStates = new();
 
+    // Connection-tracking map: ConnectionId → (StudentId, RoomId).
+    // SignalR's OnDisconnectedAsync can deliver an empty Context.User on
+    // abrupt drops (Task Manager kill, power loss, network failure), which
+    // causes ClaimTypes.NameIdentifier to come back null and silently
+    // skips the student-disconnect branch. This map is populated when the
+    // student successfully joins via JoinLiveExam and is the source of
+    // truth on disconnect, with the JWT claim used only as a fallback.
+    private static readonly ConcurrentDictionary<string, (int StudentId, int RoomId)> _activeStudentConnections = new();
+
     public MonitoringHub(AppDbContext context, IServiceScopeFactory scopeFactory, ILogger<MonitoringHub> logger)
     {
         _context = context;
@@ -370,6 +379,11 @@ public class MonitoringHub : Hub
 
             await _context.SaveChangesAsync();
 
+            // Register this connection so OnDisconnectedAsync can identify
+            // the dropped student even when Context.User claims come back
+            // null on an abrupt disconnect.
+            _activeStudentConnections[Context.ConnectionId] = (studentId, roomId);
+
             await Clients.Group(roomId.ToString()).SendAsync("StudentJoined", studentId);
             string studentDisplayName = string.IsNullOrWhiteSpace(studentUser.FullName) ? studentUser.Email : studentUser.FullName;
             await Clients.Group(roomId.ToString()).SendAsync("StudentJoinedOrReconnected", studentId, studentDisplayName);
@@ -443,8 +457,32 @@ public class MonitoringHub : Hub
                 // best-effort instructor disconnect handling under concurrent drops
             }
         }
-        else if (userIdString != null && int.TryParse(userIdString, out var studentId))
+        else
         {
+            // Resolve the dropped student. JWT claim is preferred, but on
+            // abrupt disconnects (Task Manager kill, network/power loss)
+            // Context.User can be empty — the per-connection map populated
+            // in JoinLiveExam is the reliable fallback. Always drain the
+            // map entry afterwards so the dictionary doesn't grow forever.
+            int studentId = 0;
+            if (userIdString != null && int.TryParse(userIdString, out var parsedFromClaim))
+            {
+                studentId = parsedFromClaim;
+            }
+            else if (_activeStudentConnections.TryGetValue(Context.ConnectionId, out var mapped))
+            {
+                studentId = mapped.StudentId;
+                _logger.LogInformation("Disconnect: resolved studentId={StudentId} from ConnectionId map (claim was null).", studentId);
+            }
+            _activeStudentConnections.TryRemove(Context.ConnectionId, out _);
+
+            if (studentId == 0)
+            {
+                _logger.LogWarning("Disconnect: could not resolve studentId from claim OR connection map. connId={ConnId}", Context.ConnectionId);
+                await base.OnDisconnectedAsync(exception);
+                return;
+            }
+
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
