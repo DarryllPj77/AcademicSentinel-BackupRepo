@@ -69,11 +69,19 @@ namespace AcademicSentinel.Client.Views.IMC
         public ObservableCollection<LiveStudentStatus> ActiveStudents { get; set; }
         public ObservableCollection<LogEntry> LogFeed { get; set; }
 
+        // True when the window opened via RoomDetailWindow's "Rejoin Session"
+        // button (2-arg ctor with no sessionId). False when opened from the
+        // Create Session setup wizard (sessionId passed). Used to discriminate
+        // the Window_Loaded state-sync path — only rejoins should adopt the
+        // server's current monitoring state; fresh creates start green.
+        private readonly bool _openedAsRejoin;
+
         public LiveSessionMonitoringWindow(int roomId, string roomTitle, int sessionId = 0, int monitoringDurationSeconds = 3600, bool endSessionWhenTimerEnds = true, int startDelaySeconds = 10)
         {
             InitializeComponent();
             _roomId = roomId;
             _currentSessionId = sessionId;
+            _openedAsRejoin = sessionId <= 0;
             _monitoringDurationSeconds = monitoringDurationSeconds;
             _endSessionWhenTimerEnds = endSessionWhenTimerEnds;
             _startDelaySeconds = Math.Max(0, startDelaySeconds);
@@ -123,16 +131,14 @@ namespace AcademicSentinel.Client.Views.IMC
             await InitializeSignalR();
             await _hubConnection.InvokeAsync("JoinRoom", _roomId.ToString());
 
-            // REJOIN STATE SYNC. When the teacher reopens this window via the
-            // RoomDetailWindow "Rejoin Session" button, the ctor knows the
-            // room id but not the active session id and assumes monitoring
-            // is Inactive — so the button shows green "Start Session
-            // Monitoring" and BtnEndSession can't actually end the session
-            // (PUT is skipped because _currentSessionId stays at 0).
-            // GET /api/rooms/{id}/status now returns activeSessionId; if
-            // monitoring is live, populate the field and switch the button
-            // to the Active (Pause Monitoring) state.
-            await SyncMonitoringStateFromServerAsync();
+            // REJOIN STATE SYNC — only when the window was opened via the
+            // RoomDetailWindow "Rejoin Session" button (no sessionId passed
+            // to the ctor). Fresh Create Session flows pass a real sessionId
+            // and must NOT adopt the server's state — those should start at
+            // green "Start Session Monitoring" because the teacher hasn't
+            // pressed Start yet.
+            if (_openedAsRejoin)
+                await SyncMonitoringStateFromServerAsync();
         }
 
         private async Task SyncMonitoringStateFromServerAsync()
