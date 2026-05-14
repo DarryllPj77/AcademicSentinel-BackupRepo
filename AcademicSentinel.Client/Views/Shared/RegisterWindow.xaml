@@ -295,82 +295,82 @@
                                    Margin="0,0,0,20"/>
 
                         <!-- Role Toggle -->
-                        <Border Background="#F0F2F5" CornerRadius="10" Padding="4" Margin="0,0,0,24">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <RadioButton x:Name="RbTeacher" Grid.Column="0"
-                                             GroupName="RoleGroup" IsChecked="True"
-                                             Checked="RoleToggle_Changed">
-                                    <RadioButton.Template>
-                                        <ControlTemplate TargetType="RadioButton">
-                                            <Border x:Name="roleBorder" Background="Transparent"
-                                                    CornerRadius="8" Padding="12,10" Cursor="Hand">
-                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                    <materialDesign:PackIcon x:Name="roleIcon" Kind="HumanMaleBoard"
-                                                                             Width="18" Height="18"
-                                                                             Foreground="#9E9E9E"
-                                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                                    <TextBlock x:Name="roleText" Text="Teacher"
-                                                               FontSize="13" FontWeight="Medium"
-                                                               Foreground="#9E9E9E"
-                                                               VerticalAlignment="Center"/>
-                                                </StackPanel>
-                                            </Border>
-                                            <ControlTemplate.Triggers>
-                                                <Trigger Property="IsChecked" Value="True">
-                                                    <Setter TargetName="roleBorder" Property="Background" Value="White"/>
-                                                    <Setter TargetName="roleText" Property="Foreground" Value="#1B5E20"/>
-                                                    <Setter TargetName="roleIcon" Property="Foreground" Value="#1B5E20"/>
-                                                    <Setter TargetName="roleText" Property="FontWeight" Value="SemiBold"/>
-                                                    <Setter TargetName="roleBorder" Property="Effect">
-                                                        <Setter.Value>
-                                                            <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.08" Color="Black"/>
-                                                        </Setter.Value>
-                                                    </Setter>
-                                                </Trigger>
-                                            </ControlTemplate.Triggers>
-                                        </ControlTemplate>
-                                    </RadioButton.Template>
-                                </RadioButton>
-                                <RadioButton x:Name="RbStudent" Grid.Column="1"
-                                             GroupName="RoleGroup"
-                                             Checked="RoleToggle_Changed">
-                                    <RadioButton.Template>
-                                        <ControlTemplate TargetType="RadioButton">
-                                            <Border x:Name="roleBorder" Background="Transparent"
-                                                    CornerRadius="8" Padding="12,10" Cursor="Hand">
-                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                    <materialDesign:PackIcon x:Name="roleIcon" Kind="SchoolOutline"
-                                                                             Width="18" Height="18"
-                                                                             Foreground="#9E9E9E"
-                                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                                    <TextBlock x:Name="roleText" Text="Student"
-                                                               FontSize="13" FontWeight="Medium"
-                                                               Foreground="#9E9E9E"
-                                                               VerticalAlignment="Center"/>
-                                                </StackPanel>
-                                            </Border>
-                                            <ControlTemplate.Triggers>
-                                                <Trigger Property="IsChecked" Value="True">
-                                                    <Setter TargetName="roleBorder" Property="Background" Value="White"/>
-                                                    <Setter TargetName="roleText" Property="Foreground" Value="#1B5E20"/>
-                                                    <Setter TargetName="roleIcon" Property="Foreground" Value="#1B5E20"/>
-                                                    <Setter TargetName="roleText" Property="FontWeight" Value="SemiBold"/>
-                                                    <Setter TargetName="roleBorder" Property="Effect">
-                                                        <Setter.Value>
-                                                            <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.08" Color="Black"/>
-                                                        </Setter.Value>
-                                                    </Setter>
-                                                </Trigger>
-                                            </ControlTemplate.Triggers>
-                                        </ControlTemplate>
-                                    </RadioButton.Template>
-                                </RadioButton>
-                            </Grid>
-                        </Border>
+						<Border Background="#F0F2F5" CornerRadius="10" Padding="4" Margin="0,0,0,24"
+								HorizontalAlignment="Center">
+							<StackPanel Orientation="Horizontal">
+								<RadioButton x:Name="RbTeacher"
+											 GroupName="RoleGroup" IsChecked="True"
+											 Checked="RoleToggle_Changed">
+									<RadioButton.Template>
+										<ControlTemplate TargetType="RadioButton">
+											<Border x:Name="roleBorder" Background="Transparent"
+													CornerRadius="8" Padding="12,10" Cursor="Hand"
+													MinWidth="120">
+												<StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+													<materialDesign:PackIcon x:Name="roleIcon" Kind="HumanMaleBoard"
+																			 Width="18" Height="18"
+																			 Foreground="#9E9E9E"
+																			 VerticalAlignment="Center" Margin="0,0,6,0"/>
+													<TextBlock x:Name="roleText" Text="Teacher"
+															   FontSize="13" FontWeight="Medium"
+															   Foreground="#9E9E9E"
+															   VerticalAlignment="Center"/>
+												</StackPanel>
+											</Border>
+											<ControlTemplate.Triggers>
+												<Trigger Property="IsChecked" Value="True">
+													<Setter TargetName="roleBorder" Property="Background" Value="White"/>
+													<Setter TargetName="roleText" Property="Foreground" Value="#1B5E20"/>
+													<Setter TargetName="roleIcon" Property="Foreground" Value="#1B5E20"/>
+													<Setter TargetName="roleText" Property="FontWeight" Value="SemiBold"/>
+													<Setter TargetName="roleBorder" Property="Effect">
+														<Setter.Value>
+															<DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.08" Color="Black"/>
+														</Setter.Value>
+													</Setter>
+												</Trigger>
+											</ControlTemplate.Triggers>
+										</ControlTemplate>
+									</RadioButton.Template>
+								</RadioButton>
+
+								<RadioButton x:Name="RbStudent"
+											 GroupName="RoleGroup"
+											 Checked="RoleToggle_Changed">
+									<RadioButton.Template>
+										<ControlTemplate TargetType="RadioButton">
+											<Border x:Name="roleBorder" Background="Transparent"
+													CornerRadius="8" Padding="12,10" Cursor="Hand"
+													MinWidth="120">
+												<StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+													<materialDesign:PackIcon x:Name="roleIcon" Kind="SchoolOutline"
+																			 Width="18" Height="18"
+																			 Foreground="#9E9E9E"
+																			 VerticalAlignment="Center" Margin="0,0,6,0"/>
+													<TextBlock x:Name="roleText" Text="Student"
+															   FontSize="13" FontWeight="Medium"
+															   Foreground="#9E9E9E"
+															   VerticalAlignment="Center"/>
+												</StackPanel>
+											</Border>
+											<ControlTemplate.Triggers>
+												<Trigger Property="IsChecked" Value="True">
+													<Setter TargetName="roleBorder" Property="Background" Value="White"/>
+													<Setter TargetName="roleText" Property="Foreground" Value="#1B5E20"/>
+													<Setter TargetName="roleIcon" Property="Foreground" Value="#1B5E20"/>
+													<Setter TargetName="roleText" Property="FontWeight" Value="SemiBold"/>
+													<Setter TargetName="roleBorder" Property="Effect">
+														<Setter.Value>
+															<DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.08" Color="Black"/>
+														</Setter.Value>
+													</Setter>
+												</Trigger>
+											</ControlTemplate.Triggers>
+										</ControlTemplate>
+									</RadioButton.Template>
+								</RadioButton>
+							</StackPanel>
+						</Border>
 
                         <!-- Full Name -->
                         <TextBlock Text="Full Name"

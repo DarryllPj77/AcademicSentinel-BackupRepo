@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Text.RegularExpressions;
 using AcademicSentinel.Client.Services;
 using AcademicSentinel.Client.Models;
+using AcademicSentinel.Client.Constants;
 
 namespace AcademicSentinel.Client.Views.Shared
 {
@@ -15,6 +16,19 @@ namespace AcademicSentinel.Client.Views.Shared
         {
             InitializeComponent();
             _authService = new AuthService();
+
+            // Apply AppMode role restriction
+            if (AppMode.Role == "Teacher")
+            {
+                RbTeacher.IsChecked = true;
+                RbStudent.Visibility = Visibility.Collapsed;
+            }
+            else if (AppMode.Role == "Student")
+            {
+                RbStudent.IsChecked = true;
+                RbTeacher.Visibility = Visibility.Collapsed;
+            }
+            // "All" → both tabs stay visible
         }
 
         private void Window_MouseDown(object sender, MouseButtonEventArgs e)
@@ -55,8 +69,6 @@ namespace AcademicSentinel.Client.Views.Shared
             }
 
             string selectedRole = RbTeacher.IsChecked == true ? "Instructor" : "Student";
-
-            // Removed the student block! Students can now register.
 
             var registerData = new UserRegisterDto
             {
