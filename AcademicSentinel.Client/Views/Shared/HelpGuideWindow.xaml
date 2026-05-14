@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
-        Title="FourCUDA - Help Guide"
+        Title="Academic Sentinel - Help Guide"
         Height="720" Width="900"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
@@ -36,6 +36,11 @@
     </Window.Resources>
 
     <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="54*"/>
+            <ColumnDefinition Width="17*"/>
+            <ColumnDefinition Width="829*"/>
+        </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -43,7 +48,7 @@
         </Grid.RowDefinitions>
 
         <!-- Header -->
-        <Border Grid.Row="0" Background="White" Padding="30,20">
+        <Border Grid.Row="0" Background="White" Padding="30,20" Grid.ColumnSpan="3">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.06" Color="Black"/>
             </Border.Effect>
@@ -66,7 +71,7 @@
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock x:Name="TxtHelpTitle" Text="Teacher Help Guide"
                                FontSize="22" FontWeight="Bold" Foreground="#1B5E20"/>
-                    <TextBlock x:Name="TxtHelpSubtitle" Text="Learn how to use the FourCUDA Anti-Cheating System"
+                    <TextBlock x:Name="TxtHelpSubtitle" Text="Learn how to use the Academic Sentinel Anti-Cheating System"
                                FontSize="13" Foreground="#9E9E9E" Margin="0,2,0,0"/>
                 </StackPanel>
 
@@ -91,300 +96,300 @@
         </Border>
 
         <!-- Content -->
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="30,20,30,10">
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="30,20,30,10" Grid.ColumnSpan="3">
             <Grid>
-            <!-- Teacher Guide Content -->
-            <StackPanel x:Name="TeacherGuidePanel" Visibility="Visible">
+                <!-- Teacher Guide Content -->
+                <StackPanel x:Name="TeacherGuidePanel" Visibility="Visible">
 
-                <!-- Getting Started Section -->
-                <TextBlock Text="Getting Started" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,0,0,14"/>
+                    <!-- Getting Started Section -->
+                    <TextBlock Text="Getting Started" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,0,0,14"/>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="1" Foreground="White" FontWeight="Bold" FontSize="14"
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="1" Foreground="White" FontWeight="Bold" FontSize="14"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Create your Account" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Use your school email and your password. You'll use these credentials to login."
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Create your Account" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Use your school email and your password. You'll use these credentials to login."
                                        FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="2" Foreground="White" FontWeight="Bold" FontSize="14"
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="2" Foreground="White" FontWeight="Bold" FontSize="14"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Create a Course Room" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Go to Courses tab and click 'Create'. Enter your course code, subject, and section to set up a room. Share the course code to your students so they can enroll."
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Create a Course Room" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Go to Courses tab and click 'Create'. Enter your course code, subject, and section to set up a room. Share the course code to your students so they can enroll."
                                        FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="3" Foreground="White" FontWeight="Bold" FontSize="14"
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="3" Foreground="White" FontWeight="Bold" FontSize="14"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Create an Exam Session" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Open a course room, click 'Create Session'. Choose the exam type (Summative, Midterm, Final) and configure the session."
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Create an Exam Session" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Open a course room, click 'Create Session'. Choose the exam type (Summative, Midterm, Final) and configure the session."
                                        FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <!-- Monitoring Section -->
-                <TextBlock Text="Session Monitoring" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
+                    <!-- Monitoring Section -->
+                    <TextBlock Text="Session Monitoring" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="4" Foreground="White" FontWeight="Bold" FontSize="14"
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="4" Foreground="White" FontWeight="Bold" FontSize="14"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Monitor Live Sessions" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="View real-time participant activity. See who's connected, track violations (tab switching, VM detection, screen capture), and review logs."
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Monitor Live Sessions" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="View real-time participant activity. See who's connected, track violations (tab switching, VM detection, screen capture), and review logs."
                                        FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="5" Foreground="White" FontWeight="Bold" FontSize="14"
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="5" Foreground="White" FontWeight="Bold" FontSize="14"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Manage Students" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Click on any participant to view details. You can remove students from sessions, check their violation count, and review individual logs."
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Manage Students" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Click on any participant to view details. You can remove students from sessions, check their violation count, and review individual logs."
                                        FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <!-- Anti-Cheat Rules Section -->
-                <TextBlock Text="Anti-Cheating Detection Rules" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
+                    <!-- Anti-Cheat Rules Section -->
+                    <TextBlock Text="Anti-Cheating Detection Rules" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel>
-                        <TextBlock Text="Environment Integrity (runs once at session start, again on every resume):" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,10"/>
-                        <StackPanel Margin="10,0,0,16">
-                            <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel>
+                            <TextBlock Text="Environment Integrity (runs once at session start, again on every resume):" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,10"/>
+                            <StackPanel Margin="10,0,0,16">
+                                <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
                                 <Run FontWeight="SemiBold" Foreground="#1B5E20">VAC — Virtualization Artifact Check</Run> - Detects VMware, VirtualBox, Parallels, Hyper-V, KVM, and Android emulators (BlueStacks, Nox, MEmu, LDPlayer, Genymotion). Aggressive — 50 pts.
-                            </TextBlock>
-                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
+                                </TextBlock>
+                                <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
                                 <Run FontWeight="SemiBold" Foreground="#1B5E20">HAS — Hardware/Software Artifact Scan</Run> - Detects debugger attached to SAC, system-time tampering (clock drift vs server). Aggressive — 50 pts (50 pts time tamper, 20 pts clock drift warning).
-                            </TextBlock>
-                        </StackPanel>
+                                </TextBlock>
+                            </StackPanel>
 
-                        <TextBlock Text="Behavioral Detection (continuous during the session):" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,10"/>
-                        <StackPanel Margin="10,0,0,0">
-                            <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
+                            <TextBlock Text="Behavioral Detection (continuous during the session):" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,10"/>
+                            <StackPanel Margin="10,0,0,0">
+                                <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
                                 <Run FontWeight="SemiBold" Foreground="#1B5E20">RTFM — Real-Time Focus Monitoring</Run> - Catches Alt+Tab and window switches. 3 focus losses within 60 s escalate to RTFM_RATE (aggressive 50 pts).
-                            </TextBlock>
-                            <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
+                                </TextBlock>
+                                <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
                                 <Run FontWeight="SemiBold" Foreground="#1B5E20">PBD — Process Blacklisting Detection</Run> - Continuous scan for messaging apps (Discord/Telegram/Teams/etc.), remote-access tools (TeamViewer, AnyDesk, RustDesk), screen recorders (OBS, Camtasia, Bandicam), AI chat platforms, secondary browsers, debuggers, and Android emulators. Aggressive — 50 pts.
-                            </TextBlock>
-                            <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
+                                </TextBlock>
+                                <TextBlock FontSize="13" Foreground="#616161" Margin="0,0,0,6" TextWrapping="Wrap">
                                 <Run FontWeight="SemiBold" Foreground="#1B5E20">CSAD — Clipboard &amp; Screenshot Activity Detection</Run> - Catches Ctrl+C / Ctrl+V, clipboard buffer changes, the PrintScreen key (low-level keyboard hook), and the Win+Shift+S Snipping Tool combo. Passive 10 pts → 20 pts on repeat.
-                            </TextBlock>
-                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
+                                </TextBlock>
+                                <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
                                 <Run FontWeight="SemiBold" Foreground="#1B5E20">IDLE — Inactivity Detection</Run> - Mouse + keyboard idle past your configured threshold. Passive — 10 pts.
-                            </TextBlock>
+                                </TextBlock>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel>
-                        <TextBlock Text="Risk Classification (BRBDE):" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,10"/>
-                        <StackPanel Margin="10,0,0,0">
-                            <TextBlock FontSize="13" Foreground="#2E7D32" Margin="0,0,0,4">Safe — total score &lt; 20</TextBlock>
-                            <TextBlock FontSize="13" Foreground="#FF9800" Margin="0,0,0,4">Suspicious — total score 20–49</TextBlock>
-                            <TextBlock FontSize="13" Foreground="#D32F2F">Cheating — total score ≥ 50</TextBlock>
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel>
+                            <TextBlock Text="Risk Classification (BRBDE):" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,10"/>
+                            <StackPanel Margin="10,0,0,0">
+                                <TextBlock FontSize="13" Foreground="#2E7D32" Margin="0,0,0,4">Safe — total score &lt; 20</TextBlock>
+                                <TextBlock FontSize="13" Foreground="#FF9800" Margin="0,0,0,4">Suspicious — total score 20–49</TextBlock>
+                                <TextBlock FontSize="13" Foreground="#D32F2F">Cheating — total score ≥ 50</TextBlock>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <!-- Pause/Resume + Strict Mode Section -->
-                <TextBlock Text="Session Controls" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
+                    <!-- Pause/Resume + Strict Mode Section -->
+                    <TextBlock Text="Session Controls" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
 
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel>
-                        <TextBlock Text="Pause / Resume Monitoring" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel>
+                            <TextBlock Text="Pause / Resume Monitoring" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
                             Click <Run FontWeight="SemiBold">Pause Monitoring</Run> to freeze detection (the session stays soft-locked, but no violations record). Click <Run FontWeight="SemiBold">Resume</Run> to restart with a 10-second countdown — students see "RESUMING IN Xs..." before detection re-engages.
-                        </TextBlock>
-                        <TextBlock Text="Strict Mode" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
+                            </TextBlock>
+                            <TextBlock Text="Strict Mode" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
                             Configurable per room (only while Pending). When ON: every passive event scores 20 instead of 10 (no 3-event warm-up), and the idle threshold is halved.
-                        </TextBlock>
-                        <TextBlock Text="Remove Student / Kick" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
+                            </TextBlock>
+                            <TextBlock Text="Remove Student / Kick" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
                             From the Live Monitoring console, click a participant → <Run FontWeight="SemiBold">Remove</Run>. The student sees a 5-second countdown banner and is auto-returned to their dashboard. If they try to rejoin, they go through the approval gate again.
-                        </TextBlock>
-                        <TextBlock Text="Approve a Student's 'Done'" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
-                            When a student presses <Run FontWeight="SemiBold">Done</Run>, you'll see a green DONE entry in the Global Log Feed. Open their participant card and click <Run FontWeight="SemiBold">Approve Leave</Run> — the student's SAC closes automatically.
-                        </TextBlock>
-                    </StackPanel>
-                </Border>
-
-                <!-- Reports Section -->
-                <TextBlock Text="Reports &amp; Archives" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
-
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel>
-                        <TextBlock Text="Past Sessions Table" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
-                            From any course room, scroll to <Run FontWeight="SemiBold">Past Sessions</Run>. Each row shows Session ID, Date, Duration, Attendees (attended/enrolled), Status, and a <Run FontWeight="SemiBold">View Archive</Run> button.
-                        </TextBlock>
-                        <TextBlock Text="Per-Student Logs &amp; PDF Export" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
-                            Inside the Session Archive, every student row has <Run FontWeight="SemiBold">View Logs</Run> and <Run FontWeight="SemiBold">Export PDF</Run>. View Logs opens a timeline of every detected event (timestamp, type, severity, description) so you can review before exporting. The dialog has its own Export button if you decide to commit to a PDF.
-                        </TextBlock>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
-
-            <!-- Student Guide Content (shown when opened from student side) -->
-            <StackPanel x:Name="StudentGuidePanel" Visibility="Collapsed">
-
-                <TextBlock Text="Getting Started" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,0,0,14"/>
-
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="1" Foreground="White" FontWeight="Bold" FontSize="14"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Log In Your Account" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Use your School Email and password to login."
-                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="2" Foreground="White" FontWeight="Bold" FontSize="14"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="View Your Enrolled Courses" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Your Dashboard shows all the courses that you are enrolled in."
-                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="3" Foreground="White" FontWeight="Bold" FontSize="14"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Join an Exam Session" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Click the course that you are required to take an exam and join the session."
-                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-
-                <!-- During Exam Section -->
-                <TextBlock Text="During the Exam" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
-
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel Orientation="Horizontal">
-                        <Border Style="{StaticResource StepNumber}">
-                            <TextBlock Text="4" Foreground="White" FontWeight="Bold" FontSize="14"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Stay Focused on the Exam" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
-                            <TextBlock Text="Keep the Secure Assessment Client (SAC) window in front. Do not switch tabs, Alt+Tab, run other applications, or use virtual machines / Android emulators (BlueStacks, Nox, etc.). The system monitors your activity and reports violations to your teacher in real time."
-                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-
-                <!-- Soft-Lock Window Section -->
-                <TextBlock Text="The Soft-Lock Window" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
-
-                <Border Style="{StaticResource StepCard}">
-                    <StackPanel>
-                        <TextBlock Text="What is the Soft-Lock window?" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
-                            When the instructor starts the session, the SAC switches into Soft-Lock mode. The window stays visible (full or compact overlay), and the only way out is the <Run FontWeight="SemiBold">Done</Run> button. You cannot minimize the window — Win+D, the minimize button, and the taskbar all bounce it back into a small always-on-top overlay.
-                        </TextBlock>
-
-                        <TextBlock Text="States you'll see" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <StackPanel Margin="10,0,0,12">
-                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,4">
-                                <Run FontWeight="SemiBold" Foreground="#2E7D32">Monitoring: Waiting</Run> — instructor hasn't started yet. You can leave freely with the green <Run FontWeight="SemiBold">Leave Session</Run> button.
                             </TextBlock>
-                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,4">
-                                <Run FontWeight="SemiBold" Foreground="#FF9800">STARTING IN Xs… / RESUMING IN Xs…</Run> — countdown before monitoring engages. No buttons during this phase.
-                            </TextBlock>
-                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,4">
-                                <Run FontWeight="SemiBold" Foreground="#D32F2F">Monitoring: Active / Leave Permission: Blocked</Run> — exam in progress. Only the green <Run FontWeight="SemiBold">Done</Run> button is available.
-                            </TextBlock>
+                            <TextBlock Text="Approve a Student's 'Done'" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
                             <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
-                                <Run FontWeight="SemiBold" Foreground="#FF9800">PAUSED BY INSTRUCTOR</Run> — monitoring is temporarily frozen. ALL buttons disappear; just wait for the instructor to resume.
+                            When a student presses <Run FontWeight="SemiBold">Done</Run>, you'll see a green DONE entry in the Global Log Feed. Open their participant card and click <Run FontWeight="SemiBold">Approve Leave</Run> — the student's SAC closes automatically.
                             </TextBlock>
                         </StackPanel>
+                    </Border>
 
-                        <TextBlock Text="The Done Button" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
-                        <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
-                            When you finish your exam, click <Run FontWeight="SemiBold">Done</Run>. Your instructor is notified ("DONE — awaiting instructor approval"). The button locks while you wait. Once your instructor approves, the SAC <Run FontWeight="SemiBold">automatically closes and returns you to your dashboard</Run> — no second click needed. There is no other way to leave during an active session.
-                        </TextBlock>
-                    </StackPanel>
-                </Border>
+                    <!-- Reports Section -->
+                    <TextBlock Text="Reports &amp; Archives" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
 
-                <!-- Important Rules -->
-                <TextBlock Text="Actions Flagged as Violations" FontSize="18" FontWeight="Bold" Foreground="#D32F2F" Margin="0,20,0,14"/>
-
-                <Border Style="{StaticResource StepCard}" BorderBrush="#FFCDD2" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="Avoid all of the following during an active session:" FontSize="14" FontWeight="SemiBold" Foreground="#D32F2F" Margin="0,0,0,10"/>
-                        <StackPanel Margin="10,0,0,0">
-                            <TextBlock Text="• Alt+Tab or switching to other windows (3 in 60 seconds = aggressive violation)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                            <TextBlock Text="• Copy / Paste (Ctrl+C, Ctrl+V) — clipboard activity is logged" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                            <TextBlock Text="• PrintScreen, Snipping Tool (Win+Shift+S), or any screen-capture utility" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                            <TextBlock Text="• Running the exam in a virtual machine (VMware, VirtualBox, Hyper-V, Parallels)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                            <TextBlock Text="• Running an Android emulator (BlueStacks, Nox, MEmu, LDPlayer, Genymotion)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                            <TextBlock Text="• Opening blacklisted apps: Discord, Telegram, Teams, Zoom, AnyDesk, TeamViewer, OBS, ChatGPT/Copilot/Claude desktop, secondary browsers, debuggers" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                            <TextBlock Text="• Manually changing your system clock during the session (system-time tampering = aggressive violation)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                            <TextBlock Text="• Going idle past the configured threshold (no mouse / keyboard activity)" FontSize="13" Foreground="#616161" TextWrapping="Wrap"/>
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel>
+                            <TextBlock Text="Past Sessions Table" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
+                            From any course room, scroll to <Run FontWeight="SemiBold">Past Sessions</Run>. Each row shows Session ID, Date, Duration, Attendees (attended/enrolled), Status, and a <Run FontWeight="SemiBold">View Archive</Run> button.
+                            </TextBlock>
+                            <TextBlock Text="Per-Student Logs &amp; PDF Export" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
+                            Inside the Session Archive, every student row has <Run FontWeight="SemiBold">View Logs</Run> and <Run FontWeight="SemiBold">Export PDF</Run>. View Logs opens a timeline of every detected event (timestamp, type, severity, description) so you can review before exporting. The dialog has its own Export button if you decide to commit to a PDF.
+                            </TextBlock>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- Student Guide Content (shown when opened from student side) -->
+                <StackPanel x:Name="StudentGuidePanel" Visibility="Collapsed">
+
+                    <TextBlock Text="Getting Started" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,0,0,14"/>
+
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="1" Foreground="White" FontWeight="Bold" FontSize="14"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Log In Your Account" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Use your School Email and password to login."
+                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="2" Foreground="White" FontWeight="Bold" FontSize="14"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="View Your Enrolled Courses" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Your Dashboard shows all the courses that you are enrolled in."
+                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="3" Foreground="White" FontWeight="Bold" FontSize="14"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Join an Exam Session" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Click the course that you are required to take an exam and join the session."
+                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- During Exam Section -->
+                    <TextBlock Text="During the Exam" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
+
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Style="{StaticResource StepNumber}">
+                                <TextBlock Text="4" Foreground="White" FontWeight="Bold" FontSize="14"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Stay Focused on the Exam" FontSize="15" FontWeight="SemiBold" Foreground="#1B1B1B"/>
+                                <TextBlock Text="Keep the Secure Assessment Client (SAC) window in front. Do not switch tabs, Alt+Tab, run other applications, or use virtual machines / Android emulators (BlueStacks, Nox, etc.). The system monitors your activity and reports violations to your teacher in real time."
+                                       FontSize="13" Foreground="#616161" TextWrapping="Wrap" MaxWidth="680"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Soft-Lock Window Section -->
+                    <TextBlock Text="The Soft-Lock Window" FontSize="18" FontWeight="Bold" Foreground="#1B5E20" Margin="0,20,0,14"/>
+
+                    <Border Style="{StaticResource StepCard}">
+                        <StackPanel>
+                            <TextBlock Text="What is the Soft-Lock window?" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,12">
+                            When the instructor starts the session, the SAC switches into Soft-Lock mode. The window stays visible (full or compact overlay), and the only way out is the <Run FontWeight="SemiBold">Done</Run> button. You cannot minimize the window — Win+D, the minimize button, and the taskbar all bounce it back into a small always-on-top overlay.
+                            </TextBlock>
+
+                            <TextBlock Text="States you'll see" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <StackPanel Margin="10,0,0,12">
+                                <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,4">
+                                <Run FontWeight="SemiBold" Foreground="#2E7D32">Monitoring: Waiting</Run> — instructor hasn't started yet. You can leave freely with the green <Run FontWeight="SemiBold">Leave Session</Run> button.
+                                </TextBlock>
+                                <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,4">
+                                <Run FontWeight="SemiBold" Foreground="#FF9800">STARTING IN Xs… / RESUMING IN Xs…</Run> — countdown before monitoring engages. No buttons during this phase.
+                                </TextBlock>
+                                <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap" Margin="0,0,0,4">
+                                <Run FontWeight="SemiBold" Foreground="#D32F2F">Monitoring: Active / Leave Permission: Blocked</Run> — exam in progress. Only the green <Run FontWeight="SemiBold">Done</Run> button is available.
+                                </TextBlock>
+                                <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
+                                <Run FontWeight="SemiBold" Foreground="#FF9800">PAUSED BY INSTRUCTOR</Run> — monitoring is temporarily frozen. ALL buttons disappear; just wait for the instructor to resume.
+                                </TextBlock>
+                            </StackPanel>
+
+                            <TextBlock Text="The Done Button" FontSize="14" FontWeight="SemiBold" Foreground="#1B1B1B" Margin="0,0,0,6"/>
+                            <TextBlock FontSize="13" Foreground="#616161" TextWrapping="Wrap">
+                            When you finish your exam, click <Run FontWeight="SemiBold">Done</Run>. Your instructor is notified ("DONE — awaiting instructor approval"). The button locks while you wait. Once your instructor approves, the SAC <Run FontWeight="SemiBold">automatically closes and returns you to your dashboard</Run> — no second click needed. There is no other way to leave during an active session.
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Important Rules -->
+                    <TextBlock Text="Actions Flagged as Violations" FontSize="18" FontWeight="Bold" Foreground="#D32F2F" Margin="0,20,0,14"/>
+
+                    <Border Style="{StaticResource StepCard}" BorderBrush="#FFCDD2" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="Avoid all of the following during an active session:" FontSize="14" FontWeight="SemiBold" Foreground="#D32F2F" Margin="0,0,0,10"/>
+                            <StackPanel Margin="10,0,0,0">
+                                <TextBlock Text="• Alt+Tab or switching to other windows (3 in 60 seconds = aggressive violation)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <TextBlock Text="• Copy / Paste (Ctrl+C, Ctrl+V) — clipboard activity is logged" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <TextBlock Text="• PrintScreen, Snipping Tool (Win+Shift+S), or any screen-capture utility" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <TextBlock Text="• Running the exam in a virtual machine (VMware, VirtualBox, Hyper-V, Parallels)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <TextBlock Text="• Running an Android emulator (BlueStacks, Nox, MEmu, LDPlayer, Genymotion)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <TextBlock Text="• Opening blacklisted apps: Discord, Telegram, Teams, Zoom, AnyDesk, TeamViewer, OBS, ChatGPT/Copilot/Claude desktop, secondary browsers, debuggers" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <TextBlock Text="• Manually changing your system clock during the session (system-time tampering = aggressive violation)" FontSize="13" Foreground="#616161" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <TextBlock Text="• Going idle past the configured threshold (no mouse / keyboard activity)" FontSize="13" Foreground="#616161" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
             </Grid>
         </ScrollViewer>
 
         <!-- Footer -->
-        <Border Grid.Row="2" Background="White" Padding="30,14">
+        <Border Grid.Row="1" Background="White" Padding="30,14" Grid.ColumnSpan="3" Margin="0,570,0,0">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="8" ShadowDepth="-1" Opacity="0.06" Color="Black"/>
             </Border.Effect>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                 <materialDesign:PackIcon Kind="ShieldCheckOutline" Width="18" Height="18"
                                          Foreground="#1B5E20" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBlock Text="FourCUDA Anti-Cheating System - FEU Tech"
+                <TextBlock Text="Academic Sentinel Anti-Cheating System"
                            FontSize="12" Foreground="#9E9E9E" VerticalAlignment="Center"/>
             </StackPanel>
         </Border>

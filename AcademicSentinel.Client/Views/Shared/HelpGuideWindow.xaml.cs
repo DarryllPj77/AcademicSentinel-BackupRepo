@@ -16,14 +16,14 @@ namespace AcademicSentinel.Client.Views.Shared
             if (mode == GuideMode.Student)
             {
                 TxtHelpTitle.Text = "Student Help Guide";
-                TxtHelpSubtitle.Text = "Learn how to use the FourCUDA system as a student";
+                TxtHelpSubtitle.Text = "Learn how to use the Academic Sentinel system as a student";
                 TeacherGuidePanel.Visibility = Visibility.Collapsed;
                 StudentGuidePanel.Visibility = Visibility.Visible;
             }
             else
             {
                 TxtHelpTitle.Text = "Teacher Help Guide";
-                TxtHelpSubtitle.Text = "Learn how to use the FourCUDA Anti-Cheating System";
+                TxtHelpSubtitle.Text = "Learn how to use the Academic Sentinel Anti-Cheating System";
                 TeacherGuidePanel.Visibility = Visibility.Visible;
                 StudentGuidePanel.Visibility = Visibility.Collapsed;
             }
