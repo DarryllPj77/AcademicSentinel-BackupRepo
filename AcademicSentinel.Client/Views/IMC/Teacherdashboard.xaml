@@ -8,10 +8,7 @@
         Title="Teacher Dashboard - FourCUDA"
         Height="720" Width="1280"
         WindowStartupLocation="CenterScreen"
-        WindowStyle="None" 
-        AllowsTransparency="True" 
         ResizeMode="CanResize"
-        MouseLeftButtonDown="Window_MouseDown"
         Background="#F5F5F5"
         FontFamily="{materialDesign:MaterialDesignFont}"
         TextElement.Foreground="#1B1B1B"
@@ -294,18 +291,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="Teacher Dashboard" FontSize="22" FontWeight="Bold" Foreground="{StaticResource FEUGreenBrush}" VerticalAlignment="Center"/>
-                    <!-- Window Controls with MaterialDesign Icons -->
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMinimize_Click" Margin="4,0" ToolTip="Minimize">
-                            <materialDesign:PackIcon Kind="WindowMinimize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMaximize_Click" Margin="4,0" ToolTip="Maximize">
-                            <materialDesign:PackIcon Kind="WindowMaximize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUDangerButton}" Padding="0" Click="BtnClose_Click" ToolTip="Close">
-                            <materialDesign:PackIcon Kind="WindowClose" Width="16" Height="16"/>
-                        </Button>
-                    </StackPanel>
+                    <!-- Custom Window-Control buttons removed — using the
+                         WPF default title-bar chrome instead. -->
                 </Grid>
             </Border>
 

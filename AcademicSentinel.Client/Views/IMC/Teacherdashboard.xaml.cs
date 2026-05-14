@@ -22,14 +22,26 @@ namespace AcademicSentinel.Client.Views.IMC
     {
         public ObservableCollection<CourseItem> Courses { get; set; }
 
+        // Cross-window persistence of the Maximized / Normal flag. The
+        // teacher's dashboard closes when they click a course tile (the
+        // RoomDetailWindow opens in its place); when they navigate back,
+        // a fresh TeacherDashboard is constructed. Without this cache it
+        // would always open at the default 1280x720 — even if the user
+        // had it maximized before. RoomDetailWindow reads/writes the
+        // same field so the chain teacher → room → teacher preserves the
+        // window state on every hop.
+        internal static WindowState LastWindowState = WindowState.Normal;
+
         public TeacherDashboard() : this(landOnProfile: false) { }
 
-        // Overload: lets the caller (e.g. the Profile sidebar button on
-        // RoomDetailWindow) request that the dashboard opens directly on the
-        // Account Profile panel instead of the default Courses panel.
         public TeacherDashboard(bool landOnProfile)
         {
             InitializeComponent();
+
+            // Apply the cached state on every construction so the back-nav
+            // from RoomDetailWindow lands in the same Maximized/Normal mode
+            // the teacher was previously in.
+            this.WindowState = LastWindowState;
 
             Courses = new ObservableCollection<CourseItem>();
             CoursesItemsControl.ItemsSource = Courses;
@@ -191,30 +203,6 @@ namespace AcademicSentinel.Client.Views.IMC
                 // Quietly ignore network errors on startup so it doesn't crash the dashboard
                 Console.WriteLine($"Could not load profile picture: {ex.Message}");
             }
-        }
-
-        // ======================== WINDOW DRAG & CONTROLS ========================
-
-        // Makes the custom borderless window draggable!
-        private void Window_MouseDown(object sender, MouseButtonEventArgs e)
-        {
-            if (e.ChangedButton == MouseButton.Left)
-            {
-                this.DragMove();
-            }
-        }
-
-        private void BtnMinimize_Click(object sender, RoutedEventArgs e)
-            => this.WindowState = WindowState.Minimized;
-
-        private void BtnMaximize_Click(object sender, RoutedEventArgs e)
-            => this.WindowState = this.WindowState == WindowState.Maximized
-                ? WindowState.Normal : WindowState.Maximized;
-
-        private void BtnClose_Click(object sender, RoutedEventArgs e)
-        {
-            // Shuts down the whole app when the main dashboard is closed
-            Application.Current.Shutdown();
         }
 
         // ======================== SIDEBAR NAVIGATION ========================
@@ -691,8 +679,16 @@ namespace AcademicSentinel.Client.Views.IMC
 
             string roomTitle = $"{courseItem.CourseLogo} - {courseItem.CourseDescription}";
 
+            // Cache the current window state so the room detail (and the
+            // dashboard when the teacher navigates back) open in the same
+            // Maximized / Normal mode the teacher was using.
+            LastWindowState = this.WindowState;
+
             // 1. Create the new Room Detail window
-            var roomDetail = new RoomDetailWindow(courseItem.RoomId, roomTitle);
+            var roomDetail = new RoomDetailWindow(courseItem.RoomId, roomTitle)
+            {
+                WindowState = this.WindowState
+            };
 
             // 2. Show the new window
             roomDetail.Show();

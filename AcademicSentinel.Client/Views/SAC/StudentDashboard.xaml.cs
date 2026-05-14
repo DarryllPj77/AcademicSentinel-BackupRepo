@@ -516,9 +516,9 @@ namespace AcademicSentinel.Client.Views.SAC
                 MessageBox.Show($"Failed to change password: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
-        private void BtnMinimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
-        private void BtnMaximize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-        private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
+        // Custom window-control handlers removed — Student Dashboard now
+        // uses the WPF default title-bar chrome (minimize/maximize/close
+        // are handled by the OS).
 
         protected override void OnClosing(CancelEventArgs e)
         {

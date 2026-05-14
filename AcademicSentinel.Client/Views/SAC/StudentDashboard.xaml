@@ -413,17 +413,8 @@
                                Foreground="{StaticResource FEUGreenBrush}"
                                VerticalAlignment="Center"/>
 
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMinimize_Click" Margin="4,0" ToolTip="Minimize">
-                            <materialDesign:PackIcon Kind="WindowMinimize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMaximize_Click" Margin="4,0" ToolTip="Maximize">
-                            <materialDesign:PackIcon Kind="WindowMaximize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUDangerButton}" Padding="0" Click="BtnClose_Click" ToolTip="Close">
-                            <materialDesign:PackIcon Kind="WindowClose" Width="16" Height="16"/>
-                        </Button>
-                    </StackPanel>
+                    <!-- Custom Window-Control buttons removed — Student
+                         Dashboard uses the WPF default title-bar chrome. -->
                 </Grid>
             </Border>
 

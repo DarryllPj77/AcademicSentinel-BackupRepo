@@ -93,7 +93,14 @@ namespace AcademicSentinel.Client.Views.IMC
         // Helper method to handle the transition.
         private void NavigateBackToDashboard(bool landOnProfile)
         {
-            var dashboard = new TeacherDashboard(landOnProfile);
+            // Persist the current window state so the dashboard reopens
+            // in the same Maximized/Normal mode the teacher had here.
+            TeacherDashboard.LastWindowState = this.WindowState;
+
+            var dashboard = new TeacherDashboard(landOnProfile)
+            {
+                WindowState = this.WindowState
+            };
             dashboard.Show();
 
             // Close this Room Detail window to prevent window piling
