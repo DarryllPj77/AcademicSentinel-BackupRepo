@@ -254,6 +254,54 @@ public class MonitoringHub : Hub
                 return;
             }
 
+            // SECURITY FIX: Rejoin must require teacher approval.
+            // A participant whose previous state is "Disconnected" is NOT
+            // allowed to silently reconnect — this was the auto-rejoin hole.
+            // Mark them Pending, log the request, and notify the instructor
+            // so they can Approve/Deny via the existing approval UI.
+            if (participant != null
+                && string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(participant.JoinApprovalStatus, "Approved", StringComparison.OrdinalIgnoreCase))
+            {
+                participant.JoinApprovalStatus = "Pending";
+                participant.IsCurrentlyActive = false;
+
+                _context.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    RoomId = roomId,
+                    StudentId = studentId,
+                    EventType = "REJOIN_REQUESTED",
+                    Description = "Student attempted to rejoin after a disconnect — awaiting instructor approval.",
+                    SeverityScore = 0,
+                    Timestamp = DateTime.UtcNow
+                });
+                await _context.SaveChangesAsync();
+
+                string studentLabel = string.IsNullOrWhiteSpace(studentUser.FullName)
+                    ? studentUser.Email : studentUser.FullName;
+
+                // Broadcast the rejoin request to the instructor. Payload
+                // shape matches StudentPendingApproval so the IMC can reuse
+                // its existing approval card UI without a new code path.
+                await Clients.Group(roomId.ToString()).SendAsync("RejoinRequest", new
+                {
+                    roomId,
+                    studentId,
+                    participantId = participant.Id,
+                    studentName = studentLabel,
+                    studentEmail = studentUser.Email,
+                    profileImageUrl = studentUser.ProfileImageUrl,
+                    isRejoin = true,
+                    isLate = false,
+                    requestedAt = DateTime.UtcNow
+                });
+
+                // Tell the student to display a pending-approval overlay
+                // instead of pretending they reconnected successfully.
+                await Clients.Caller.SendAsync("AwaitingRejoinApproval", roomId);
+                return;
+            }
+
             if (participant == null)
             {
                 participant = new SessionParticipant
@@ -323,15 +371,34 @@ public class MonitoringHub : Hub
                         .OrderByDescending(s => s.StartTime)
                         .FirstOrDefaultAsync();
 
+                    // FIX: Ghost Sessions. Status must transition to a
+                    // value the history endpoint keeps. "Interrupted"
+                    // distinguishes a teacher-drop from a clean "Completed"
+                    // close, while still appearing in Past Sessions.
                     activeRoom.Status = "Ended";
                     if (activeSession != null)
                     {
-                        activeSession.Status = "Ended";
+                        activeSession.Status = "Interrupted";
                         activeSession.EndTime = DateTime.UtcNow;
                     }
 
+                    // Audit-trail event for the room history.
+                    db.MonitoringEvents.Add(new MonitoringEvent
+                    {
+                        RoomId = activeRoom.Id,
+                        StudentId = 0,
+                        EventType = "TEACHER_DISCONNECTED",
+                        Description = "Instructor lost connection mid-session — session marked Interrupted.",
+                        SeverityScore = 0,
+                        Timestamp = DateTime.UtcNow
+                    });
+
                     await db.SaveChangesAsync();
 
+                    // Distinct TeacherDisconnected so the SAC can render its
+                    // own "Connection to Instructor Lost" banner; legacy
+                    // SessionInterrupted kept so older clients still tear down.
+                    await Clients.Group(activeRoom.Id.ToString()).SendAsync("TeacherDisconnected", activeRoom.Id);
                     await Clients.Group(activeRoom.Id.ToString()).SendAsync("SessionInterrupted", activeRoom.Id);
                 }
             }
@@ -365,10 +432,13 @@ public class MonitoringHub : Hub
                     participant.ConnectionStatus = "Disconnected";
                     participant.DisconnectedAt = DateTime.UtcNow;
 
+                    // Structured event type so the StudentLogsPreviewDialog's
+                    // violations breakdown groups student drops as their own
+                    // category rather than burying them under "SYSTEM".
                     db.MonitoringEvents.Add(new MonitoringEvent
                     {
-                        EventType = "SYSTEM",
-                        Description = "⚠️ CONNECTION LOST. Student dropped offline.",
+                        EventType = "STUDENT_DISCONNECTED",
+                        Description = "Student lost connection to the session.",
                         SeverityScore = 0,
                         RoomId = participant.RoomId,
                         StudentId = studentId,

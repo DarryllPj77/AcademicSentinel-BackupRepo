@@ -746,6 +746,30 @@ namespace AcademicSentinel.Client.Views.IMC
                 UpdateParticipantCount();
             })));
 
+            // RejoinRequest is the new event the hub fires when a previously
+            // disconnected student tries to come back. Payload shape is
+            // identical to StudentPendingApproval — surface it through the
+            // exact same approval card UI so no new code path is needed.
+            _hubSubscriptions.Add(_hubConnection.On<JoinApprovalRequestDto>("RejoinRequest", payload => Dispatcher.Invoke(() =>
+            {
+                if (payload == null) return;
+                _pendingJoinApprovals[payload.StudentId] = payload;
+
+                var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
+                if (targetStudent != null)
+                {
+                    targetStudent.IsOffline = false;
+                    targetStudent.IsJoinApprovalPending = true;
+                    targetStudent.Status = "Waiting to Rejoin";
+                    targetStudent.StatusColor = "#FF9800";
+                }
+
+                LogActivity(payload.StudentEmail ?? "SYSTEM", "REJOIN_REQ",
+                    "Disconnected student attempting to rejoin — awaiting approval.", "#FF9800");
+                _studentsView.Refresh();
+                UpdateParticipantCount();
+            })));
+
             _hubSubscriptions.Add(_hubConnection.On<dynamic>("StudentJoinApprovalResolved", payload => Dispatcher.Invoke(() =>
             {
                 try

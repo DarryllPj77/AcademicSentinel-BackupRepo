@@ -254,12 +254,17 @@ public class RoomsController : ControllerBase
     }
 
     // GET: api/rooms/{roomId}/history
-    // Fetches all past completed sessions for this specific room
+    // Fetches all past sessions for this room — both cleanly Completed
+    // sessions AND sessions Interrupted by a teacher disconnect. The
+    // Interrupted status is what OnDisconnectedAsync writes when the
+    // instructor drops mid-session; without including it here, those
+    // sessions would vanish from the Past Sessions table (Ghost Sessions).
     [HttpGet("{roomId}/history")]
     public async Task<IActionResult> GetRoomHistory(int roomId)
     {
         var history = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Completed")
+            .Where(s => s.RoomId == roomId
+                        && (s.Status == "Completed" || s.Status == "Interrupted"))
             .OrderByDescending(s => s.StartTime)
             .ToListAsync();
 

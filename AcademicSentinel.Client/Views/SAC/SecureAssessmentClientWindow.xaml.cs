@@ -314,6 +314,26 @@ namespace AcademicSentinel.Client.Views.SAC
             // intentionally empty: no dummy detector data in production flow
         }
 
+        /// <summary>
+        /// Toggles the yellow connection-lost banner that sits above the
+        /// main content area. The banner element lives in the XAML
+        /// (TeacherDisconnectedBanner); this helper centralizes the
+        /// visibility / message writes so the hub event handlers stay terse.
+        /// </summary>
+        private void ShowTeacherDisconnectedBanner(string message)
+        {
+            if (FindName("TeacherDisconnectedBanner") is FrameworkElement banner)
+                banner.Visibility = Visibility.Visible;
+            if (FindName("TxtTeacherDisconnectedBanner") is System.Windows.Controls.TextBlock txt)
+                txt.Text = message;
+        }
+
+        private void HideTeacherDisconnectedBanner()
+        {
+            if (FindName("TeacherDisconnectedBanner") is FrameworkElement banner)
+                banner.Visibility = Visibility.Collapsed;
+        }
+
         private void SetMonitoringActive(bool isActive)
         {
             _isMonitoringActive = isActive;
@@ -1061,6 +1081,26 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
+                // Hub fires TeacherDisconnected the instant the instructor's
+                // SignalR connection drops, BEFORE the slower SessionInterrupted
+                // teardown. Pop the yellow banner immediately so the student
+                // has visible feedback that the network is the problem.
+                _hubConnection.On<int>("TeacherDisconnected", droppedRoomId =>
+                {
+                    if (droppedRoomId != _roomId) return;
+                    Dispatcher.Invoke(() => ShowTeacherDisconnectedBanner(
+                        "Connection to Instructor Lost. Reconnecting..."));
+                });
+
+                // Reconnect attempt got rerouted through the approval gate.
+                // Reuse the banner element with different copy.
+                _hubConnection.On<int>("AwaitingRejoinApproval", pendingRoomId =>
+                {
+                    if (pendingRoomId != _roomId) return;
+                    Dispatcher.Invoke(() => ShowTeacherDisconnectedBanner(
+                        "Reconnection request sent. Waiting for instructor approval..."));
+                });
+
                 // Server side: RoomsController.RemoveStudentFromCurrentSession sends
                 //     Clients.User(studentId).SendAsync("RemovedFromSession", roomId)
                 // The integer payload is the ROOM id, not the student id. The previous
@@ -1149,6 +1189,10 @@ namespace AcademicSentinel.Client.Views.SAC
 
                         if (WaitingScreenOverlay != null)
                             WaitingScreenOverlay.Visibility = Visibility.Collapsed;
+
+                        // Hide the connection-lost banner — the rejoin was
+                        // approved, so the student is back in.
+                        HideTeacherDisconnectedBanner();
 
                         await StartLiveExamAsync();
                     });

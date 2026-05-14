@@ -27,6 +27,25 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
+        <!-- Connection-lost banner. Toggled programmatically by the
+             TeacherDisconnected hub event. Sits as an overlay on row 1 so it
+             appears below the header without changing row indices used by
+             the rest of the window. -->
+        <Border x:Name="TeacherDisconnectedBanner" Grid.Row="1"
+                Background="#FFF8E1" BorderBrush="#FFB300" BorderThickness="0,0,0,2"
+                Padding="20,10" VerticalAlignment="Top"
+                Visibility="Collapsed" Panel.ZIndex="100">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                <materialDesign:PackIcon Kind="WifiAlert" Width="22" Height="22"
+                                         Foreground="#E65100" VerticalAlignment="Center"
+                                         Margin="0,0,10,0"/>
+                <TextBlock x:Name="TxtTeacherDisconnectedBanner"
+                           Text="Connection to Instructor Lost. Reconnecting..."
+                           FontSize="14" FontWeight="SemiBold"
+                           Foreground="#E65100" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+
         <!-- ======================== TOP HEADER BAR ======================== -->
         <Border Grid.Row="0" Background="White" Padding="24,14">
             <Border.Effect>
