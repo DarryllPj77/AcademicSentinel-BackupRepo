@@ -314,6 +314,12 @@ namespace AcademicSentinel.Client.Views.SAC
             // intentionally empty: no dummy detector data in production flow
         }
 
+        // DispatcherTimer used by the green "Instructor reconnected" banner
+        // to auto-hide itself a few seconds after appearing — single
+        // shared instance so a quick disconnect/reconnect storm doesn't
+        // leak overlapping timers.
+        private System.Windows.Threading.DispatcherTimer _bannerAutoHideTimer;
+
         /// <summary>
         /// Toggles the yellow connection-lost banner that sits above the
         /// main content area. The banner element lives in the XAML
@@ -322,14 +328,66 @@ namespace AcademicSentinel.Client.Views.SAC
         /// </summary>
         private void ShowTeacherDisconnectedBanner(string message)
         {
-            if (FindName("TeacherDisconnectedBanner") is FrameworkElement banner)
+            CancelBannerAutoHide();
+            if (FindName("TeacherDisconnectedBanner") is System.Windows.Controls.Border banner)
+            {
                 banner.Visibility = Visibility.Visible;
+                // Yellow warning palette.
+                banner.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF8, 0xE1));
+                banner.BorderBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xB3, 0x00));
+            }
             if (FindName("TxtTeacherDisconnectedBanner") is System.Windows.Controls.TextBlock txt)
+            {
                 txt.Text = message;
+                txt.Foreground = new SolidColorBrush(Color.FromRgb(0xE6, 0x51, 0x00));
+            }
+        }
+
+        /// <summary>
+        /// Positive reconnect banner — green palette, auto-hides after
+        /// 4 seconds so the student gets a clear confirmation but the UI
+        /// returns to its clean state shortly after.
+        /// </summary>
+        private void ShowTeacherReconnectedBanner(string message)
+        {
+            CancelBannerAutoHide();
+            if (FindName("TeacherDisconnectedBanner") is System.Windows.Controls.Border banner)
+            {
+                banner.Visibility = Visibility.Visible;
+                // Green success palette — same banner element, repainted.
+                banner.Background = new SolidColorBrush(Color.FromRgb(0xE8, 0xF5, 0xE9));
+                banner.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
+            }
+            if (FindName("TxtTeacherDisconnectedBanner") is System.Windows.Controls.TextBlock txt)
+            {
+                txt.Text = message;
+                txt.Foreground = new SolidColorBrush(Color.FromRgb(0x1B, 0x5E, 0x20));
+            }
+
+            _bannerAutoHideTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(4)
+            };
+            _bannerAutoHideTimer.Tick += (_, __) =>
+            {
+                CancelBannerAutoHide();
+                HideTeacherDisconnectedBanner();
+            };
+            _bannerAutoHideTimer.Start();
+        }
+
+        private void CancelBannerAutoHide()
+        {
+            if (_bannerAutoHideTimer != null)
+            {
+                _bannerAutoHideTimer.Stop();
+                _bannerAutoHideTimer = null;
+            }
         }
 
         private void HideTeacherDisconnectedBanner()
         {
+            CancelBannerAutoHide();
             if (FindName("TeacherDisconnectedBanner") is FrameworkElement banner)
                 banner.Visibility = Visibility.Collapsed;
         }
@@ -1087,6 +1145,17 @@ namespace AcademicSentinel.Client.Views.SAC
                     if (droppedRoomId != _roomId) return;
                     Dispatcher.Invoke(() => ShowTeacherDisconnectedBanner(
                         "Connection to Instructor Lost. Reconnecting..."));
+                });
+
+                // Hub fires TeacherReconnected when the instructor's
+                // SignalR connection returns and they call JoinRoom on a
+                // still-Active room. Flip the banner to a green positive
+                // notice that auto-hides after a few seconds.
+                _hubConnection.On<int>("TeacherReconnected", reconnectedRoomId =>
+                {
+                    if (reconnectedRoomId != _roomId) return;
+                    Dispatcher.Invoke(() => ShowTeacherReconnectedBanner(
+                        "Instructor reconnected to the session. Monitoring continues normally."));
                 });
 
                 // Reconnect attempt got rerouted through the approval gate.

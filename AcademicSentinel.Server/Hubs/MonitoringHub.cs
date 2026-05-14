@@ -30,6 +30,35 @@ public class MonitoringHub : Hub
     {
         // Adds the teacher to the SignalR group for this specific exam
         await Groups.AddToGroupAsync(Context.ConnectionId, roomId);
+
+        // If an Instructor is rejoining a room whose session is still
+        // Active (typical scenario: their previous connection dropped and
+        // students kept being monitored), broadcast TeacherReconnected so
+        // every SAC in the room can clear / replace the yellow
+        // "Connection to Instructor Lost" banner with a positive
+        // reconnect notice.
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(roomId, out int parsedRoomId))
+        {
+            var room = await _context.Rooms.FindAsync(parsedRoomId);
+            if (room != null
+                && string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                _context.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    RoomId = parsedRoomId,
+                    StudentId = 0,
+                    EventType = "TEACHER_RECONNECTED",
+                    Description = "Instructor reconnected to the active session.",
+                    SeverityScore = 0,
+                    Timestamp = DateTime.UtcNow
+                });
+                await _context.SaveChangesAsync();
+
+                await Clients.Group(roomId).SendAsync("TeacherReconnected", parsedRoomId);
+            }
+        }
     }
 
     // Bug fix: Bug2
