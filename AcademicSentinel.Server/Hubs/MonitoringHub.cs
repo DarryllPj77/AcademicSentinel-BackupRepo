@@ -18,18 +18,6 @@ public class MonitoringHub : Hub
     private readonly ILogger<MonitoringHub> _logger;
     private static readonly ConcurrentDictionary<int, bool> MonitoringStates = new();
 
-    // ConnectionId → (StudentId, RoomId) for every active student in any
-    // room. Populated on JoinLiveExam, drained on OnDisconnectedAsync.
-    // We rely on this rather than re-reading Context.User claims at
-    // disconnect time because:
-    //   1) Abrupt SignalR drops sometimes deliver an Empty principal.
-    //   2) JWT claim-type mapping ("sub" vs NameIdentifier) varies between
-    //      local debug and Render-hosted builds.
-    // The dictionary is the single source of truth for "who just dropped".
-    private static readonly ConcurrentDictionary<string, ConnectionContext> _connectionContexts = new();
-
-    private sealed record ConnectionContext(int StudentId, int RoomId, string Email);
-
     public MonitoringHub(AppDbContext context, IServiceScopeFactory scopeFactory, ILogger<MonitoringHub> logger)
     {
         _context = context;
@@ -382,13 +370,6 @@ public class MonitoringHub : Hub
 
             await _context.SaveChangesAsync();
 
-            // Register this connection so OnDisconnectedAsync can identify
-            // the dropped student without relying on claim resolution.
-            _connectionContexts[Context.ConnectionId] = new ConnectionContext(
-                StudentId: studentId,
-                RoomId: roomId,
-                Email: studentUser.Email ?? string.Empty);
-
             await Clients.Group(roomId.ToString()).SendAsync("StudentJoined", studentId);
             string studentDisplayName = string.IsNullOrWhiteSpace(studentUser.FullName) ? studentUser.Email : studentUser.FullName;
             await Clients.Group(roomId.ToString()).SendAsync("StudentJoinedOrReconnected", studentId, studentDisplayName);
@@ -462,32 +443,8 @@ public class MonitoringHub : Hub
                 // best-effort instructor disconnect handling under concurrent drops
             }
         }
-        else
+        else if (userIdString != null && int.TryParse(userIdString, out var studentId))
         {
-            // Try the claim first; if that fails (abrupt drop with empty
-            // principal, claim-mapping mismatch), fall back to the
-            // ConnectionId → student map we populated on JoinLiveExam.
-            int studentId = 0;
-            if (userIdString != null && int.TryParse(userIdString, out var parsedId))
-            {
-                studentId = parsedId;
-            }
-            else if (_connectionContexts.TryGetValue(Context.ConnectionId, out var ctx))
-            {
-                studentId = ctx.StudentId;
-                _logger.LogInformation("Student disconnect resolved via ConnectionContext map (claim missing). studentId={StudentId}", studentId);
-            }
-
-            // Always drain the map even if we couldn't resolve the id.
-            _connectionContexts.TryRemove(Context.ConnectionId, out _);
-
-            if (studentId == 0)
-            {
-                _logger.LogWarning("OnDisconnectedAsync: could not resolve student id from claim OR map. connId={ConnId}", Context.ConnectionId);
-                await base.OnDisconnectedAsync(exception);
-                return;
-            }
-
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 

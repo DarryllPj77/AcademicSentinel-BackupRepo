@@ -142,16 +142,7 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// SignalR tuning — tighten keepalive so abrupt disconnects (Task Manager
-// kill, network drop) are detected within ~10 s instead of the default
-// ~30 s. Important for the StudentDisconnected lifecycle: without this,
-// the IMC participant list stays "Connected" green for far too long after
-// a kill.
-builder.Services.AddSignalR(options =>
-{
-    options.KeepAliveInterval = TimeSpan.FromSeconds(5);
-    options.ClientTimeoutInterval = TimeSpan.FromSeconds(10);
-});
+builder.Services.AddSignalR();
 
 // ---------------------------------------------------------------------------
 // IMAGE STORAGE — pick implementation based on env.
