@@ -15,9 +15,9 @@
         TextElement.FontWeight="Regular"
         TextElement.FontSize="14">
 
-    <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="0" ResizeBorderThickness="7" GlassFrameThickness="0" CornerRadius="0"/>
-    </WindowChrome.WindowChrome>
+    <!-- The previous WindowChrome override (CaptionHeight="0") was
+         suppressing the WPF default title bar. Removed so the OS-provided
+         title bar with minimize/maximize/close buttons is shown again. -->
 
     <Window.Resources>
         <!-- ======================== FEU TECH COLOR PALETTE ======================== -->

@@ -1899,7 +1899,13 @@ namespace AcademicSentinel.Client.Views.SAC
             // edge in compact view, so students reported needing to expand
             // first before Done appeared.
             Width = 480;
-            Height = 220;
+            // Compact softlock overlay shrunk ~40% in height (220 → 132) so
+            // it stays minimally intrusive in the corner of the student's
+            // screen while the exam is on. The panel only needs to render
+            // the header strip + two short status lines (Monitoring status
+            // and Leave Permission), so the smaller height still leaves
+            // room without clipping content.
+            Height = 132;
             ResizeMode = ResizeMode.NoResize;
             Topmost = true;
 
