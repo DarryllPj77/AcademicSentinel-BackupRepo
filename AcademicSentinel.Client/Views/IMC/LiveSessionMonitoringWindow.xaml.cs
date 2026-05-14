@@ -122,6 +122,71 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             await InitializeSignalR();
             await _hubConnection.InvokeAsync("JoinRoom", _roomId.ToString());
+
+            // REJOIN STATE SYNC. When the teacher reopens this window via the
+            // RoomDetailWindow "Rejoin Session" button, the ctor knows the
+            // room id but not the active session id and assumes monitoring
+            // is Inactive — so the button shows green "Start Session
+            // Monitoring" and BtnEndSession can't actually end the session
+            // (PUT is skipped because _currentSessionId stays at 0).
+            // GET /api/rooms/{id}/status now returns activeSessionId; if
+            // monitoring is live, populate the field and switch the button
+            // to the Active (Pause Monitoring) state.
+            await SyncMonitoringStateFromServerAsync();
+        }
+
+        private async Task SyncMonitoringStateFromServerAsync()
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                var response = await client.GetAsync($"{ApiEndpoints.Rooms}/{_roomId}/status");
+                if (!response.IsSuccessStatusCode) return;
+
+                var status = await response.Content.ReadFromJsonAsync<RoomStatusSyncDto>();
+                if (status == null) return;
+
+                // Adopt the live session id only if we don't already have
+                // one (i.e. this is a rejoin, not a fresh Create Session).
+                if (_currentSessionId <= 0 && status.activeSessionId.HasValue && status.activeSessionId.Value > 0)
+                    _currentSessionId = status.activeSessionId.Value;
+
+                bool roomActive = string.Equals(status.status, "Active", StringComparison.OrdinalIgnoreCase);
+
+                if (roomActive)
+                {
+                    _isMonitoringStarted = true;
+                    _isSessionEnded = false;
+
+                    // Monitoring is either ACTIVE or paused server-side; the
+                    // hub's MonitoringStateChanged / MonitoringPaused events
+                    // will keep us in sync going forward, but we need the
+                    // initial state right now.
+                    SetMonitoringControlButtonState(status.isMonitoringActive
+                        ? MonitoringControlState.Active
+                        : MonitoringControlState.Paused);
+
+                    if (FindName("TxtMonitoringState") is TextBlock label)
+                        label.Text = status.isMonitoringActive
+                            ? "Monitoring: Active (Rejoined)"
+                            : "Monitoring: Paused (Rejoined)";
+                }
+            }
+            catch
+            {
+                // Best-effort sync — leave defaults intact on failure.
+            }
+        }
+
+        private sealed class RoomStatusSyncDto
+        {
+            public int roomId { get; set; }
+            public string status { get; set; }
+            public bool isMonitoringActive { get; set; }
+            public string subjectName { get; set; }
+            public int? activeSessionId { get; set; }
         }
 
         // ======================== SEARCH & FILTER LOGIC ========================

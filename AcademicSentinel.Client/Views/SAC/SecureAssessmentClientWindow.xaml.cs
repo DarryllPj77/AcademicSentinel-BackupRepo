@@ -1279,6 +1279,12 @@ namespace AcademicSentinel.Client.Views.SAC
                         _detectorRuntime?.Stop();
                         _detectorsRunning = false;
 
+                        // Drop the "Connection to Instructor Lost" banner if
+                        // it was still up — the session is over either way,
+                        // so leaving the reconnecting message visible
+                        // alongside the session-ended countdown was confusing.
+                        HideTeacherDisconnectedBanner();
+
                         _sessionEnded = true;
                         _monitoringCountdownEndsAt = null;
                         _monitoringStartedAt = null;

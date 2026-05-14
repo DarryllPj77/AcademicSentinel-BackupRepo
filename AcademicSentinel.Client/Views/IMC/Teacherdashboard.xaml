@@ -458,6 +458,32 @@
                                             <!-- Checkbox for delete selection -->
                                             <CheckBox Grid.Row="0" IsChecked="{Binding IsSelected}" HorizontalAlignment="Right" Margin="0,8,8,0"/>
 
+                                            <!-- LIVE indicator chip — visible only when the room has an in-progress monitoring session. -->
+                                            <Border Grid.Row="0" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                                    Margin="8,0,0,0" Padding="8,2"
+                                                    CornerRadius="10"
+                                                    Background="#D32F2F"
+                                                    Visibility="{Binding InProgressVisibility, FallbackValue=Collapsed}">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="8" Height="8" Fill="White" VerticalAlignment="Center" Margin="0,0,6,0">
+                                                        <Ellipse.Triggers>
+                                                            <EventTrigger RoutedEvent="Loaded">
+                                                                <BeginStoryboard>
+                                                                    <Storyboard RepeatBehavior="Forever">
+                                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                                         From="1.0" To="0.2" Duration="0:0:0.8"
+                                                                                         AutoReverse="True"/>
+                                                                    </Storyboard>
+                                                                </BeginStoryboard>
+                                                            </EventTrigger>
+                                                        </Ellipse.Triggers>
+                                                    </Ellipse>
+                                                    <TextBlock Text="IN PROGRESS" Foreground="White"
+                                                               FontSize="10" FontWeight="Bold"
+                                                               VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Border>
+
                                             <!-- Course Image Area -->
                                             <Border Grid.Row="1" Background="{StaticResource FEULightGrayBrush}" CornerRadius="0" ClipToBounds="True">
                                                 <Grid>

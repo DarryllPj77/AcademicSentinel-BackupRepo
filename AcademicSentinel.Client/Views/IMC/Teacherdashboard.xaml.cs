@@ -109,7 +109,10 @@ namespace AcademicSentinel.Client.Views.IMC
                                         : (room.RoomImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
                                             ? room.RoomImageUrl
                                             : $"{ApiEndpoints.BaseUrl}{room.RoomImageUrl}"),
-                                    IsSelected = false
+                                    IsSelected = false,
+                                    // Surface the live-session indicator on the tile.
+                                    IsSessionInProgress = string.Equals(
+                                        room.Status, "Active", StringComparison.OrdinalIgnoreCase)
                                 });
                             }
                             UpdateEmptyState();
@@ -771,6 +774,18 @@ namespace AcademicSentinel.Client.Views.IMC
 
         public Visibility HasNoImage => string.IsNullOrEmpty(_courseImagePath) ? Visibility.Visible : Visibility.Collapsed;
         public Visibility HasImageVisibility => string.IsNullOrEmpty(_courseImagePath) ? Visibility.Collapsed : Visibility.Visible;
+
+        // Course has a live monitoring session in progress (room.Status ==
+        // "Active"). Surfaced in the dashboard tile so a teacher who
+        // disconnected/closed the IMC and came back can spot where to
+        // rejoin without opening every course.
+        private bool _isSessionInProgress;
+        public bool IsSessionInProgress
+        {
+            get => _isSessionInProgress;
+            set { _isSessionInProgress = value; OnPropertyChanged(); OnPropertyChanged(nameof(InProgressVisibility)); }
+        }
+        public Visibility InProgressVisibility => _isSessionInProgress ? Visibility.Visible : Visibility.Collapsed;
 
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string name = null)

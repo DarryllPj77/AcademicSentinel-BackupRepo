@@ -244,12 +244,25 @@ public class RoomsController : ControllerBase
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
 
+        // Surface the active session id so the IMC's rejoin flow can wire
+        // its End Session button to the real server-side session row.
+        // Without this, a teacher who rejoined an in-progress session
+        // (no sessionId passed to the constructor) was unable to actually
+        // end it — the local UI updated but the PUT to /sessions/{id}/end
+        // was skipped because _currentSessionId stayed at 0.
+        var activeSessionId = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .OrderByDescending(s => s.StartTime)
+            .Select(s => (int?)s.Id)
+            .FirstOrDefaultAsync();
+
         return Ok(new
         {
             roomId = room.Id,
             status = room.Status,
             isMonitoringActive = room.IsMonitoringActive,
-            subjectName = room.SubjectName
+            subjectName = room.SubjectName,
+            activeSessionId
         });
     }
 
