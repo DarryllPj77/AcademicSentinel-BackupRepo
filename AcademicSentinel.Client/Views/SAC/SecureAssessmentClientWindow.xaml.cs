@@ -1909,14 +1909,13 @@ namespace AcademicSentinel.Client.Views.SAC
             // edge in compact view, so students reported needing to expand
             // first before Done appeared.
             Width = 480;
-            // Compact softlock overlay shrunk ~32% in height (220 → 150).
-            // 132px was too tight — the header strip (Done button) plus
-            // the two indicator lines plus the countdown bar collectively
-            // need ~150px before content starts to clip. The compact panel
-            // itself uses smaller font sizes / tighter padding (see XAML)
-            // so the indicators remain readable at the smaller window
-            // size without disturbing the student during the exam.
-            Height = 150;
+            // Compact softlock overlay sized so all three rows render
+            // cleanly: header strip (~50 px) + content panel with two
+            // status lines (~80 px) + bottom countdown bar (~40 px) =
+            // ~170 px. 175 gives a small cushion so "Leave Permission:
+            // Blocked" never clips even with a slightly taller font on
+            // some Windows display scales.
+            Height = 175;
             ResizeMode = ResizeMode.NoResize;
             Topmost = true;
 
