@@ -221,7 +221,7 @@
                  3 = Right Student-Details panel (Auto). -->
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="280" MinWidth="250"/>
-                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="6"/>
                 <ColumnDefinition Width="*" MinWidth="320"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
@@ -439,24 +439,23 @@
             </StackPanel>
 
             <!-- Draggable splitter between the sidebar (col 0) and the
-                 main log feed (col 2). Cursor flips to the left/right
-                 resize glyph on hover so the affordance is obvious; the
-                 background is a soft translucent gray so the splitter
-                 blends with the surrounding cards while remaining
-                 grabbable. ShowsPreview="False" keeps drag feedback live
+                 main log feed (col 2). Light-gray fill so the seam is
+                 clearly visible against the white panels on either side;
+                 cursor flips to SizeWE on hover so the resize affordance
+                 is obvious. ShowsPreview="False" keeps drag feedback live
                  instead of using a placeholder rectangle. -->
             <GridSplitter Grid.Column="1"
-                          Width="5"
+                          Width="6"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch"
-                          Background="#22000000"
-                          BorderBrush="Transparent"
-                          BorderThickness="0"
+                          Background="#BDBDBD"
+                          BorderBrush="#9E9E9E"
+                          BorderThickness="1,0"
                           Cursor="SizeWE"
                           ResizeBehavior="PreviousAndNext"
                           ResizeDirection="Columns"
                           ShowsPreview="False"
-                          Margin="8,0"/>
+                          Margin="8,4"/>
 
             <Border Grid.Column="2" Background="White" CornerRadius="12" Padding="20" HorizontalAlignment="Stretch" Margin="0,0,0,0">
                 <Border.Effect>

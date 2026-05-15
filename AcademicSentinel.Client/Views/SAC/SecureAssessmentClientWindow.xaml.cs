@@ -1909,10 +1909,14 @@ namespace AcademicSentinel.Client.Views.SAC
             // edge in compact view, so students reported needing to expand
             // first before Done appeared.
             Width = 480;
-            // Compact softlock overlay height — kept at 150 (the layout
-            // restructure was reverted by request). The semi-transparent
-            // 30% white surfaces are now defined directly in the XAML.
-            Height = 150;
+            // Compact softlock overlay height. 150 was clipping the
+            // "Leave Permission: Blocked" line on common display scales
+            // (the screenshot showed only "Block" peeking out above the
+            // window's bottom edge). 180 gives enough room for header
+            // strip + two status lines + countdown bar to all render
+            // without truncation, while still keeping the overlay
+            // minimally intrusive in the corner.
+            Height = 180;
             ResizeMode = ResizeMode.NoResize;
             Topmost = true;
 
