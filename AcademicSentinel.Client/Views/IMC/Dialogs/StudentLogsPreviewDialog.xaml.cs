@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Globalization;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -9,6 +10,29 @@ using AcademicSentinel.Client.Models;
 
 namespace AcademicSentinel.Client.Views.IMC.Dialogs
 {
+    /// <summary>
+    /// Converts a server-side UTC <see cref="DateTime"/> into the user's
+    /// local time for display in the Timestamp column. Server stores
+    /// timestamps via <c>DateTime.UtcNow</c>; without this converter the
+    /// grid renders raw UTC, which is 8 hours behind Philippines local time.
+    /// </summary>
+    public sealed class UtcToLocalTimeConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is not DateTime dt) return string.Empty;
+            // Treat Unspecified (the default for System.Text.Json deserialization)
+            // as UTC, since that's what the server actually wrote.
+            var utc = dt.Kind == DateTimeKind.Utc ? dt : DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+            var local = utc.ToLocalTime();
+            string format = parameter as string ?? "MMM dd, yyyy hh:mm:ss tt";
+            return local.ToString(format, culture);
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotSupportedException();
+    }
+
     public partial class StudentLogsPreviewDialog : Window
     {
         // Master filter labels — always pinned to the top of the ComboBox.
