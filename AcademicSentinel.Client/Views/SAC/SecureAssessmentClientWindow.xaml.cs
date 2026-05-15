@@ -546,6 +546,16 @@ namespace AcademicSentinel.Client.Views.SAC
                 if (_awaitingJoinApproval)
                     return;
 
+                // Suppress violations while the student is waiting for the
+                // instructor's Done-approval decision. The student has
+                // declared themselves finished; any further focus / clipboard
+                // / process activity until the instructor approves or denies
+                // should NOT score against them. If the instructor denies,
+                // _hasSentDone flips back to false (LeaveRequestDenied
+                // handler) and emissions resume automatically.
+                if (_hasSentDone)
+                    return;
+
                 if (!_detectorRuntime?.IsLoggingEnabled ?? true)
                     return;
 
