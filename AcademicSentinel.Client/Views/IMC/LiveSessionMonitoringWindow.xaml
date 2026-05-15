@@ -211,9 +211,18 @@
         </Border>
 
         <Grid Grid.Row="2" Margin="20,20,20,0">
+            <!-- Column layout:
+                 0 = Left sidebar (Pause button, participants, etc.)
+                     280 px initial, MinWidth=250 so the GridSplitter can't
+                     collapse it past the point where the controls clip.
+                 1 = GridSplitter (5 px) — draggable horizontal resizer
+                     between sidebar and main feed.
+                 2 = Main Global Log Feed (* — fills remaining space).
+                 3 = Right Student-Details panel (Auto). -->
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="280" MinWidth="250"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="*" MinWidth="320"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
@@ -429,7 +438,27 @@
                 </Border>
             </StackPanel>
 
-            <Border Grid.Column="1" Background="White" CornerRadius="12" Padding="20" HorizontalAlignment="Stretch" Margin="16,0,0,0">
+            <!-- Draggable splitter between the sidebar (col 0) and the
+                 main log feed (col 2). Cursor flips to the left/right
+                 resize glyph on hover so the affordance is obvious; the
+                 background is a soft translucent gray so the splitter
+                 blends with the surrounding cards while remaining
+                 grabbable. ShowsPreview="False" keeps drag feedback live
+                 instead of using a placeholder rectangle. -->
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch"
+                          Background="#22000000"
+                          BorderBrush="Transparent"
+                          BorderThickness="0"
+                          Cursor="SizeWE"
+                          ResizeBehavior="PreviousAndNext"
+                          ResizeDirection="Columns"
+                          ShowsPreview="False"
+                          Margin="8,0"/>
+
+            <Border Grid.Column="2" Background="White" CornerRadius="12" Padding="20" HorizontalAlignment="Stretch" Margin="0,0,0,0">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                 </Border.Effect>
@@ -535,7 +564,7 @@
                 </Grid>
             </Border>
 
-            <Border x:Name="RightDetailPanel" Grid.Column="2" Width="350" Margin="16,0,0,0" Background="White" CornerRadius="12" Padding="20" Visibility="Collapsed">
+            <Border x:Name="RightDetailPanel" Grid.Column="3" Width="350" Margin="16,0,0,0" Background="White" CornerRadius="12" Padding="20" Visibility="Collapsed">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                 </Border.Effect>
