@@ -21,15 +21,12 @@
         <SolidColorBrush x:Key="FEUGoldBrush" Color="#FFB300"/>
     </Window.Resources>
 
-    <!-- Outer rounded border so the semi-transparent window still
-         renders a clean visual edge against the desktop. -->
-    <Border CornerRadius="12" BorderBrush="#80B0B0B0" BorderThickness="1" ClipToBounds="True">
-        <Grid>
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
         <!-- Connection-lost banner. Toggled programmatically by the
              TeacherDisconnected hub event. Sits as an overlay on row 1 so it
@@ -51,7 +48,7 @@
         </Border>
 
         <!-- ======================== TOP HEADER BAR ======================== -->
-        <Border Grid.Row="0" Background="#E6FFFFFF" Padding="24,14">
+        <Border Grid.Row="0" Background="#B3FFFFFF" Padding="24,14">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.06" Color="Black"/>
             </Border.Effect>
@@ -102,7 +99,7 @@
 
         <!-- ======================== MAIN CONTENT ======================== -->
         <Grid x:Name="SessionContentGrid" Grid.Row="1" Margin="30,24,30,24">
-            <Border x:Name="FullSessionPanel" Background="White" CornerRadius="16" Padding="32">
+            <Border x:Name="FullSessionPanel" Background="#B3FFFFFF" CornerRadius="16" Padding="32">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.06" Color="Black"/>
                 </Border.Effect>
@@ -150,7 +147,7 @@
                     <TextBlock Grid.Row="3" Text="Detection Reports :" FontSize="14" FontWeight="SemiBold"
                                Foreground="#1B1B1B" Margin="0,0,0,10"/>
 
-                    <Border Grid.Row="4" Background="#FAFAFA" CornerRadius="10"
+                    <Border Grid.Row="4" Background="#B3FAFAFA" CornerRadius="10"
                             BorderBrush="#E0E0E0" BorderThickness="1" Padding="4">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <ItemsControl x:Name="DetectionReportsList">
@@ -178,25 +175,21 @@
 
             <Border x:Name="CompactPanel"
                     Visibility="Collapsed"
-                    Background="#E6FFFFFF"
-                    BorderBrush="#80E0E0E0"
+                    Background="#B3FFFFFF"
+                    BorderBrush="#E0E0E0"
                     BorderThickness="1"
                     CornerRadius="10"
-                    Padding="10,8"
+                    Padding="8,6"
                     HorizontalAlignment="Stretch"
                     VerticalAlignment="Stretch">
-                <!-- Compact softlock content. Two stacked status lines,
-                     vertically centered, with bold colored text so they
-                     stay readable against the semi-transparent backdrop
-                     even at the reduced softlock size. -->
                 <StackPanel VerticalAlignment="Center">
-                    <Border Background="#F5F5F5"
+                    <Border Background="#B3F5F5F5"
                             BorderBrush="#E0E0E0"
                             BorderThickness="1"
                             CornerRadius="5"
-                            Padding="8,3"
+                            Padding="6,2"
                             HorizontalAlignment="Left"
-                            Margin="0,0,0,6">
+                            Margin="0,0,0,4">
                         <TextBlock x:Name="TxtCompactMonitoringStatus"
                                    Text="Monitoring: Waiting"
                                    FontSize="13"
@@ -209,9 +202,7 @@
                                FontSize="13"
                                FontWeight="Bold"
                                Foreground="#2E7D32"
-                               Margin="2,0,0,0"
-                               TextWrapping="NoWrap"
-                               TextTrimming="None"/>
+                               Margin="2,0,0,0"/>
                 </StackPanel>
             </Border>
         </Grid>
@@ -220,8 +211,8 @@
         <!-- Per QA decision: countdown text lives at bottom-left of the SAC
              softlock UI for every scenario (initial countdown, resume,
              session timer). Visible in both full and compact modes. -->
-        <Border Grid.Row="2" Background="#E6FFFFFF" Padding="20,6"
-                BorderBrush="#80E0E0E0" BorderThickness="0,1,0,0">
+        <Border Grid.Row="2" Background="#B3FFFFFF" Padding="20,8"
+                BorderBrush="#E0E0E0" BorderThickness="0,1,0,0">
             <TextBlock x:Name="TxtBottomCountdown"
                        Text=""
                        FontSize="13" FontWeight="SemiBold"
@@ -236,6 +227,5 @@
                 <TextBlock x:Name="WaitingScreenText" Foreground="White" FontSize="18" Text="Waiting for instructor approval..."/>
             </StackPanel>
         </Grid>
-        </Grid>
-    </Border>
+    </Grid>
 </Window>
