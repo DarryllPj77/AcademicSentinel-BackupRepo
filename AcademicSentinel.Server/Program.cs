@@ -144,6 +144,11 @@ builder.Services.AddSwaggerGen(c =>
 
 builder.Services.AddSignalR();
 
+// Heartbeat-driven disconnect detector. Runs every 5s, flips participants
+// to Disconnected within ~15s when SAC stops pinging. See
+// Services/DisconnectSweeperService.cs for the full reasoning.
+builder.Services.AddHostedService<AcademicSentinel.Server.Services.DisconnectSweeperService>();
+
 // ---------------------------------------------------------------------------
 // IMAGE STORAGE — pick implementation based on env.
 // If Cloudinary creds are present, use the cloud-backed implementation

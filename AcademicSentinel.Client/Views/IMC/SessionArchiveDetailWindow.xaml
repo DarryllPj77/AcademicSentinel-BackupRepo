@@ -127,6 +127,29 @@
                     <DataGridTextColumn Header="Email" Binding="{Binding Email}" Width="2.2*"/>
                     <DataGridTextColumn Header="Violations" Binding="{Binding ViolationCount}" Width="0.9*"/>
                     <DataGridTextColumn Header="Risk Level" Binding="{Binding RiskLevel}" Width="1.1*"/>
+                    <!-- Connection-quality column. Computed server-side from
+                         MonitoringEvents — "Clean Connection" / "Reconnected"
+                         / "Disconnected". Cell background tinted via style
+                         trigger so disconnects stand out at a glance. -->
+                    <DataGridTextColumn Header="Connection" Binding="{Binding ConnectionQuality}" Width="1.2*">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                <Setter Property="Padding" Value="6,2"/>
+                                <Style.Triggers>
+                                    <Trigger Property="Text" Value="Clean Connection">
+                                        <Setter Property="Foreground" Value="#1B5E20"/>
+                                    </Trigger>
+                                    <Trigger Property="Text" Value="Reconnected">
+                                        <Setter Property="Foreground" Value="#E65100"/>
+                                    </Trigger>
+                                    <Trigger Property="Text" Value="Disconnected">
+                                        <Setter Property="Foreground" Value="#C62828"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
                     <DataGridTemplateColumn Header="Actions" Width="1.8*" MinWidth="240">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>

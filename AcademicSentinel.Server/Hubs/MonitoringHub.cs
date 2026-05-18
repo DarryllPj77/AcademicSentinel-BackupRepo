@@ -18,14 +18,29 @@ public class MonitoringHub : Hub
     private readonly ILogger<MonitoringHub> _logger;
     private static readonly ConcurrentDictionary<int, bool> MonitoringStates = new();
 
-    // Connection-tracking map: ConnectionId → (StudentId, RoomId).
-    // SignalR's OnDisconnectedAsync can deliver an empty Context.User on
-    // abrupt drops (Task Manager kill, power loss, network failure), which
-    // causes ClaimTypes.NameIdentifier to come back null and silently
-    // skips the student-disconnect branch. This map is populated when the
-    // student successfully joins via JoinLiveExam and is the source of
-    // truth on disconnect, with the JWT claim used only as a fallback.
-    private static readonly ConcurrentDictionary<string, (int StudentId, int RoomId)> _activeStudentConnections = new();
+    // Heartbeat-tracking map: ConnectionId → live student state.
+    //
+    // Why this exists: SignalR's OnDisconnectedAsync is unreliable for
+    // abrupt drops — Task Manager kill, internet loss, or power loss
+    // either delay the callback by ~30s (default ClientTimeoutInterval)
+    // or never fire it at all if the transport hiccups. The
+    // DisconnectSweeperService runs every 5s, scans this map, and any
+    // entry whose LastBeat is older than the heartbeat-timeout threshold
+    // is treated as a disconnect — guaranteed detection within ~15s.
+    //
+    // SAC clients call Heartbeat(roomId) every 5s; that call updates
+    // LastBeat. JoinLiveExam populates the entry; OnDisconnectedAsync
+    // and the sweeper both drain entries.
+    //
+    // The map is exposed `internal` so DisconnectSweeperService (same
+    // assembly) can read it without a DI shuttle.
+    internal sealed class ActiveStudentConnection
+    {
+        public int StudentId { get; init; }
+        public int RoomId { get; init; }
+        public DateTime LastBeat { get; set; }
+    }
+    internal static readonly ConcurrentDictionary<string, ActiveStudentConnection> _activeStudentConnections = new();
 
     public MonitoringHub(AppDbContext context, IServiceScopeFactory scopeFactory, ILogger<MonitoringHub> logger)
     {
@@ -37,6 +52,24 @@ public class MonitoringHub : Hub
     // =======================================================
     // IMC (TEACHER) CALLS THIS TO LISTEN FOR ALERTS
     // =======================================================
+    /// <summary>
+    /// SAC clients invoke this every ~5 seconds to prove they're alive.
+    /// The handler updates the per-connection LastBeat timestamp in
+    /// <see cref="_activeStudentConnections"/>; the DisconnectSweeperService
+    /// runs in the background and any entry whose LastBeat is stale is
+    /// treated as a disconnect. This guarantees detection within ~15s for
+    /// abrupt drops (force-close, no internet, power loss) regardless of
+    /// SignalR's transport-level heartbeat behavior.
+    /// </summary>
+    public Task Heartbeat(int roomId)
+    {
+        if (_activeStudentConnections.TryGetValue(Context.ConnectionId, out var conn))
+        {
+            conn.LastBeat = DateTime.UtcNow;
+        }
+        return Task.CompletedTask;
+    }
+
     public async Task JoinRoom(string roomId)
     {
         // Adds the teacher to the SignalR group for this specific exam
@@ -451,10 +484,17 @@ public class MonitoringHub : Hub
 
             await _context.SaveChangesAsync();
 
-            // Register this connection so OnDisconnectedAsync can identify
-            // the dropped student even when Context.User claims come back
-            // null on an abrupt disconnect.
-            _activeStudentConnections[Context.ConnectionId] = (studentId, roomId);
+            // Register this connection. The DisconnectSweeperService will
+            // scan this map every 5s; if LastBeat falls behind, the entry
+            // is treated as a disconnect even if SignalR's transport
+            // detection never fires. SAC seeds the very first LastBeat
+            // by hitting Heartbeat(roomId) on a 5s timer.
+            _activeStudentConnections[Context.ConnectionId] = new ActiveStudentConnection
+            {
+                StudentId = studentId,
+                RoomId = roomId,
+                LastBeat = DateTime.UtcNow
+            };
 
             await Clients.Group(roomId.ToString()).SendAsync("StudentJoined", studentId);
             string studentDisplayName = string.IsNullOrWhiteSpace(studentUser.FullName) ? studentUser.Email : studentUser.FullName;

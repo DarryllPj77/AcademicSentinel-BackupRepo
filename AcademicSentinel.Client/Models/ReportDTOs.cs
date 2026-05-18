@@ -21,6 +21,11 @@ namespace AcademicSentinel.Client.Models
         public int RiskScore { get; set; }
         public string RiskLevel { get; set; }
         public int ViolationCount { get; set; }
+        // Derived per session from MonitoringEvents:
+        //   "Clean Connection" — no STUDENT_DISCONNECTED events.
+        //   "Reconnected"       — disconnected then rejoined within the session.
+        //   "Disconnected"      — disconnected and never returned.
+        public string ConnectionQuality { get; set; } = "Clean Connection";
         public List<SessionLogDto> Logs { get; set; } = new();
     }
 

@@ -34,6 +34,12 @@ namespace AcademicSentinel.Client.Views.SAC
         private int _roomId;
         private readonly DispatcherTimer _statusTimer;
         private readonly DispatcherTimer _compactCountdownTimer;
+        // Heartbeat ping to the server every 5s. The server's
+        // DisconnectSweeperService treats absence of heartbeats for
+        // >= 15s as a disconnect — that's how force-close / no internet
+        // / power loss is detected reliably, without depending on
+        // SignalR's transport-level timeout.
+        private readonly DispatcherTimer _heartbeatTimer;
         private readonly DispatcherTimer _detectorPollTimer;
         private HubConnection _hubConnection;
         private DateTime? _monitoringStartedAt;
@@ -148,6 +154,31 @@ namespace AcademicSentinel.Client.Views.SAC
             };
             _detectorPollTimer.Tick += (_, __) => PollDetectors();
             _detectorPollTimer.Start();
+
+            // Heartbeat to the server. Best-effort: any failure (no hub
+            // yet, transient transport error) is swallowed because the
+            // sweeper will simply detect the absence on its next tick.
+            _heartbeatTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(5)
+            };
+            _heartbeatTimer.Tick += async (_, __) =>
+            {
+                try
+                {
+                    if (_hubConnection != null
+                        && _hubConnection.State == HubConnectionState.Connected
+                        && _roomId > 0)
+                    {
+                        await _hubConnection.InvokeAsync("Heartbeat", _roomId);
+                    }
+                }
+                catch
+                {
+                    // Swallow — silence IS the disconnect signal.
+                }
+            };
+            _heartbeatTimer.Start();
 
             UpdateRequestLeaveButtonState();
 
@@ -1208,6 +1239,9 @@ namespace AcademicSentinel.Client.Views.SAC
                         _statusTimer?.Stop();
                         _compactCountdownTimer?.Stop();
                         _detectorPollTimer?.Stop();
+            _heartbeatTimer?.Stop();
+                    _heartbeatTimer?.Stop();
+                        _heartbeatTimer?.Stop();
 
                         // 2. Update the softlock UI to the removal banner.
                         MonitorDotBrush.Color = System.Windows.Media.Color.FromRgb(211, 47, 47);
@@ -1297,6 +1331,8 @@ namespace AcademicSentinel.Client.Views.SAC
                     _statusTimer?.Stop();
                     _compactCountdownTimer?.Stop();
                     _detectorPollTimer?.Stop();
+            _heartbeatTimer?.Stop();
+                    _heartbeatTimer?.Stop();
 
                     await Dispatcher.InvokeAsync(async () =>
                     {
@@ -1383,6 +1419,9 @@ namespace AcademicSentinel.Client.Views.SAC
                         _statusTimer?.Stop();
                         _compactCountdownTimer?.Stop();
                         _detectorPollTimer?.Stop();
+            _heartbeatTimer?.Stop();
+                    _heartbeatTimer?.Stop();
+                        _heartbeatTimer?.Stop();
 
                         var greyBrush = new SolidColorBrush(Color.FromRgb(97, 97, 97));
 
@@ -1561,6 +1600,7 @@ namespace AcademicSentinel.Client.Views.SAC
             _statusTimer?.Stop();
             _compactCountdownTimer?.Stop();
             _detectorPollTimer?.Stop();
+            _heartbeatTimer?.Stop();
 
             try
             {
@@ -1962,6 +2002,7 @@ namespace AcademicSentinel.Client.Views.SAC
             _statusTimer?.Stop();
             _compactCountdownTimer?.Stop();
             _detectorPollTimer?.Stop();
+            _heartbeatTimer?.Stop();
             _detectorsRunning = false;
             if (_hubConnection != null)
             {

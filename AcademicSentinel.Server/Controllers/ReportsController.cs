@@ -223,10 +223,49 @@ public class ReportsController : ControllerBase
             string riskLevel = totalRisk >= 50 ? "CHEATING" : (totalRisk >= 20 ? "SUSPICIOUS" : "SAFE");
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
+            // -------------------------------------------------------------
+            // ConnectionQuality classification per student per session.
+            //   "Clean Connection" — no STUDENT_DISCONNECTED events in this
+            //                        student's session log. They stayed on
+            //                        the whole time.
+            //   "Reconnected"      — a STUDENT_DISCONNECTED event exists,
+            //                        AND a later participant.JoinedAt
+            //                        timestamp proves the student came back.
+            //   "Disconnected"     — STUDENT_DISCONNECTED exists with NO
+            //                        subsequent rejoin in this session.
+            // -------------------------------------------------------------
+            DateTime? lastDisconnectAt = logs
+                .Where(l => l.EventType == "STUDENT_DISCONNECTED")
+                .Select(l => (DateTime?)l.Timestamp)
+                .Max();
+
+            string connectionQuality;
+            if (!lastDisconnectAt.HasValue)
+            {
+                connectionQuality = "Clean Connection";
+            }
+            else
+            {
+                var latestJoinAt = await _context.SessionParticipants
+                    .Where(p => p.RoomId == session.RoomId
+                                && p.StudentId == studentId
+                                && p.JoinedAt >= session.StartTime
+                                && (session.EndTime == null || p.JoinedAt <= session.EndTime))
+                    .OrderByDescending(p => p.JoinedAt)
+                    .Select(p => (DateTime?)p.JoinedAt)
+                    .FirstOrDefaultAsync();
+
+                connectionQuality = latestJoinAt.HasValue && latestJoinAt.Value > lastDisconnectAt.Value
+                    ? "Reconnected"
+                    : "Disconnected";
+            }
+
             result.Add(new {
                 StudentId = studentId, Name = string.IsNullOrWhiteSpace(user.FullName) ? "Unknown" : user.FullName,
                 Email = user.Email, RiskScore = totalRisk, RiskLevel = riskLevel,
-                ViolationCount = violationCount, Logs = logs
+                ViolationCount = violationCount,
+                ConnectionQuality = connectionQuality,
+                Logs = logs
             });
         }
         return Ok(result);
