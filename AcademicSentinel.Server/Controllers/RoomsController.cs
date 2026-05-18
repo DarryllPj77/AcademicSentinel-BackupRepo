@@ -447,6 +447,97 @@ public class RoomsController : ControllerBase
             .Distinct()
             .ToHashSetAsync();
 
+        // HEARTBEAT-LIVENESS SNAPSHOT + lazy commit.
+        //
+        // Build a per-student "is currently alive" map by scanning the
+        // hub's active-connection dictionary. A student is alive only if
+        // they have at least one ConnectionId entry whose LastBeat is
+        // within the last 15 seconds.
+        //
+        // Beyond just overriding the response, this block now PROMOTES
+        // the heartbeat-derived state into the DB and broadcasts the
+        // standard StudentDisconnected / StudentConnectionLost events for
+        // any student whose row is still "Connected" but whose heartbeat
+        // has gone stale. That way:
+        //   - The Global Log Feed gets the "⚠ CONNECTION LOST" entry
+        //     (IMC's StudentConnectionLost handler).
+        //   - The Session Archive's ConnectionQuality calculation sees a
+        //     real STUDENT_DISCONNECTED event and reports "Disconnected"
+        //     (or "Reconnected" on later rejoin) instead of "Clean
+        //     Connection".
+        // The IMC's 4 s participant poll drives this lazily, with
+        // TryRemove on the hub dictionary acting as the idempotency gate
+        // — only one IMC's poll wins per stale entry, no double-fires.
+        var liveCutoff = DateTime.UtcNow.AddSeconds(-15);
+        var aliveStudentIds = new HashSet<int>();
+        var staleConnectionsToFlush = new List<KeyValuePair<string, AcademicSentinel.Server.Hubs.MonitoringHub.ActiveStudentConnection>>();
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId != roomId) continue;
+            if (kv.Value.LastBeat >= liveCutoff)
+                aliveStudentIds.Add(kv.Value.StudentId);
+            else
+                staleConnectionsToFlush.Add(kv);
+        }
+
+        // Promote stale heartbeat entries: claim them via TryRemove (only
+        // the first IMC poll that observes a stale entry wins), then write
+        // the DB transition and broadcast the standard SignalR events.
+        bool flushedAny = false;
+        foreach (var stale in staleConnectionsToFlush)
+        {
+            if (!AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(stale.Key, out _))
+                continue;
+
+            var staleStudentId = stale.Value.StudentId;
+            var staleRoomId = stale.Value.RoomId;
+
+            var staleParticipants = await _context.SessionParticipants
+                .Where(p => p.RoomId == staleRoomId
+                            && p.StudentId == staleStudentId
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected")
+                .ToListAsync();
+
+            if (staleParticipants.Count == 0) continue;
+
+            foreach (var sp in staleParticipants)
+            {
+                sp.ConnectionStatus = "Disconnected";
+                sp.DisconnectedAt = DateTime.UtcNow;
+                sp.JoinApprovalStatus = null;
+                sp.IsCurrentlyActive = false;
+            }
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                EventType = "STUDENT_DISCONNECTED",
+                Description = "Student lost connection to the session (heartbeat timeout).",
+                SeverityScore = 0,
+                RoomId = staleRoomId,
+                StudentId = staleStudentId,
+                Timestamp = DateTime.UtcNow
+            });
+            flushedAny = true;
+
+            // Broadcast in the same iteration so the IMC's Global Log Feed
+            // gets the entry immediately. Sister event StudentConnectionLost
+            // is what the IMC's existing handler keys off for the log line.
+            var roomGroup = staleRoomId.ToString();
+            await _hubContext.Clients.Group(roomGroup).SendAsync("StudentDisconnected", staleStudentId);
+            await _hubContext.Clients.Group(roomGroup).SendAsync("StudentConnectionLost", staleStudentId);
+        }
+        if (flushedAny)
+        {
+            await _context.SaveChangesAsync();
+            // Refresh the local participant snapshot so the response we're
+            // about to assemble reflects the rows we just updated.
+            participants = await participantsQuery.ToListAsync();
+            participantDictionary = participants
+                .GroupBy(p => p.StudentId)
+                .Select(g => g.OrderByDescending(p => p.JoinedAt).First())
+                .ToDictionary(p => p.StudentId);
+        }
+
         var result = enrollments.Select(enrollment => {
             string participationStatus = "NotJoined";
             if (participantDictionary.TryGetValue(enrollment.StudentId, out var p))
@@ -454,6 +545,17 @@ public class RoomsController : ControllerBase
                 participationStatus = string.Equals(p.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
                     ? "Disconnected"
                     : "Joined";
+
+                // Heartbeat override: if the DB still says "Joined" but
+                // the hub map has no fresh heartbeat for this student,
+                // the SAC is gone — surface as Disconnected so the IMC
+                // tile turns red on the next poll even before the sweeper
+                // / OnDisconnectedAsync writes to the DB.
+                if (string.Equals(participationStatus, "Joined", StringComparison.OrdinalIgnoreCase)
+                    && !aliveStudentIds.Contains(enrollment.StudentId))
+                {
+                    participationStatus = "Disconnected";
+                }
             }
 
             users.TryGetValue(enrollment.StudentId, out var user);
