@@ -138,7 +138,140 @@ namespace AcademicSentinel.Client.Views.IMC
             // green "Start Session Monitoring" because the teacher hasn't
             // pressed Start yet.
             if (_openedAsRejoin)
+            {
                 await SyncMonitoringStateFromServerAsync();
+                // Replay every event that happened while the teacher was
+                // away (e.g. STUDENT_DISCONNECTED while the IMC was closed)
+                // so the Global Log Feed shows the full picture instead of
+                // "No log entries yet".
+                if (_currentSessionId > 0)
+                    await LoadHistoricalLogsAsync(_currentSessionId);
+            }
+        }
+
+        /// <summary>
+        /// Fetches every MonitoringEvent for the current session from the
+        /// server and replays it into LogFeed in chronological order. Only
+        /// invoked on the rejoin path so a fresh "Create Session" doesn't
+        /// re-render any pre-existing events.
+        /// </summary>
+        private async Task LoadHistoricalLogsAsync(int sessionId)
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                var response = await client.GetAsync($"{ApiEndpoints.BaseUrl}/api/Reports/sessions/{sessionId}/students");
+                if (!response.IsSuccessStatusCode) return;
+
+                var students = await response.Content.ReadFromJsonAsync<List<HistoricalStudentDto>>();
+                if (students == null || students.Count == 0) return;
+
+                // Flatten the per-student log lists into a single timeline.
+                var timeline = students
+                    .SelectMany(s => (s.Logs ?? new List<HistoricalLogDto>())
+                        .Select(l => new { s.Email, Log = l }))
+                    .OrderBy(x => x.Log.Timestamp)
+                    .ToList();
+
+                foreach (var entry in timeline)
+                {
+                    var log = entry.Log;
+                    string eventType = log.EventType ?? "SYSTEM";
+                    string description = log.Description ?? string.Empty;
+
+                    // Badge + color mapping — mirrors the live SignalR
+                    // handlers' LogActivity calls so historical replays
+                    // look identical to live entries.
+                    string badge;
+                    string color;
+                    if (log.SeverityScore > 0)
+                    {
+                        badge = "VIOLATION";
+                        color = "#D32F2F";
+                    }
+                    else if (eventType.Equals("STUDENT_DISCONNECTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "STUDENT_DISCONNECTED";
+                        color = "#D32F2F";
+                    }
+                    else if (eventType.Equals("CANVAS_RETURNED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "RETURN";
+                        color = "#1B5E20";
+                    }
+                    else if (eventType.Equals("SESSION_COMPLETION_REQUESTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "DONE";
+                        color = "#1B5E20";
+                    }
+                    else if (eventType.Equals("LEAVE_GRANTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "LEFT";
+                        color = "#1B5E20";
+                    }
+                    else if (eventType.Equals("LEAVE_REQUEST_DENIED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "DENIED";
+                        color = "#D32F2F";
+                    }
+                    else if (eventType.Equals("REJOIN_REQUESTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "REJOIN_REQ";
+                        color = "#FF9800";
+                    }
+                    else if (eventType.Equals("REJOIN_APPROVED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "JOIN_OK";
+                        color = "#4CAF50";
+                    }
+                    else if (eventType.Equals("JOIN_DENIED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "JOIN_NO";
+                        color = "#D32F2F";
+                    }
+                    else if (eventType.Equals("STUDENT_REMOVED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "KICKED";
+                        color = "#D32F2F";
+                    }
+                    else if (eventType.Equals("TEACHER_DISCONNECTED", StringComparison.OrdinalIgnoreCase)
+                          || eventType.Equals("TEACHER_RECONNECTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        badge = "SYSTEM";
+                        color = "#FF9800";
+                    }
+                    else
+                    {
+                        badge = "SYSTEM";
+                        color = "#1B5E20";
+                    }
+
+                    LogActivity(entry.Email ?? "SYSTEM", badge, description, color);
+                }
+            }
+            catch
+            {
+                // Best-effort replay — silently skip on transport failure.
+            }
+        }
+
+        // Minimal DTOs scoped to the replay endpoint. Kept private to avoid
+        // leaking a thin shape into the wider Models namespace.
+        private sealed class HistoricalStudentDto
+        {
+            public int StudentId { get; set; }
+            public string Name { get; set; }
+            public string Email { get; set; }
+            public List<HistoricalLogDto> Logs { get; set; }
+        }
+        private sealed class HistoricalLogDto
+        {
+            public string EventType { get; set; }
+            public string Description { get; set; }
+            public int SeverityScore { get; set; }
+            public DateTime Timestamp { get; set; }
         }
 
         private async Task SyncMonitoringStateFromServerAsync()
