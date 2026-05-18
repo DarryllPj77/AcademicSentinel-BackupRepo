@@ -229,54 +229,65 @@ public class RoomsController : ControllerBase
         // This is the same DB transition + broadcast as the lazy commit
         // in GetRoomParticipants, just triggered at end-of-session time.
         // -------------------------------------------------------------
-        var liveCutoff = DateTime.UtcNow.AddSeconds(-15);
-        var aliveStudentIdsAtEnd = new HashSet<int>();
-        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        // Best-effort flush. Any exception here MUST NOT prevent the
+        // session from being marked Completed below — the End Session
+        // request should always succeed for the teacher.
+        try
         {
-            if (kv.Value.RoomId == session.RoomId && kv.Value.LastBeat >= liveCutoff)
-                aliveStudentIdsAtEnd.Add(kv.Value.StudentId);
-        }
-
-        var participantsToFlush = await _context.SessionParticipants
-            .Where(p => p.RoomId == session.RoomId
-                        && p.JoinedAt >= session.StartTime
-                        && p.ConnectionStatus != "Completed"
-                        && p.ConnectionStatus != "Disconnected")
-            .ToListAsync();
-
-        foreach (var p in participantsToFlush)
-        {
-            if (aliveStudentIdsAtEnd.Contains(p.StudentId))
-                continue; // genuinely still connected — let the SessionEnded
-                          // broadcast tear them down cleanly.
-
-            p.ConnectionStatus = "Disconnected";
-            p.DisconnectedAt = DateTime.UtcNow;
-            p.JoinApprovalStatus = null;
-            p.IsCurrentlyActive = false;
-
-            _context.MonitoringEvents.Add(new MonitoringEvent
-            {
-                EventType = "STUDENT_DISCONNECTED",
-                Description = "Student was offline when the instructor ended the session.",
-                SeverityScore = 0,
-                RoomId = p.RoomId,
-                StudentId = p.StudentId,
-                Timestamp = DateTime.UtcNow
-            });
-
-            // Drain any lingering ConnectionId entries for this student so
-            // the sweeper doesn't double-fire after we've closed the session.
+            var liveCutoff = DateTime.UtcNow.AddSeconds(-15);
+            var aliveStudentIdsAtEnd = new HashSet<int>();
             foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
             {
-                if (kv.Value.StudentId == p.StudentId && kv.Value.RoomId == session.RoomId)
-                    AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+                if (kv.Value.RoomId == session.RoomId && kv.Value.LastBeat >= liveCutoff)
+                    aliveStudentIdsAtEnd.Add(kv.Value.StudentId);
             }
 
-            // Broadcast so any still-open IMC's Global Log Feed catches the
-            // ⚠ CONNECTION LOST entry before SessionEnded tears the window down.
-            await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentDisconnected", p.StudentId);
-            await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentConnectionLost", p.StudentId);
+            var participantsToFlush = await _context.SessionParticipants
+                .Where(p => p.RoomId == session.RoomId
+                            && p.JoinedAt >= session.StartTime
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected")
+                .ToListAsync();
+
+            foreach (var p in participantsToFlush)
+            {
+                if (aliveStudentIdsAtEnd.Contains(p.StudentId))
+                    continue;
+
+                p.ConnectionStatus = "Disconnected";
+                p.DisconnectedAt = DateTime.UtcNow;
+                p.JoinApprovalStatus = null;
+                p.IsCurrentlyActive = false;
+
+                _context.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    EventType = "STUDENT_DISCONNECTED",
+                    Description = "Student was offline when the instructor ended the session.",
+                    SeverityScore = 0,
+                    RoomId = p.RoomId,
+                    StudentId = p.StudentId,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+                {
+                    if (kv.Value.StudentId == p.StudentId && kv.Value.RoomId == session.RoomId)
+                        AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+                }
+
+                try
+                {
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentDisconnected", p.StudentId);
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentConnectionLost", p.StudentId);
+                }
+                catch { /* broadcast best-effort */ }
+            }
+        }
+        catch
+        {
+            // Swallow — the only critical work is below (session.Status =
+            // "Completed" + room.Status = "Pending"). Disconnect bookkeeping
+            // can be cleaned up later by the IMC's poll-driven lazy commit.
         }
 
         session.EndTime = DateTime.UtcNow;

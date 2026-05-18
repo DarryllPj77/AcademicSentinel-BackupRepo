@@ -1199,6 +1199,13 @@ namespace AcademicSentinel.Client.Views.IMC
             if (FindName("TxtMissingCount") is TextBlock txtMissing) txtMissing.Text = $"Missing: {missing}";
         }
 
+        // Tracks the last known ParticipationStatus per student between
+        // poll cycles so the loader can detect Connected→Disconnected
+        // transitions locally and write a STUDENT_DISCONNECTED log entry
+        // even if the SignalR StudentConnectionLost broadcast doesn't
+        // arrive (or arrives before the IMC subscribed to the group).
+        private readonly Dictionary<int, string> _previousParticipantStatus = new();
+
         private async Task LoadParticipantsFromServerAsync()
         {
             try
@@ -1211,6 +1218,26 @@ namespace AcademicSentinel.Client.Views.IMC
                 var participants = await response.Content.ReadFromJsonAsync<List<ParticipantDto>>() ?? new List<ParticipantDto>();
                 _allParticipants = participants;
                 _enrolledCount = participants.Count;
+
+                // Detect Connected → Disconnected transitions by diffing
+                // this snapshot against the prior one and log directly to
+                // the Global Feed. This is the local safety net for cases
+                // where the SignalR broadcast doesn't reach the IMC.
+                foreach (var p in participants)
+                {
+                    if (string.IsNullOrEmpty(p.ParticipationStatus)) continue;
+                    if (_previousParticipantStatus.TryGetValue(p.StudentId, out var prevStatus)
+                        && string.Equals(prevStatus, "Joined", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(p.ParticipationStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
+                        && !_safelyLeftStudentIds.Contains(p.StudentId)
+                        && !_permanentlyDismissedStudents.Contains(p.StudentId))
+                    {
+                        string displayName = string.IsNullOrWhiteSpace(p.StudentName) ? p.StudentEmail : p.StudentName;
+                        LogActivity(p.StudentEmail ?? "SYSTEM", "STUDENT_DISCONNECTED",
+                            $"⚠ CONNECTION LOST. {displayName} disconnected unexpectedly.", "#D32F2F");
+                    }
+                    _previousParticipantStatus[p.StudentId] = p.ParticipationStatus;
+                }
 
                 ActiveStudents.Clear();
 
@@ -1699,11 +1726,68 @@ namespace AcademicSentinel.Client.Views.IMC
 
             _isEndingFromTimer = true;
 
+            // BUG FIX: if _currentSessionId is 0 (e.g. a rejoin path that
+            // didn't successfully sync, or a transient state), the PUT
+            // below would be silently skipped and the server room.Status
+            // would never transition out of "Active". That left the
+            // RoomDetail dashboard's "Monitoring Session In Progress"
+            // banner showing forever even though the teacher clicked End
+            // Session. Recover by probing the room-status endpoint for
+            // the active session id before the PUT.
+            if (_currentSessionId <= 0)
+            {
+                try
+                {
+                    using var probe = new HttpClient();
+                    probe.DefaultRequestHeaders.Authorization =
+                        new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                    var probeResponse = await probe.GetAsync($"{ApiEndpoints.Rooms}/{_roomId}/status");
+                    if (probeResponse.IsSuccessStatusCode)
+                    {
+                        var statusDto = await probeResponse.Content.ReadFromJsonAsync<RoomStatusSyncDto>();
+                        if (statusDto != null
+                            && statusDto.activeSessionId.HasValue
+                            && statusDto.activeSessionId.Value > 0)
+                        {
+                            _currentSessionId = statusDto.activeSessionId.Value;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Fall through — handled below by the success check.
+                }
+            }
+
+            bool endRequestSucceeded = false;
             if (_currentSessionId > 0)
             {
-                using var client = new HttpClient();
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
-                await client.PutAsync($"{ApiEndpoints.Rooms}/sessions/{_currentSessionId}/end", null);
+                try
+                {
+                    using var client = new HttpClient();
+                    client.DefaultRequestHeaders.Authorization =
+                        new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                    var response = await client.PutAsync($"{ApiEndpoints.Rooms}/sessions/{_currentSessionId}/end", null);
+                    endRequestSucceeded = response.IsSuccessStatusCode;
+                }
+                catch
+                {
+                    endRequestSucceeded = false;
+                }
+            }
+
+            // End Session always proceeds with local cleanup, even if
+            // the server didn't confirm the PUT. Reasoning: blocking the
+            // teacher's workflow when a student happens to be disconnected
+            // (or on any transient server hiccup) is worse than the
+            // alternative — if the room stays Active server-side, the
+            // RoomDetail dashboard banner will pick it up on next visit
+            // and the teacher can retry from there. Silent local cleanup
+            // is the more forgiving default.
+            if (!endRequestSucceeded)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"BtnEndSession: server didn't confirm end for sessionId={_currentSessionId}; proceeding with local cleanup.");
             }
 
             _isMonitoringStarted = false;
