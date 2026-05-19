@@ -556,9 +556,32 @@ namespace AcademicSentinel.Client.Views.SAC
         public string RoomDescription { get; set; } = string.Empty;
         public string CreatedBy { get; set; } = string.Empty;
         public bool IsJoinable { get; set; }
+        // Server-provided flags driving the joinability text.
+        public bool HasActiveSession { get; set; }
+        public bool StudentWasDisconnected { get; set; }
 
-        public string JoinStatusText => IsJoinable ? "Joinable Now" : "Not Joinable Yet";
-        public string JoinStatusColor => IsJoinable ? "#2E7D32" : "#D32F2F";
+        // Status text precedence:
+        //   1. Student was disconnected from a still-active session →
+        //      orange "In Progress, Reconnect NOW!" so they know to
+        //      rejoin immediately (subject to instructor approval).
+        //   2. Active session exists and student is fresh → green
+        //      "Joinable Now".
+        //   3. No active session → red "Not Joinable Yet" (this also
+        //      covers the case where the teacher already ended the
+        //      session — the room is no longer joinable even if
+        //      room.Status happens to still say "Active" briefly).
+        public string JoinStatusText =>
+            HasActiveSession && StudentWasDisconnected
+                ? "In Progress, Reconnect NOW!"
+                : HasActiveSession
+                    ? "Joinable Now"
+                    : "Not Joinable Yet";
+        public string JoinStatusColor =>
+            HasActiveSession && StudentWasDisconnected
+                ? "#E65100"
+                : HasActiveSession
+                    ? "#2E7D32"
+                    : "#D32F2F";
 
         public Visibility HasNoImageVisibility => string.IsNullOrWhiteSpace(CourseImagePath) ? Visibility.Visible : Visibility.Collapsed;
         public Visibility HasImageVisibility => string.IsNullOrWhiteSpace(CourseImagePath) ? Visibility.Collapsed : Visibility.Visible;
@@ -568,7 +591,11 @@ namespace AcademicSentinel.Client.Views.SAC
 
         public void UpdateJoinStatus()
         {
-            IsJoinable = string.Equals(Status, "Active", StringComparison.OrdinalIgnoreCase);
+            // IsJoinable now keys off the real existence of an Active
+            // ExamSession, not room.Status. Once the teacher ends the
+            // session, IsJoinable goes false even if room.Status takes
+            // a moment to propagate.
+            IsJoinable = HasActiveSession;
         }
 
         private bool _isSelected;

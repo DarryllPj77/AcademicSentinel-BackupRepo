@@ -1044,6 +1044,43 @@ public class RoomsController : ControllerBase
             .Where(u => instructorIds.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id, u => !string.IsNullOrWhiteSpace(u.FullName) ? u.FullName : u.Email);
 
+        // Per-room derivations the student dashboard needs to render the
+        // correct joinability state:
+        //   * HasActiveSession  — there's a live ExamSession.Status=Active
+        //                          in this room RIGHT NOW. This is what
+        //                          gates "Joinable Now" — room.Status
+        //                          alone was unreliable because orphan
+        //                          values could linger.
+        //   * StudentWasDisconnected — this student has a Disconnected
+        //                          participant row for the current Active
+        //                          session. If true, the dashboard shows
+        //                          "In Progress, Reconnect NOW!" instead
+        //                          of "Joinable Now".
+        var roomIds = rooms.Select(r => r.Id).ToList();
+        var activeSessionsByRoom = await _context.ExamSessions
+            .Where(s => roomIds.Contains(s.RoomId) && s.Status == "Active")
+            .GroupBy(s => s.RoomId)
+            .Select(g => new { RoomId = g.Key, Session = g.OrderByDescending(x => x.StartTime).First() })
+            .ToDictionaryAsync(x => x.RoomId, x => x.Session);
+
+        var disconnectedByRoom = new Dictionary<int, bool>();
+        foreach (var room in rooms)
+        {
+            if (!activeSessionsByRoom.TryGetValue(room.Id, out var activeSession))
+            {
+                disconnectedByRoom[room.Id] = false;
+                continue;
+            }
+            var participant = await _context.SessionParticipants
+                .Where(p => p.RoomId == room.Id
+                            && p.StudentId == studentId
+                            && p.JoinedAt >= activeSession.StartTime)
+                .OrderByDescending(p => p.JoinedAt)
+                .FirstOrDefaultAsync();
+            disconnectedByRoom[room.Id] = participant != null
+                && string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase);
+        }
+
         var result = rooms.Select(r =>
         {
             string subjectName = r.SubjectName;
@@ -1059,6 +1096,9 @@ public class RoomsController : ControllerBase
                 }
             }
 
+            bool hasActiveSession = activeSessionsByRoom.ContainsKey(r.Id);
+            bool studentWasDisconnected = disconnectedByRoom.TryGetValue(r.Id, out var d) && d;
+
             return new
             {
                 Id = r.Id,
@@ -1068,7 +1108,9 @@ public class RoomsController : ControllerBase
                 Status = r.Status,
                 CourseImagePath = r.RoomImageUrl,
                 RoomDescription = r.SubjectName,
-                CreatedBy = instructors.TryGetValue(r.InstructorId, out var creator) ? creator : "Unknown Instructor"
+                CreatedBy = instructors.TryGetValue(r.InstructorId, out var creator) ? creator : "Unknown Instructor",
+                HasActiveSession = hasActiveSession,
+                StudentWasDisconnected = studentWasDisconnected
             };
         })
             .ToList();
