@@ -293,12 +293,30 @@ public class RoomsController : ControllerBase
         session.EndTime = DateTime.UtcNow;
         session.Status = "Completed";
 
-        // Also update the Room status back to Pending so it can be reused
+        // CLOSE ALL ACTIVE SESSIONS for this room, not just the one the
+        // client passed in. Reason: if any previous session was orphaned
+        // (Status still "Active" because of a crashed window, force-quit,
+        // or a half-failed End Session), leaving it Active would cause
+        // GetRoomStatus to keep reporting activeSessionId on its next call
+        // and the dashboard banner would reappear. This sweep makes End
+        // Session an idempotent, definitive "the room is closed" operation.
+        var otherActive = await _context.ExamSessions
+            .Where(s => s.RoomId == session.RoomId
+                        && s.Id != session.Id
+                        && s.Status == "Active")
+            .ToListAsync();
+        foreach (var orphan in otherActive)
+        {
+            orphan.Status = "Completed";
+            orphan.EndTime ??= DateTime.UtcNow;
+        }
+
+        // Always flip the Room back to Pending after End Session.
         var room = await _context.Rooms.FindAsync(session.RoomId);
         if (room != null)
         {
             room.Status = "Pending";
-            room.IsMonitoringActive = false; // Bug fix: Bonus
+            room.IsMonitoringActive = false;
         }
 
         await _context.SaveChangesAsync();
@@ -320,17 +338,50 @@ public class RoomsController : ControllerBase
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
 
-        // Surface the active session id so the IMC's rejoin flow can wire
-        // its End Session button to the real server-side session row.
-        // Without this, a teacher who rejoined an in-progress session
-        // (no sessionId passed to the constructor) was unable to actually
-        // end it — the local UI updated but the PUT to /sessions/{id}/end
-        // was skipped because _currentSessionId stayed at 0.
-        var activeSessionId = await _context.ExamSessions
+        // Load all sessions for this room so we can self-heal orphans in
+        // either direction. The status response only needs the freshest
+        // Active session id, but the heal needs the full list.
+        var activeSessions = await _context.ExamSessions
             .Where(s => s.RoomId == roomId && s.Status == "Active")
             .OrderByDescending(s => s.StartTime)
-            .Select(s => (int?)s.Id)
-            .FirstOrDefaultAsync();
+            .ToListAsync();
+
+        int? activeSessionId = activeSessions.FirstOrDefault()?.Id;
+
+        // SELF-HEAL — both directions:
+        //   (A) Room says Active but no underlying Active ExamSession →
+        //       reconcile room to Pending. Used to be the only branch;
+        //       caught half-failed End Session bookkeeping artifacts.
+        //   (B) Room says Pending but there ARE Active ExamSessions →
+        //       those are orphans (the teacher never successfully ended
+        //       them, or a crash skipped EndExamSession). Force them
+        //       Completed and reset activeSessionId to null so the
+        //       Rejoin banner can't keep resurrecting itself.
+        bool healed = false;
+        if (string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase)
+            && activeSessions.Count == 0)
+        {
+            room.Status = "Pending";
+            room.IsMonitoringActive = false;
+            healed = true;
+        }
+        else if (!string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase)
+                 && activeSessions.Count > 0)
+        {
+            foreach (var orphan in activeSessions)
+            {
+                orphan.Status = "Completed";
+                orphan.EndTime ??= DateTime.UtcNow;
+            }
+            activeSessionId = null;
+            room.IsMonitoringActive = false;
+            healed = true;
+        }
+        if (healed)
+        {
+            try { await _context.SaveChangesAsync(); }
+            catch { /* best-effort; next poll will retry */ }
+        }
 
         return Ok(new
         {
