@@ -233,56 +233,70 @@ public class ReportsController : ControllerBase
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
             // -------------------------------------------------------------
-            // ConnectionQuality — STATE-BASED classification.
+            // ConnectionQuality — EVENT-DRIVEN classification.
             //
-            // Time-window filters were brittle (microsecond drift around
-            // session.EndTime, JoinedAt outside the window, etc.) and kept
-            // missing real disconnects. Switching to a strictly state-based
-            // rule that's much simpler:
+            // The Global Log Feed (MonitoringEvents table) is the source of
+            // truth: if STUDENT_DISCONNECTED was logged, the disconnect
+            // happened — period. Time-window filters and participant-row
+            // state proved unreliable across server restarts and session
+            // boundaries, so we now key off the events themselves with NO
+            // window filter on the primary signal.
             //
-            //   1. Find the most recent SessionParticipants row for THIS
-            //      student in THIS room — no time window. This row's
-            //      ConnectionStatus reflects the student's final state.
-            //   2. Check if any STUDENT_DISCONNECTED MonitoringEvent for
-            //      this (room, student) exists anywhere — generous time
-            //      window of ±10 minutes around session bounds, used only
-            //      to detect reconnection (not the primary signal).
-            //
-            //   Final ConnectionStatus = "Disconnected"  → "Disconnected"
-            //                          (student left and didn't come back)
-            //   Disconnect event exists, status now Connected/Completed
-            //                          → "Reconnected"
-            //   No disconnect signal anywhere                → "Clean Connection"
+            // Logic:
+            //   • Look at the latest STUDENT_DISCONNECTED event for this
+            //     (room, student). If none ever existed → "Clean Connection".
+            //   • If a later STUDENT_JOINED / STUDENT_RECONNECTED /
+            //     STUDENT_JOINED_RECONNECTED event came after that
+            //     disconnect → "Reconnected".
+            //   • Otherwise → "Disconnected" (student never came back).
+            //   • As an additional safety net, if the most-recent
+            //     SessionParticipants row's ConnectionStatus is
+            //     "Disconnected", force "Disconnected" regardless.
             // -------------------------------------------------------------
+            var latestDisconnectEvent = await _context.MonitoringEvents
+                .Where(e => e.RoomId == session.RoomId
+                            && e.StudentId == studentId
+                            && e.EventType == "STUDENT_DISCONNECTED")
+                .OrderByDescending(e => e.Timestamp)
+                .Select(e => (DateTime?)e.Timestamp)
+                .FirstOrDefaultAsync();
+
+            DateTime? latestReconnectEvent = null;
+            if (latestDisconnectEvent.HasValue)
+            {
+                latestReconnectEvent = await _context.MonitoringEvents
+                    .Where(e => e.RoomId == session.RoomId
+                                && e.StudentId == studentId
+                                && (e.EventType == "STUDENT_JOINED"
+                                    || e.EventType == "STUDENT_RECONNECTED"
+                                    || e.EventType == "STUDENT_JOINED_RECONNECTED")
+                                && e.Timestamp > latestDisconnectEvent.Value)
+                    .OrderByDescending(e => e.Timestamp)
+                    .Select(e => (DateTime?)e.Timestamp)
+                    .FirstOrDefaultAsync();
+            }
+
             var mostRecentParticipantRow = await _context.SessionParticipants
+                .AsNoTracking()
                 .Where(p => p.RoomId == session.RoomId && p.StudentId == studentId)
                 .OrderByDescending(p => p.JoinedAt)
                 .Select(p => new { p.ConnectionStatus })
                 .FirstOrDefaultAsync();
-
-            bool currentlyDisconnected = mostRecentParticipantRow != null
+            bool rowSaysDisconnected = mostRecentParticipantRow != null
                 && string.Equals(mostRecentParticipantRow.ConnectionStatus, "Disconnected",
                                  StringComparison.OrdinalIgnoreCase);
 
-            // Generous ±10-minute window so reconnect detection is robust
-            // to bookkeeping timestamp drift.
-            var disconnectStart = session.StartTime.AddMinutes(-10);
-            var disconnectEnd = (session.EndTime ?? DateTime.UtcNow).AddMinutes(10);
-            bool hadDisconnectEvent = await _context.MonitoringEvents.AnyAsync(e =>
-                e.RoomId == session.RoomId
-                && e.StudentId == studentId
-                && e.EventType == "STUDENT_DISCONNECTED"
-                && e.Timestamp >= disconnectStart
-                && e.Timestamp <= disconnectEnd);
-
             string connectionQuality;
-            if (currentlyDisconnected)
+            if (latestDisconnectEvent.HasValue)
+            {
+                if (latestReconnectEvent.HasValue && !rowSaysDisconnected)
+                    connectionQuality = "Reconnected";
+                else
+                    connectionQuality = "Disconnected";
+            }
+            else if (rowSaysDisconnected)
             {
                 connectionQuality = "Disconnected";
-            }
-            else if (hadDisconnectEvent)
-            {
-                connectionQuality = "Reconnected";
             }
             else
             {
