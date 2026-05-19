@@ -19,6 +19,57 @@ public class RoomsController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IHubContext<MonitoringHub> _hubContext;
 
+    // ==========================================================
+    // SERVER-AUTHORITATIVE SESSION CONSISTENCY (shared by every
+    // endpoint that needs to look at room/session state).
+    //
+    // Goal: a single function that, given a roomId, returns the
+    // canonical "is there a live session" boolean, and FIXES any
+    // divergence between Room.Status, ExamSession.Status, and the
+    // in-memory _roomsWithDisconnectedInstructor / heartbeat maps.
+    //
+    // Idempotent — safe to call from every read AND write path.
+    // ==========================================================
+    private async Task<bool> EnsureRoomConsistencyAsync(int roomId)
+    {
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null) return false;
+
+        var activeSessions = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .ToListAsync();
+
+        bool roomIsActive = string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
+
+        if (roomIsActive && activeSessions.Count == 0)
+        {
+            // Orphan room flag → reset.
+            room.Status = "Pending";
+            room.IsMonitoringActive = false;
+            await SaveSilentlyAsync();
+            AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+            return false;
+        }
+        if (!roomIsActive && activeSessions.Count > 0)
+        {
+            // Orphan sessions → close them all. No live session anymore.
+            foreach (var s in activeSessions)
+            {
+                s.Status = "Completed";
+                s.EndTime ??= DateTime.UtcNow;
+            }
+            await SaveSilentlyAsync();
+            AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+            return false;
+        }
+        return roomIsActive && activeSessions.Count > 0;
+    }
+
+    private async Task SaveSilentlyAsync()
+    {
+        try { await _context.SaveChangesAsync(); } catch { /* best-effort heal */ }
+    }
+
     public RoomsController(AppDbContext context, IHubContext<MonitoringHub> hubContext)
     {
         _context = context;
@@ -290,28 +341,94 @@ public class RoomsController : ControllerBase
             // can be cleaned up later by the IMC's poll-driven lazy commit.
         }
 
-        session.EndTime = DateTime.UtcNow;
-        session.Status = "Completed";
+        // ============================================================
+        // ATOMIC, IDEMPOTENT END-SESSION TRANSACTION
+        //
+        // Six steps, all in one SaveChangesAsync so partial failure
+        // can't leave inconsistent state behind. Every step is a no-op
+        // if the state has already been transitioned — safe to call
+        // multiple times.
+        //
+        // (1) The clicked session → Completed.
+        // (2) ALL other Active sessions in this room → Completed
+        //     (kills orphans from crashes / half-closes / etc.).
+        // (3) Final disconnect flush — best-effort heartbeat-based
+        //     bookkeeping for participants who didn't return.
+        // (4) Room → Pending, IsMonitoringActive=false.
+        // (5) Clear the in-memory instructor-disconnect flag AND drain
+        //     every heartbeat entry for this room so the sweeper /
+        //     status endpoints can't resurrect Active state.
+        // (6) Broadcast SessionEnded to the room group AND to each
+        //     enrolled student individually (covers students who left
+        //     the SignalR group / aren't in any group right now).
+        // ============================================================
 
-        // CLOSE ALL ACTIVE SESSIONS for this room, not just the one the
-        // client passed in. Reason: if any previous session was orphaned
-        // (Status still "Active" because of a crashed window, force-quit,
-        // or a half-failed End Session), leaving it Active would cause
-        // GetRoomStatus to keep reporting activeSessionId on its next call
-        // and the dashboard banner would reappear. This sweep makes End
-        // Session an idempotent, definitive "the room is closed" operation.
-        var otherActive = await _context.ExamSessions
-            .Where(s => s.RoomId == session.RoomId
-                        && s.Id != session.Id
-                        && s.Status == "Active")
+        // (1) + (2)
+        var allActiveInRoom = await _context.ExamSessions
+            .Where(s => s.RoomId == session.RoomId && s.Status == "Active")
             .ToListAsync();
-        foreach (var orphan in otherActive)
+        foreach (var s in allActiveInRoom)
         {
-            orphan.Status = "Completed";
-            orphan.EndTime ??= DateTime.UtcNow;
+            s.Status = "Completed";
+            s.EndTime ??= DateTime.UtcNow;
+        }
+        // Idempotency safety: if the clicked session wasn't in the active
+        // set (already Completed), still ensure its EndTime is populated.
+        if (!string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+        {
+            session.Status = "Completed";
+            session.EndTime ??= DateTime.UtcNow;
         }
 
-        // Always flip the Room back to Pending after End Session.
+        // (3) Disconnect flush — best-effort, fully isolated from the
+        //     critical close path.
+        try
+        {
+            var liveCutoff = DateTime.UtcNow.AddSeconds(-15);
+            var aliveStudentIdsAtEnd = new HashSet<int>();
+            foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+            {
+                if (kv.Value.RoomId == session.RoomId && kv.Value.LastBeat >= liveCutoff)
+                    aliveStudentIdsAtEnd.Add(kv.Value.StudentId);
+            }
+
+            var participantsToFlush = await _context.SessionParticipants
+                .Where(p => p.RoomId == session.RoomId
+                            && p.JoinedAt >= session.StartTime
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected")
+                .ToListAsync();
+
+            foreach (var p in participantsToFlush)
+            {
+                if (aliveStudentIdsAtEnd.Contains(p.StudentId)) continue;
+
+                p.ConnectionStatus = "Disconnected";
+                p.DisconnectedAt = DateTime.UtcNow;
+                p.JoinApprovalStatus = null;
+                p.IsCurrentlyActive = false;
+
+                _context.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    EventType = "STUDENT_DISCONNECTED",
+                    Description = "Student was offline when the instructor ended the session.",
+                    SeverityScore = 0,
+                    RoomId = p.RoomId,
+                    StudentId = p.StudentId,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                try
+                {
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentDisconnected", p.StudentId);
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentConnectionLost", p.StudentId);
+                }
+                catch { /* broadcast best-effort */ }
+            }
+        }
+        catch { /* flush is best-effort — close path proceeds */ }
+
+        // (4)
         var room = await _context.Rooms.FindAsync(session.RoomId);
         if (room != null)
         {
@@ -319,17 +436,36 @@ public class RoomsController : ControllerBase
             room.IsMonitoringActive = false;
         }
 
-        // Clear the instructor-disconnect flag so the dashboard banner
-        // / IN PROGRESS pill disappears immediately on the next status
-        // refresh, regardless of whether the teacher's previous IMC
-        // window closed cleanly or by drop.
+        // (5) In-memory state.
         AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(session.RoomId, out _);
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId == session.RoomId)
+                AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+        }
 
         await _context.SaveChangesAsync();
 
-        // Broadcast to SignalR that the session is over...
+        // (6) Broadcasts — group AND per-user. The per-user broadcast is
+        //     critical: students on the dashboard / waiting room aren't
+        //     in the SignalR room group, so they'd otherwise miss the
+        //     SessionEnded signal entirely.
         await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("MonitoringStateChanged", false);
         await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("SessionEnded");
+
+        var enrolledStudentIds = await _context.RoomEnrollments
+            .Where(e => e.RoomId == session.RoomId)
+            .Select(e => e.StudentId)
+            .ToListAsync();
+        foreach (var sid in enrolledStudentIds)
+        {
+            try
+            {
+                await _hubContext.Clients.User(sid.ToString())
+                    .SendAsync("SessionEndedForcedExit", session.RoomId);
+            }
+            catch { /* per-user broadcast best-effort */ }
+        }
 
         return Ok(new { message = "Session officially ended and logged in history." });
     }
@@ -474,6 +610,13 @@ public class RoomsController : ControllerBase
     {
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
+
+        // Self-heal stale state BEFORE the "exam running" check, so a
+        // ghost room.Status=Active with no real Active ExamSession
+        // doesn't block legitimate setting changes.
+        await EnsureRoomConsistencyAsync(roomId);
+        // Reload to pick up any heal changes.
+        await _context.Entry(room).ReloadAsync();
 
         if (room.Status == "Active") return BadRequest("Cannot modify settings while an exam is running.");
 

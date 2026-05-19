@@ -1384,6 +1384,25 @@ namespace AcademicSentinel.Client.Views.SAC
                 // Server fires SessionEnded; SAC stops the detector, freezes
                 // the UI to the END banner, ticks down 3 → 2 → 1, then
                 // closes the window so the dashboard regains focus.
+                // Per-user fallback for any case where the SAC is no longer
+                // in the room SignalR group (transient drop, mid-rejoin, etc.).
+                // The server fires this AFTER the room-group SessionEnded
+                // broadcast so the SAC is guaranteed to receive at least one.
+                _hubConnection.On<int>("SessionEndedForcedExit", endedRoomId =>
+                {
+                    if (endedRoomId != _roomId) return;
+                    _ = Dispatcher.InvokeAsync(() =>
+                    {
+                        if (_sessionEnded) return; // already torn down
+                        _sessionEnded = true;
+                        try { _detectorRuntime?.Stop(); } catch { }
+                        _allowClose = true;
+                        _isLeaveApproved = true;
+                        try { new StudentDashboard().Show(); } catch { }
+                        Close();
+                    });
+                });
+
                 _hubConnection.On("SessionEnded", () =>
                 {
                     _ = Dispatcher.InvokeAsync(async () =>
