@@ -569,15 +569,31 @@ public class MonitoringHub : Hub
 
                 if (activeRoom != null)
                 {
-                    // BEHAVIOR CHANGE: Per requirement, an instructor drop
-                    // must NOT end the session. Monitoring continues on every
-                    // connected student, detection stays armed (no implicit
-                    // pause), and the room stays Active so the instructor
-                    // can reconnect and resume control. Only the audit-trail
-                    // event + TeacherDisconnected broadcast remain; the
-                    // session.Status / room.Status mutations and the
-                    // SessionInterrupted broadcast were removed because they
-                    // were the path that force-closed the student SAC.
+                    // CANONICAL TRUTH CHECK — verify against the LATEST
+                    // ExamSession before flagging the room as "instructor
+                    // disconnected". Room.Status can be stale during the
+                    // race between EndExamSession's save and this handler
+                    // firing; without this verification a clean End Session
+                    // could be immediately followed by the disconnect
+                    // handler re-flagging the room, making the dashboard
+                    // banner reappear after a successful end.
+                    var latestForCheck = await db.ExamSessions
+                        .Where(s => s.RoomId == activeRoom.Id)
+                        .OrderByDescending(s => s.StartTime)
+                        .FirstOrDefaultAsync();
+                    bool latestIsActive = latestForCheck != null
+                        && string.Equals(latestForCheck.Status, "Active", StringComparison.OrdinalIgnoreCase);
+                    if (!latestIsActive)
+                    {
+                        // Session was already cleanly ended. Don't flag the
+                        // room — and proactively drain any leftover flag in
+                        // case a prior path set one. Then bail.
+                        _roomsWithDisconnectedInstructor.TryRemove(activeRoom.Id, out _);
+                        await db.SaveChangesAsync();
+                        await base.OnDisconnectedAsync(exception);
+                        return;
+                    }
+
                     db.MonitoringEvents.Add(new MonitoringEvent
                     {
                         RoomId = activeRoom.Id,
@@ -588,12 +604,9 @@ public class MonitoringHub : Hub
                         Timestamp = DateTime.UtcNow
                     });
 
-                    // Flag this room as having a dropped instructor. The
-                    // teacher dashboard's "Monitoring Session In Progress"
-                    // banner / "IN PROGRESS" pill now read from THIS flag
-                    // — they're no longer derived from session/room status
-                    // (which can be muddied by student disconnects, orphan
-                    // ExamSession rows, etc.).
+                    // Flag this room as having a dropped instructor. Only
+                    // fires when canonical latest-session truth confirms
+                    // the session is genuinely Active.
                     _roomsWithDisconnectedInstructor[activeRoom.Id] = true;
 
                     await db.SaveChangesAsync();
