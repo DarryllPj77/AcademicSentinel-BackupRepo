@@ -224,40 +224,58 @@ public class ReportsController : ControllerBase
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
             // -------------------------------------------------------------
-            // ConnectionQuality classification per student per session.
-            //   "Clean Connection" — no STUDENT_DISCONNECTED events in this
-            //                        student's session log. They stayed on
-            //                        the whole time.
-            //   "Reconnected"      — a STUDENT_DISCONNECTED event exists,
-            //                        AND a later participant.JoinedAt
-            //                        timestamp proves the student came back.
-            //   "Disconnected"     — STUDENT_DISCONNECTED exists with NO
-            //                        subsequent rejoin in this session.
+            // ConnectionQuality classification — uses BOTH event signal
+            // and final-participant-row signal so we never miss a real
+            // disconnect even when the event write was delayed or
+            // timestamped outside the session window.
+            //
+            //   "Disconnected"     — last participant row for this student
+            //                        in this session ended in "Disconnected"
+            //                        (didn't come back) OR there was a
+            //                        disconnect event with no later rejoin.
+            //   "Reconnected"      — disconnect signal exists AND the
+            //                        latest participant row's ConnectionStatus
+            //                        is "Connected"/"Completed" (they came back).
+            //   "Clean Connection" — no disconnect signal of any kind.
             // -------------------------------------------------------------
             DateTime? lastDisconnectAt = logs
                 .Where(l => l.EventType == "STUDENT_DISCONNECTED")
                 .Select(l => (DateTime?)l.Timestamp)
                 .Max();
 
+            // Final participant-row state inside this session window.
+            var lastParticipantRow = await _context.SessionParticipants
+                .Where(p => p.RoomId == session.RoomId
+                            && p.StudentId == studentId
+                            && p.JoinedAt >= session.StartTime
+                            && (session.EndTime == null || p.JoinedAt <= session.EndTime))
+                .OrderByDescending(p => p.JoinedAt)
+                .Select(p => new { p.JoinedAt, p.ConnectionStatus, p.DisconnectedAt })
+                .FirstOrDefaultAsync();
+
+            bool participantEndedDisconnected = lastParticipantRow != null
+                && string.Equals(lastParticipantRow.ConnectionStatus, "Disconnected",
+                                 StringComparison.OrdinalIgnoreCase);
+
+            // Any signal that a disconnect happened at all in this session.
+            bool anyDisconnectSignal = lastDisconnectAt.HasValue || participantEndedDisconnected;
+
             string connectionQuality;
-            if (!lastDisconnectAt.HasValue)
+            if (!anyDisconnectSignal)
             {
                 connectionQuality = "Clean Connection";
             }
+            else if (participantEndedDisconnected)
+            {
+                // Final state is Disconnected — student didn't return.
+                connectionQuality = "Disconnected";
+            }
             else
             {
-                var latestJoinAt = await _context.SessionParticipants
-                    .Where(p => p.RoomId == session.RoomId
-                                && p.StudentId == studentId
-                                && p.JoinedAt >= session.StartTime
-                                && (session.EndTime == null || p.JoinedAt <= session.EndTime))
-                    .OrderByDescending(p => p.JoinedAt)
-                    .Select(p => (DateTime?)p.JoinedAt)
-                    .FirstOrDefaultAsync();
-
-                connectionQuality = latestJoinAt.HasValue && latestJoinAt.Value > lastDisconnectAt.Value
-                    ? "Reconnected"
-                    : "Disconnected";
+                // A disconnect event exists, but the final participant row
+                // is no longer Disconnected → student rejoined and either
+                // stayed Connected or cleanly Completed.
+                connectionQuality = "Reconnected";
             }
 
             result.Add(new {
