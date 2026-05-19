@@ -67,6 +67,49 @@ public class RoomsController : ControllerBase
         bool latestIsActive = latest != null
             && string.Equals(latest.Status, "Active", StringComparison.OrdinalIgnoreCase);
 
+        // PHANTOM-ACTIVE DETECTION.
+        //
+        // A session can be Status="Active" in the DB but functionally
+        // dead — IMC was force-closed without End Session, server
+        // crashed mid-save, etc. Symptoms: no live SAC heartbeats, no
+        // instructor in the room group. From the teacher dashboard's
+        // and student dashboard's perspective there IS no exam — but
+        // the row keeps blocking Save Settings and showing "Joinable".
+        //
+        // Heuristic: if latest is Active AND
+        //   (no _activeStudentConnections entries exist for this room)
+        //   AND
+        //   (no entry in _roomsWithDisconnectedInstructor for this room)
+        //   AND
+        //   (session is older than 30 seconds so we don't kill brand-new starts)
+        // → mark it Completed and treat as inactive going forward.
+        if (latestIsActive && latest != null
+            && (DateTime.UtcNow - latest.StartTime).TotalSeconds > 30)
+        {
+            bool anyLiveStudent = false;
+            foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+            {
+                if (kv.Value.RoomId == roomId)
+                {
+                    anyLiveStudent = true;
+                    break;
+                }
+            }
+            bool instructorMarkedDisconnected = AcademicSentinel.Server.Hubs
+                .MonitoringHub._roomsWithDisconnectedInstructor.ContainsKey(roomId);
+
+            // No live student AND instructor isn't even in the "dropped"
+            // map → nobody anywhere is connected to this session. It's
+            // a phantom. Close it.
+            if (!anyLiveStudent && !instructorMarkedDisconnected)
+            {
+                latest.Status = "Completed";
+                latest.EndTime ??= DateTime.UtcNow;
+                latestIsActive = false;
+                // SaveChanges will be batched below.
+            }
+        }
+
         bool changed = false;
 
         // Close every Active session that is NOT the latest. Capture
