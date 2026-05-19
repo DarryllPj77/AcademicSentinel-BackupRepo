@@ -569,10 +569,31 @@ namespace AcademicSentinel.Client.Views.SAC
         public string CourseImagePath { get; set; } = string.Empty;
         public string RoomDescription { get; set; } = string.Empty;
         public string CreatedBy { get; set; } = string.Empty;
-        public bool IsJoinable { get; set; }
-        // Server-provided flags driving the joinability text.
-        public bool HasActiveSession { get; set; }
-        public bool StudentWasDisconnected { get; set; }
+        // Server-derived state — IsJoinable, HasActiveSession,
+        // StudentWasDisconnected all raise PropertyChanged on the
+        // computed tile labels (JoinStatusText / JoinStatusColor) so the
+        // WPF bindings repaint immediately after each 8 s auto-sync.
+        // Without these notifications the tile would keep displaying a
+        // stale "Joinable Now" label even after the server response
+        // flipped the underlying flags.
+        private bool _isJoinable;
+        public bool IsJoinable
+        {
+            get => _isJoinable;
+            set { _isJoinable = value; OnPropertyChanged(); OnPropertyChanged(nameof(JoinStatusText)); OnPropertyChanged(nameof(JoinStatusColor)); }
+        }
+        private bool _hasActiveSession;
+        public bool HasActiveSession
+        {
+            get => _hasActiveSession;
+            set { _hasActiveSession = value; OnPropertyChanged(); OnPropertyChanged(nameof(JoinStatusText)); OnPropertyChanged(nameof(JoinStatusColor)); }
+        }
+        private bool _studentWasDisconnected;
+        public bool StudentWasDisconnected
+        {
+            get => _studentWasDisconnected;
+            set { _studentWasDisconnected = value; OnPropertyChanged(); OnPropertyChanged(nameof(JoinStatusText)); OnPropertyChanged(nameof(JoinStatusColor)); }
+        }
 
         // Status text precedence:
         //   1. Student was disconnected from a still-active session →

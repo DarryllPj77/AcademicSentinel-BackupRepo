@@ -1776,6 +1776,24 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
             }
 
+            // Always follow up with /force-reset on the room. This is
+            // idempotent on the server and guarantees room.Status flips
+            // to Pending even when the sessionId-based call returned
+            // 404 ("No active session record found to end"). Without
+            // this fallback the room could stay stuck as Active and
+            // every subsequent setup attempt would fail.
+            try
+            {
+                using var resetClient = new HttpClient();
+                resetClient.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                var resetResponse = await resetClient.PostAsync(
+                    $"{ApiEndpoints.Rooms}/{_roomId}/force-reset", null);
+                if (resetResponse.IsSuccessStatusCode)
+                    endRequestSucceeded = true;
+            }
+            catch { /* best-effort */ }
+
             // End Session always proceeds with local cleanup, even if
             // the server didn't confirm the PUT. Reasoning: blocking the
             // teacher's workflow when a student happens to be disconnected

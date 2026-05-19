@@ -263,7 +263,17 @@ public class RoomsController : ControllerBase
     public async Task<IActionResult> EndExamSession(int sessionId)
     {
         var session = await _context.ExamSessions.FindAsync(sessionId);
-        if (session == null) return NotFound("Session not found.");
+        if (session == null)
+        {
+            // Idempotent fallback: even when the session row is missing,
+            // we still try to fully reset the room. Without this branch,
+            // a 404 here would leave Room.Status="Active" stuck because
+            // the caller's End-Session click never reached the room save.
+            // We can't know the roomId without the session, so the client
+            // must call /force-reset when this returns 404 (handled in
+            // the IMC's BtnEndSession_Click).
+            return NotFound("Session not found.");
+        }
 
         // -------------------------------------------------------------
         // FINAL DISCONNECT FLUSH.
@@ -470,6 +480,106 @@ public class RoomsController : ControllerBase
         return Ok(new { message = "Session officially ended and logged in history." });
     }
 
+    // ==============================================================
+    // FORCE-RESET ENDPOINT — server-authoritative, idempotent, by ROOM.
+    //
+    // Use case: teacher clicks End Session but the sessionId tracked on
+    // the client is stale / 0 / belongs to a session that's already
+    // Completed. We still need to be able to clear Room.Status from
+    // "Active" → "Pending", flush participants, drain in-memory state,
+    // and broadcast SessionEnded. This endpoint does ALL of that
+    // unconditionally, in a single SaveChangesAsync.
+    //
+    // Safe to call multiple times. Always returns 200.
+    // ==============================================================
+    [HttpPost("{roomId}/force-reset")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> ForceResetRoom(int roomId)
+    {
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null) return NotFound("Room not found.");
+
+        // 1. Close every Active session in the room.
+        var activeSessions = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .ToListAsync();
+        foreach (var s in activeSessions)
+        {
+            s.Status = "Completed";
+            s.EndTime ??= DateTime.UtcNow;
+        }
+
+        // 2. Reset room.
+        room.Status = "Pending";
+        room.IsMonitoringActive = false;
+
+        // 3. Flush non-finalized participants — but only those in the
+        //    window of any session we just closed (most recent
+        //    session's StartTime as cutoff).
+        var cutoff = activeSessions
+            .OrderByDescending(s => s.StartTime)
+            .Select(s => (DateTime?)s.StartTime)
+            .FirstOrDefault() ?? DateTime.UtcNow.AddHours(-24);
+
+        var participantsToFlush = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId
+                        && p.JoinedAt >= cutoff
+                        && p.ConnectionStatus != "Completed"
+                        && p.ConnectionStatus != "Disconnected")
+            .ToListAsync();
+        foreach (var p in participantsToFlush)
+        {
+            p.ConnectionStatus = "Disconnected";
+            p.DisconnectedAt = DateTime.UtcNow;
+            p.JoinApprovalStatus = null;
+            p.IsCurrentlyActive = false;
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                EventType = "STUDENT_DISCONNECTED",
+                Description = "Session was force-ended by the instructor.",
+                SeverityScore = 0,
+                RoomId = roomId,
+                StudentId = p.StudentId,
+                Timestamp = DateTime.UtcNow
+            });
+        }
+
+        // 4. Drain in-memory state.
+        AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId == roomId)
+                AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+        }
+
+        await _context.SaveChangesAsync();
+
+        // 5. Broadcasts — room group + per-user.
+        try
+        {
+            await _hubContext.Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", false);
+            await _hubContext.Clients.Group(roomId.ToString()).SendAsync("SessionEnded");
+
+            var enrolledStudentIds = await _context.RoomEnrollments
+                .Where(e => e.RoomId == roomId)
+                .Select(e => e.StudentId)
+                .ToListAsync();
+            foreach (var sid in enrolledStudentIds)
+            {
+                try { await _hubContext.Clients.User(sid.ToString()).SendAsync("SessionEndedForcedExit", roomId); }
+                catch { }
+            }
+        }
+        catch { /* broadcasts best-effort */ }
+
+        return Ok(new
+        {
+            message = "Room force-reset complete.",
+            closedSessions = activeSessions.Count,
+            flushedParticipants = participantsToFlush.Count
+        });
+    }
+
     // Spec v3/v4: GET /api/rooms/{sessionId}/status — returns the room's
     // current lifecycle state (Pending / Countdown / Active / Ended) and
     // whether monitoring is currently engaged. Useful for SAC clients that
@@ -608,17 +718,22 @@ public class RoomsController : ControllerBase
     [HttpPut("{roomId}/settings")]
     public async Task<ActionResult<RoomDetectionSettings>> SaveRoomSettings(int roomId, [FromBody] RoomSetupDto setupRequest)
     {
-        var room = await _context.Rooms.FindAsync(roomId);
+        // Self-heal stale state BEFORE checking room.Status. The helper
+        // re-uses the same DbContext so any modifications it makes are
+        // already saved by the time it returns. We then drop and re-fetch
+        // the tracked entity to guarantee fresh state regardless of EF's
+        // identity-map behavior.
+        await EnsureRoomConsistencyAsync(roomId);
+
+        var room = await _context.Rooms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == roomId);
         if (room == null) return NotFound("Room not found.");
 
-        // Self-heal stale state BEFORE the "exam running" check, so a
-        // ghost room.Status=Active with no real Active ExamSession
-        // doesn't block legitimate setting changes.
-        await EnsureRoomConsistencyAsync(roomId);
-        // Reload to pick up any heal changes.
-        await _context.Entry(room).ReloadAsync();
+        if (string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            return BadRequest("Cannot modify settings while an exam is running.");
 
-        if (room.Status == "Active") return BadRequest("Cannot modify settings while an exam is running.");
+        // Reattach for the subsequent updates below.
+        room = await _context.Rooms.FindAsync(roomId);
+        if (room == null) return NotFound("Room not found.");
 
         // REQUIRED — LMS Exam URL must be a valid HTTPS absolute URL with
         // a real host. Reject empty / invalid / non-HTTPS / hostless inputs.
