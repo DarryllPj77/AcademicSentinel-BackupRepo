@@ -66,23 +66,20 @@ public class RoomsController : ControllerBase
         var latest = sessions.FirstOrDefault();
         bool latestIsActive = latest != null
             && string.Equals(latest.Status, "Active", StringComparison.OrdinalIgnoreCase);
+        bool changed = false;
 
         // PHANTOM-ACTIVE DETECTION.
         //
         // A session can be Status="Active" in the DB but functionally
-        // dead — IMC was force-closed without End Session, server
-        // crashed mid-save, etc. Symptoms: no live SAC heartbeats, no
-        // instructor in the room group. From the teacher dashboard's
-        // and student dashboard's perspective there IS no exam — but
-        // the row keeps blocking Save Settings and showing "Joinable".
+        // dead — IMC was force-closed, server crashed, etc. The teacher
+        // dashboard then shows a phantom "Monitoring Session In Progress"
+        // banner that never goes away.
         //
-        // Heuristic: if latest is Active AND
-        //   (no _activeStudentConnections entries exist for this room)
-        //   AND
-        //   (no entry in _roomsWithDisconnectedInstructor for this room)
-        //   AND
-        //   (session is older than 30 seconds so we don't kill brand-new starts)
-        // → mark it Completed and treat as inactive going forward.
+        // Rule: an exam with NO live student heartbeats for ≥30 seconds
+        // is functionally over. The instructor's connection state is
+        // irrelevant — if no student is being monitored, there's no
+        // monitoring happening. Close the session and drain the
+        // instructor-disconnect flag so the banner can't resurrect.
         if (latestIsActive && latest != null
             && (DateTime.UtcNow - latest.StartTime).TotalSeconds > 30)
         {
@@ -95,22 +92,19 @@ public class RoomsController : ControllerBase
                     break;
                 }
             }
-            bool instructorMarkedDisconnected = AcademicSentinel.Server.Hubs
-                .MonitoringHub._roomsWithDisconnectedInstructor.ContainsKey(roomId);
 
-            // No live student AND instructor isn't even in the "dropped"
-            // map → nobody anywhere is connected to this session. It's
-            // a phantom. Close it.
-            if (!anyLiveStudent && !instructorMarkedDisconnected)
+            if (!anyLiveStudent)
             {
                 latest.Status = "Completed";
                 latest.EndTime ??= DateTime.UtcNow;
                 latestIsActive = false;
-                // SaveChanges will be batched below.
+                // Drain the instructor flag — no live students means the
+                // session is over; teacher can't "rejoin" something dead.
+                AcademicSentinel.Server.Hubs.MonitoringHub
+                    ._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+                changed = true;
             }
         }
-
-        bool changed = false;
 
         // Close every Active session that is NOT the latest. Capture
         // their ids so we can finalize their stale participants too.
