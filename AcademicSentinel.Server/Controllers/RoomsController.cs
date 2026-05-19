@@ -771,22 +771,34 @@ public class RoomsController : ControllerBase
     [HttpPut("{roomId}/settings")]
     public async Task<ActionResult<RoomDetectionSettings>> SaveRoomSettings(int roomId, [FromBody] RoomSetupDto setupRequest)
     {
-        // Self-heal stale state BEFORE checking room.Status. The helper
-        // re-uses the same DbContext so any modifications it makes are
-        // already saved by the time it returns. We then drop and re-fetch
-        // the tracked entity to guarantee fresh state regardless of EF's
-        // identity-map behavior.
+        // Heal first so any orphan rows get closed in the DB.
         await EnsureRoomConsistencyAsync(roomId);
 
-        var room = await _context.Rooms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == roomId);
-        if (room == null) return NotFound("Room not found.");
+        // CANONICAL TRUTH CHECK: skip Room.Status entirely (it's a cache
+        // that can lag if a save was swallowed). Look directly at the
+        // latest session by StartTime — that's the only source of truth.
+        var latestSession = await _context.ExamSessions
+            .AsNoTracking()
+            .Where(s => s.RoomId == roomId)
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
 
-        if (string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase))
+        bool isReallyActive = latestSession != null
+            && string.Equals(latestSession.Status, "Active", StringComparison.OrdinalIgnoreCase);
+
+        if (isReallyActive)
             return BadRequest("Cannot modify settings while an exam is running.");
 
-        // Reattach for the subsequent updates below.
-        room = await _context.Rooms.FindAsync(roomId);
+        var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
+
+        // Defensive: if Room.Status was stale Active despite no active
+        // session, force-flip it now so the next request reads cleanly.
+        if (string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase))
+        {
+            room.Status = "Pending";
+            room.IsMonitoringActive = false;
+        }
 
         // REQUIRED — LMS Exam URL must be a valid HTTPS absolute URL with
         // a real host. Reject empty / invalid / non-HTTPS / hostless inputs.
