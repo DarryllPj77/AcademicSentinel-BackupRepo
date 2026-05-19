@@ -389,6 +389,20 @@ namespace AcademicSentinel.Client.Views.SAC
                             MessageBox.Show("This room no longer exists or you were removed from it.", "Room Update", MessageBoxButton.OK, MessageBoxImage.Warning);
                             ShowCourses();
                         }
+                        else if (!activeRoom.HasActiveSession)
+                        {
+                            // Teacher ended the session while the student was
+                            // sitting on the waiting screen. Auto-return to
+                            // courses so the student doesn't keep staring at
+                            // a "Joinable" prompt for a session that no
+                            // longer exists. Their participant row will be
+                            // flagged Disconnected in the Session Archive by
+                            // the EndExamSession flush.
+                            MessageBox.Show(
+                                "The instructor has ended the session. Returning to your courses.",
+                                "Session Ended", MessageBoxButton.OK, MessageBoxImage.Information);
+                            ShowCourses();
+                        }
                         else
                         {
                             _activeRoomTitle = activeRoom.CourseDescription;

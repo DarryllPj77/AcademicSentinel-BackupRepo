@@ -1044,24 +1044,54 @@ public class RoomsController : ControllerBase
             .Where(u => instructorIds.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id, u => !string.IsNullOrWhiteSpace(u.FullName) ? u.FullName : u.Email);
 
-        // Per-room derivations the student dashboard needs to render the
-        // correct joinability state:
-        //   * HasActiveSession  — there's a live ExamSession.Status=Active
-        //                          in this room RIGHT NOW. This is what
-        //                          gates "Joinable Now" — room.Status
-        //                          alone was unreliable because orphan
-        //                          values could linger.
-        //   * StudentWasDisconnected — this student has a Disconnected
-        //                          participant row for the current Active
-        //                          session. If true, the dashboard shows
-        //                          "In Progress, Reconnect NOW!" instead
-        //                          of "Joinable Now".
+        // Per-room derivations + SELF-HEAL for stale state. The student
+        // dashboard MUST never show "Joinable" for a room whose teacher
+        // already ended the session. Two bidirectional reconciliations:
+        //   (A) room.Status=Active but no Active ExamSession → reset room.
+        //   (B) room.Status≠Active but Active ExamSession still around →
+        //       force-close those orphans.
+        // After this block the derived state is consistent regardless of
+        // whatever leftover bookkeeping caused the divergence.
         var roomIds = rooms.Select(r => r.Id).ToList();
         var activeSessionsByRoom = await _context.ExamSessions
             .Where(s => roomIds.Contains(s.RoomId) && s.Status == "Active")
             .GroupBy(s => s.RoomId)
             .Select(g => new { RoomId = g.Key, Session = g.OrderByDescending(x => x.StartTime).First() })
             .ToDictionaryAsync(x => x.RoomId, x => x.Session);
+
+        bool healed = false;
+        foreach (var room in rooms)
+        {
+            bool hasActive = activeSessionsByRoom.ContainsKey(room.Id);
+            bool roomIsActive = string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
+
+            // (A) Orphan room flag — reset.
+            if (roomIsActive && !hasActive)
+            {
+                room.Status = "Pending";
+                room.IsMonitoringActive = false;
+                healed = true;
+            }
+            // (B) Orphan session — close it.
+            else if (!roomIsActive && hasActive)
+            {
+                var staleSessions = await _context.ExamSessions
+                    .Where(s => s.RoomId == room.Id && s.Status == "Active")
+                    .ToListAsync();
+                foreach (var s in staleSessions)
+                {
+                    s.Status = "Completed";
+                    s.EndTime ??= DateTime.UtcNow;
+                }
+                activeSessionsByRoom.Remove(room.Id);
+                healed = true;
+            }
+        }
+        if (healed)
+        {
+            try { await _context.SaveChangesAsync(); }
+            catch { /* best-effort; next poll will retry */ }
+        }
 
         var disconnectedByRoom = new Dictionary<int, bool>();
         foreach (var room in rooms)
