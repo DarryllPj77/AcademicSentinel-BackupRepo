@@ -122,9 +122,11 @@ namespace AcademicSentinel.Client.Views.IMC
                                             ? room.RoomImageUrl
                                             : $"{ApiEndpoints.BaseUrl}{room.RoomImageUrl}"),
                                     IsSelected = false,
-                                    // Surface the live-session indicator on the tile.
-                                    IsSessionInProgress = string.Equals(
-                                        room.Status, "Active", StringComparison.OrdinalIgnoreCase)
+                                    // IN PROGRESS pill = the instructor dropped
+                                    // out of an active session without ending
+                                    // it. Decoupled from room.Status and from
+                                    // student state per UX requirement.
+                                    IsSessionInProgress = room.InstructorDisconnected
                                 });
                             }
                             UpdateEmptyState();
@@ -727,6 +729,9 @@ namespace AcademicSentinel.Client.Views.IMC
         public DateTime CreatedAt { get; set; }
         public string? RoomImageUrl { get; set; }
         public DateTime? RoomImageUploadedAt { get; set; }
+        // True only when the instructor's IMC dropped without End Session
+        // for this room. Drives the course-tile "IN PROGRESS" pill.
+        public bool InstructorDisconnected { get; set; }
     }
 
 

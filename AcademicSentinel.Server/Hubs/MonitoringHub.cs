@@ -42,6 +42,15 @@ public class MonitoringHub : Hub
     }
     internal static readonly ConcurrentDictionary<string, ActiveStudentConnection> _activeStudentConnections = new();
 
+    // Per-room flag set when the instructor's IMC connection drops without
+    // calling End Session. This is the single source of truth for the
+    // dashboard's "Monitoring Session In Progress" banner and the
+    // course-tile "IN PROGRESS" pill — completely independent of student
+    // state, ExamSession.Status, or room.Status. The flag is cleared when:
+    //   * The instructor calls JoinRoom (they came back).
+    //   * EndExamSession (RoomsController) runs (clean close).
+    internal static readonly ConcurrentDictionary<int, bool> _roomsWithDisconnectedInstructor = new();
+
     public MonitoringHub(AppDbContext context, IServiceScopeFactory scopeFactory, ILogger<MonitoringHub> logger)
     {
         _context = context;
@@ -74,6 +83,16 @@ public class MonitoringHub : Hub
     {
         // Adds the teacher to the SignalR group for this specific exam
         await Groups.AddToGroupAsync(Context.ConnectionId, roomId);
+
+        // Clear any "instructor dropped" flag for this room — they're
+        // back in session. This keeps the dashboard banner / IN PROGRESS
+        // pill in sync without waiting for an additional poll.
+        var roleNow = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (string.Equals(roleNow, "Instructor", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(roomId, out int rId))
+        {
+            _roomsWithDisconnectedInstructor.TryRemove(rId, out _);
+        }
 
         // If an Instructor is rejoining a room whose session is still
         // Active (typical scenario: their previous connection dropped and
@@ -554,6 +573,14 @@ public class MonitoringHub : Hub
                         SeverityScore = 0,
                         Timestamp = DateTime.UtcNow
                     });
+
+                    // Flag this room as having a dropped instructor. The
+                    // teacher dashboard's "Monitoring Session In Progress"
+                    // banner / "IN PROGRESS" pill now read from THIS flag
+                    // — they're no longer derived from session/room status
+                    // (which can be muddied by student disconnects, orphan
+                    // ExamSession rows, etc.).
+                    _roomsWithDisconnectedInstructor[activeRoom.Id] = true;
 
                     await db.SaveChangesAsync();
 

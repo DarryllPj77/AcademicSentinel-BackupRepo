@@ -319,6 +319,12 @@ public class RoomsController : ControllerBase
             room.IsMonitoringActive = false;
         }
 
+        // Clear the instructor-disconnect flag so the dashboard banner
+        // / IN PROGRESS pill disappears immediately on the next status
+        // refresh, regardless of whether the teacher's previous IMC
+        // window closed cleanly or by drop.
+        AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(session.RoomId, out _);
+
         await _context.SaveChangesAsync();
 
         // Broadcast to SignalR that the session is over...
@@ -383,13 +389,20 @@ public class RoomsController : ControllerBase
             catch { /* best-effort; next poll will retry */ }
         }
 
+        // The dashboard banner is driven by this flag alone — set when
+        // the instructor's IMC connection drops without End Session, and
+        // cleared on JoinRoom or EndExamSession.
+        bool instructorDisconnected = AcademicSentinel.Server.Hubs.MonitoringHub
+            ._roomsWithDisconnectedInstructor.ContainsKey(roomId);
+
         return Ok(new
         {
             roomId = room.Id,
             status = room.Status,
             isMonitoringActive = room.IsMonitoringActive,
             subjectName = room.SubjectName,
-            activeSessionId
+            activeSessionId,
+            instructorDisconnected
         });
     }
 
@@ -983,7 +996,22 @@ public class RoomsController : ControllerBase
         int instructorId = int.Parse(userIdString);
 
         var rooms = await _context.Rooms.Where(r => r.InstructorId == instructorId).ToListAsync();
-        return Ok(rooms);
+
+        // Project each room so the dashboard course tile can pick up the
+        // "instructor disconnected" flag — that's what drives the
+        // IN PROGRESS pill, not room.Status.
+        var result = rooms.Select(r => new
+        {
+            r.Id,
+            r.SubjectName,
+            r.EnrollmentCode,
+            r.Status,
+            r.RoomImageUrl,
+            r.InstructorId,
+            instructorDisconnected = AcademicSentinel.Server.Hubs.MonitoringHub
+                ._roomsWithDisconnectedInstructor.ContainsKey(r.Id)
+        });
+        return Ok(result);
     }
 
     // ==========================================

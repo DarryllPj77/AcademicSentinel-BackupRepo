@@ -191,15 +191,16 @@ namespace AcademicSentinel.Client.Views.IMC
                         return;
                     }
 
-                    // Status endpoint returns { roomId, status, isMonitoringActive,
-                    // subjectName }. "Active" means a monitoring session is in
-                    // progress for this room — typically because the instructor
-                    // dropped without ending it. Show the rejoin panel instead
-                    // of the "Initializing New Session" panel so the teacher's
-                    // only sensible next action is to rejoin.
+                    // Banner is now driven PURELY by the new server-side
+                    // flag `instructorDisconnected` — set when the
+                    // instructor's IMC connection drops without an End
+                    // Session click, cleared when they call JoinRoom or
+                    // when End Session runs. This decouples the banner
+                    // from ANY student / session / room.Status state, so
+                    // student disconnects can no longer keep the banner
+                    // alive after the teacher has cleanly ended.
                     var dto = await response.Content.ReadFromJsonAsync<RoomStatusDto>();
-                    bool isLive = dto != null
-                                  && string.Equals(dto.status, "Active", StringComparison.OrdinalIgnoreCase);
+                    bool isLive = dto != null && dto.instructorDisconnected;
                     ToggleSessionPanels(activeSessionLive: isLive);
                 }
             }
@@ -250,6 +251,11 @@ namespace AcademicSentinel.Client.Views.IMC
             public string status { get; set; }
             public bool isMonitoringActive { get; set; }
             public string subjectName { get; set; }
+            public int? activeSessionId { get; set; }
+            // True only when the instructor's IMC connection dropped
+            // without End Session being clicked. This is the canonical
+            // condition for the dashboard's Rejoin banner.
+            public bool instructorDisconnected { get; set; }
         }
 
         private void BtnCreateSession_Click(object sender, RoutedEventArgs e)
