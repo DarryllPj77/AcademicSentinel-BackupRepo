@@ -1241,36 +1241,33 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 ActiveStudents.Clear();
 
-                // 1. Add normal connected/disconnected students from the DB.
-                //    Bug fix: previously this hardcoded Status="Connected"
-                //    for every row, which silently overwrote the red
-                //    "Offline/Disconnected" UI set by the StudentConnectionLost
-                //    SignalR handler each time the 4-second refresh ran.
-                //    Status text/color now derive from ParticipationStatus.
+                // 1. Add ONLY currently-Joined students to the live sidebar.
+                //    UX rule per QA: a disconnected student is treated as if
+                //    they had been removed from the session — they no longer
+                //    appear in the participant list at all. The Session
+                //    Archive still records them as Disconnected because the
+                //    STUDENT_DISCONNECTED MonitoringEvent persists, so the
+                //    ConnectionQuality classifier never reports "Clean
+                //    Connection" for them. If they successfully rejoin
+                //    through the approval flow, their participant row
+                //    flips back to Connected and they reappear here.
                 foreach (var p in participants.Where(p =>
-                    (string.Equals(p.ParticipationStatus, "Joined", StringComparison.OrdinalIgnoreCase)
-                     || string.Equals(p.ParticipationStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
-                    && !string.Equals(p.ParticipationStatus, "Completed", StringComparison.OrdinalIgnoreCase)
+                    string.Equals(p.ParticipationStatus, "Joined", StringComparison.OrdinalIgnoreCase)
                     && !_safelyLeftStudentIds.Contains(p.StudentId)))
                 {
                     if (_permanentlyDismissedStudents.Contains(p.StudentId))
                         continue;
 
                     var isLeaveRequested = _leaveRequestedStateByStudentId.TryGetValue(p.StudentId, out var requested) && requested;
-                    bool isDisconnected = string.Equals(p.ParticipationStatus, "Disconnected", StringComparison.OrdinalIgnoreCase);
+                    bool isDisconnected = false; // filtered above — only Joined rows reach here
 
-                    // Status precedence: leave-request > disconnected > connected.
+                    // Status precedence: leave-request > connected.
                     string statusText;
                     string statusColor;
                     if (isLeaveRequested)
                     {
                         statusText = "Wants to Leave";
                         statusColor = "#FF9800";
-                    }
-                    else if (isDisconnected)
-                    {
-                        statusText = "Disconnected";
-                        statusColor = "#D32F2F";
                     }
                     else
                     {
