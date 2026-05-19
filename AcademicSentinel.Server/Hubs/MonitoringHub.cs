@@ -256,16 +256,18 @@ public class MonitoringHub : Hub
         if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
             return;
 
+        // Canonical rule: latest session by StartTime is the truth.
+        // Room.Status is only a cache and must not be used as the gate.
         var room = await _context.Rooms.FindAsync(roomId);
-        if (room == null || room.Status != "Active")
-            return;
+        if (room == null) return;
 
         var activeSession = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .Where(s => s.RoomId == roomId)
             .OrderByDescending(s => s.StartTime)
             .FirstOrDefaultAsync();
 
-        if (activeSession == null)
+        if (activeSession == null
+            || !string.Equals(activeSession.Status, "Active", StringComparison.OrdinalIgnoreCase))
             return;
 
         activeSession.Status = "Completed";
@@ -301,18 +303,30 @@ public class MonitoringHub : Hub
                 return;
             }
 
+            // Canonical rule — latest session by StartTime is truth.
+            // Room.Status is a stale cache; never gate on it alone.
             var room = await _context.Rooms.FindAsync(roomId);
-            if (room == null || room.Status != "Active")
+            if (room == null)
+            {
+                await Clients.Caller.SendAsync("JoinFailed", "Cannot join room: room not found.");
+                return;
+            }
+
+            var activeSession = await _context.ExamSessions
+                .Where(s => s.RoomId == roomId)
+                .OrderByDescending(s => s.StartTime)
+                .FirstOrDefaultAsync();
+
+            bool latestIsActive = activeSession != null
+                && string.Equals(activeSession.Status, "Active", StringComparison.OrdinalIgnoreCase);
+
+            if (!latestIsActive)
             {
                 await Clients.Caller.SendAsync("JoinFailed", "Cannot join room: session is inactive.");
                 return;
             }
 
-            var activeSession = await _context.ExamSessions
-                .Where(s => s.RoomId == roomId && s.Status == "Active")
-                .OrderByDescending(s => s.StartTime)
-                .FirstOrDefaultAsync();
-
+            // From here on, activeSession is the latest Active session.
             await Groups.AddToGroupAsync(Context.ConnectionId, roomId.ToString());
 
             // BUG A defense-in-depth — refuse hub re-entry after the student
@@ -1053,8 +1067,16 @@ public class MonitoringHub : Hub
         if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
             return;
 
+        // Canonical rule — latest session is truth. Room.Status is cache only.
         var room = await _context.Rooms.FindAsync(roomId);
-        if (room == null || room.Status != "Active" || room.InstructorId != instructorId) return;
+        if (room == null || room.InstructorId != instructorId) return;
+        var latestForApprove = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId)
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        if (latestForApprove == null
+            || !string.Equals(latestForApprove.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            return;
 
         var activeSession = await _context.ExamSessions
             .Where(s => s.RoomId == roomId && s.Status == "Active")

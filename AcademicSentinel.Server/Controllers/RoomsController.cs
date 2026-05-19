@@ -20,50 +20,145 @@ public class RoomsController : ControllerBase
     private readonly IHubContext<MonitoringHub> _hubContext;
 
     // ==========================================================
-    // SERVER-AUTHORITATIVE SESSION CONSISTENCY (shared by every
-    // endpoint that needs to look at room/session state).
+    // CANONICAL SOURCE OF TRUTH for session activity.
     //
-    // Goal: a single function that, given a roomId, returns the
-    // canonical "is there a live session" boolean, and FIXES any
-    // divergence between Room.Status, ExamSession.Status, and the
-    // in-memory _roomsWithDisconnectedInstructor / heartbeat maps.
+    // Rule (exclusive): the LATEST ExamSession (ORDER BY StartTime DESC)
+    // is the only state that matters.
+    //   * latest.Status == "Active"       → room is active.
+    //   * latest is null OR not Active    → room is not active.
     //
-    // Idempotent — safe to call from every read AND write path.
+    // Side effects (idempotent self-heal):
+    //   • Older Active sessions are closed (Status="Completed",
+    //     EndTime=now) — they are orphans from crashes / partial ends.
+    //   • Stale "Connected"/"Pending" participant rows belonging to
+    //     orphan sessions get finalized so they can never re-appear
+    //     as live.
+    //   • Room.Status is set to "Active"/"Pending" to mirror the
+    //     latest session — Room.Status becomes a derived cache, NOT
+    //     a separate truth source.
+    //   • In-memory hub maps (_roomsWithDisconnectedInstructor and
+    //     _activeStudentConnections) are drained when canonical state
+    //     resolves to inactive.
+    //
+    // Returned record contains every field the API + UI need so no
+    // call site has to re-derive these flags independently.
     // ==========================================================
-    private async Task<bool> EnsureRoomConsistencyAsync(int roomId)
+    public sealed record LatestSessionState(
+        ExamSession? Latest,
+        bool IsActive,
+        int? ActiveSessionId,
+        bool CanStudentsJoin,
+        bool CanTeacherRejoin);
+
+    private async Task<LatestSessionState> GetLatestSessionStateAsync(int roomId)
     {
         var room = await _context.Rooms.FindAsync(roomId);
-        if (room == null) return false;
+        if (room == null)
+            return new LatestSessionState(null, false, null, false, false);
 
-        var activeSessions = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Active")
+        // Single canonical query — order by StartTime DESC. Tracked so
+        // the loop below can mutate orphan rows in the same SaveChanges.
+        var sessions = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId)
+            .OrderByDescending(s => s.StartTime)
             .ToListAsync();
 
-        bool roomIsActive = string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
+        var latest = sessions.FirstOrDefault();
+        bool latestIsActive = latest != null
+            && string.Equals(latest.Status, "Active", StringComparison.OrdinalIgnoreCase);
 
-        if (roomIsActive && activeSessions.Count == 0)
+        bool changed = false;
+
+        // Close every Active session that is NOT the latest. Capture
+        // their ids so we can finalize their stale participants too.
+        var orphanIds = new HashSet<int>();
+        foreach (var s in sessions)
         {
-            // Orphan room flag → reset.
-            room.Status = "Pending";
-            room.IsMonitoringActive = false;
-            await SaveSilentlyAsync();
-            AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
-            return false;
-        }
-        if (!roomIsActive && activeSessions.Count > 0)
-        {
-            // Orphan sessions → close them all. No live session anymore.
-            foreach (var s in activeSessions)
+            if (latest != null && s.Id == latest.Id) continue;
+            if (string.Equals(s.Status, "Active", StringComparison.OrdinalIgnoreCase))
             {
                 s.Status = "Completed";
                 s.EndTime ??= DateTime.UtcNow;
+                orphanIds.Add(s.Id);
+                changed = true;
             }
-            await SaveSilentlyAsync();
-            AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
-            return false;
         }
-        return roomIsActive && activeSessions.Count > 0;
+
+        // Finalize stale participants tied to those orphan sessions.
+        if (orphanIds.Count > 0)
+        {
+            var orphanStartTimes = sessions
+                .Where(s => orphanIds.Contains(s.Id))
+                .ToDictionary(s => s.Id, s => s.StartTime);
+
+            var staleParticipants = await _context.SessionParticipants
+                .Where(p => p.RoomId == roomId
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected"
+                            && p.JoinedAt >= orphanStartTimes.Values.Min())
+                .ToListAsync();
+            foreach (var p in staleParticipants)
+            {
+                // Only finalize participants whose joinedAt falls inside
+                // one of the orphan windows — leaves the latest session's
+                // live participants alone.
+                bool isOrphanParticipant = orphanStartTimes.Any(kv =>
+                    p.JoinedAt >= kv.Value
+                    && (latest == null || p.JoinedAt < latest.StartTime));
+                if (!isOrphanParticipant) continue;
+
+                p.ConnectionStatus = "Disconnected";
+                p.DisconnectedAt = DateTime.UtcNow;
+                p.JoinApprovalStatus = null;
+                p.IsCurrentlyActive = false;
+                changed = true;
+            }
+        }
+
+        // Mirror canonical state into Room.Status (derived cache only).
+        bool roomIsActive = string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
+        if (latestIsActive && !roomIsActive)
+        {
+            room.Status = "Active";
+            changed = true;
+        }
+        else if (!latestIsActive && roomIsActive)
+        {
+            room.Status = "Pending";
+            room.IsMonitoringActive = false;
+            changed = true;
+        }
+
+        // Drain in-memory maps when state is inactive.
+        if (!latestIsActive)
+        {
+            AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+            foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+            {
+                if (kv.Value.RoomId == roomId)
+                    AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+            }
+        }
+
+        if (changed) await SaveSilentlyAsync();
+
+        bool canStudentsJoin = latestIsActive;
+        bool canTeacherRejoin = latestIsActive
+            && AcademicSentinel.Server.Hubs.MonitoringHub
+                ._roomsWithDisconnectedInstructor.ContainsKey(roomId);
+
+        return new LatestSessionState(
+            Latest: latest,
+            IsActive: latestIsActive,
+            ActiveSessionId: latestIsActive ? latest!.Id : (int?)null,
+            CanStudentsJoin: canStudentsJoin,
+            CanTeacherRejoin: canTeacherRejoin);
     }
+
+    // Back-compat wrapper for old call sites that still reference the
+    // previous name. Returns the bool the legacy code expected.
+    private async Task<bool> EnsureRoomConsistencyAsync(int roomId)
+        => (await GetLatestSessionStateAsync(roomId)).IsActive;
 
     private async Task SaveSilentlyAsync()
     {
@@ -203,13 +298,14 @@ public class RoomsController : ControllerBase
             return BadRequest("Session cannot be started without a valid LMS Exam URL.");
         }
 
-        // Check if there is already an active session for this room
-        var activeSession = await _context.ExamSessions
-            .FirstOrDefaultAsync(s => s.RoomId == roomId && s.Status == "Active");
-
-        if (activeSession != null)
+        // Check if there is already an active session for this room — via
+        // canonical latest-session rule. EnsureRoomConsistencyAsync closes
+        // any orphan Active sessions that aren't the latest before we
+        // make the decision, so we can never reuse an orphan id here.
+        var preStartState = await GetLatestSessionStateAsync(roomId);
+        if (preStartState.IsActive && preStartState.Latest != null)
         {
-            return Ok(new { message = "Session already running", sessionId = activeSession.Id });
+            return Ok(new { message = "Session already running", sessionId = preStartState.Latest.Id });
         }
 
         var examType = string.IsNullOrWhiteSpace(request?.ExamType) ? "Summative" : request.ExamType;
@@ -587,59 +683,12 @@ public class RoomsController : ControllerBase
     [HttpGet("{roomId}/status")]
     public async Task<IActionResult> GetRoomStatus(int roomId)
     {
-        var room = await _context.Rooms.FindAsync(roomId);
+        // ONE canonical helper — latest session by StartTime is the truth.
+        var state = await GetLatestSessionStateAsync(roomId);
+
+        // Re-read room fresh (no-tracking) in case the helper modified it.
+        var room = await _context.Rooms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == roomId);
         if (room == null) return NotFound("Room not found.");
-
-        // Load all sessions for this room so we can self-heal orphans in
-        // either direction. The status response only needs the freshest
-        // Active session id, but the heal needs the full list.
-        var activeSessions = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Active")
-            .OrderByDescending(s => s.StartTime)
-            .ToListAsync();
-
-        int? activeSessionId = activeSessions.FirstOrDefault()?.Id;
-
-        // SELF-HEAL — both directions:
-        //   (A) Room says Active but no underlying Active ExamSession →
-        //       reconcile room to Pending. Used to be the only branch;
-        //       caught half-failed End Session bookkeeping artifacts.
-        //   (B) Room says Pending but there ARE Active ExamSessions →
-        //       those are orphans (the teacher never successfully ended
-        //       them, or a crash skipped EndExamSession). Force them
-        //       Completed and reset activeSessionId to null so the
-        //       Rejoin banner can't keep resurrecting itself.
-        bool healed = false;
-        if (string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase)
-            && activeSessions.Count == 0)
-        {
-            room.Status = "Pending";
-            room.IsMonitoringActive = false;
-            healed = true;
-        }
-        else if (!string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase)
-                 && activeSessions.Count > 0)
-        {
-            foreach (var orphan in activeSessions)
-            {
-                orphan.Status = "Completed";
-                orphan.EndTime ??= DateTime.UtcNow;
-            }
-            activeSessionId = null;
-            room.IsMonitoringActive = false;
-            healed = true;
-        }
-        if (healed)
-        {
-            try { await _context.SaveChangesAsync(); }
-            catch { /* best-effort; next poll will retry */ }
-        }
-
-        // The dashboard banner is driven by this flag alone — set when
-        // the instructor's IMC connection drops without End Session, and
-        // cleared on JoinRoom or EndExamSession.
-        bool instructorDisconnected = AcademicSentinel.Server.Hubs.MonitoringHub
-            ._roomsWithDisconnectedInstructor.ContainsKey(roomId);
 
         return Ok(new
         {
@@ -647,8 +696,12 @@ public class RoomsController : ControllerBase
             status = room.Status,
             isMonitoringActive = room.IsMonitoringActive,
             subjectName = room.SubjectName,
-            activeSessionId,
-            instructorDisconnected
+            activeSessionId = state.ActiveSessionId,
+            isActive = state.IsActive,
+            canStudentsJoin = state.CanStudentsJoin,
+            canTeacherRejoin = state.CanTeacherRejoin,
+            // Back-compat alias — old client builds key off this name.
+            instructorDisconnected = state.CanTeacherRejoin
         });
     }
 
@@ -1086,9 +1139,12 @@ public class RoomsController : ControllerBase
         if (userIdString == null) return Unauthorized();
         int studentId = int.Parse(userIdString);
 
-        var room = await _context.Rooms.FindAsync(roomId);
-        if (room == null) return NotFound("Room not found.");
-        if (room.Status != "Active")
+        // Canonical rule: latest session is the truth source. Heal first,
+        // then derive activity from the returned state — Room.Status is
+        // now only a cache so we never key gate logic off it directly.
+        var state = await GetLatestSessionStateAsync(roomId);
+        if (state.Latest == null) return NotFound("Room not found.");
+        if (!state.IsActive)
             return BadRequest("This room does not have an active session.");
 
         var isEnrolled = await _context.RoomEnrollments
@@ -1096,12 +1152,7 @@ public class RoomsController : ControllerBase
         if (!isEnrolled)
             return StatusCode(403, "You are not enrolled in this room.");
 
-        var activeSession = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Active")
-            .OrderByDescending(s => s.StartTime)
-            .FirstOrDefaultAsync();
-        if (activeSession == null)
-            return BadRequest("No active session for this room.");
+        var activeSession = state.Latest;
 
         var latestParticipant = await _context.SessionParticipants
             .Where(p => p.RoomId == roomId && p.StudentId == studentId)
@@ -1183,13 +1234,11 @@ public class RoomsController : ControllerBase
             && lastBlockingEvent.HasValue
             && (!lastRejoinApproved.HasValue || lastRejoinApproved < lastBlockingEvent);
 
-        // =========================================================================
-        // UPDATED LOGIC: Auto-accept late joiners if monitoring hasn't started yet!
-        // =========================================================================
-        // IMPORTANT: Make sure `IsMonitoringActive` exists in your Room.cs model 
-        // and is toggled to true/false in your MonitoringHub when the instructor
-        // starts/pauses/stops the feed.
-        bool isMonitoringRunning = room.IsMonitoringActive;
+        // Re-read room (no-tracking) for IsMonitoringActive — the earlier
+        // `room` local was replaced when this method switched to the
+        // canonical latest-session helper above.
+        var roomForApproval = await _context.Rooms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == roomId);
+        bool isMonitoringRunning = roomForApproval?.IsMonitoringActive ?? false;
 
         // Late joiners only wait if monitoring is actively running. 
         // Rejoiners wait if they have an unresolved leave-grant.
@@ -1255,20 +1304,24 @@ public class RoomsController : ControllerBase
 
         var rooms = await _context.Rooms.Where(r => r.InstructorId == instructorId).ToListAsync();
 
-        // Project each room so the dashboard course tile can pick up the
-        // "instructor disconnected" flag — that's what drives the
-        // IN PROGRESS pill, not room.Status.
-        var result = rooms.Select(r => new
+        // Run the canonical helper per room so course tiles never show
+        // IN PROGRESS for a room whose latest session has already ended.
+        var result = new List<object>(rooms.Count);
+        foreach (var r in rooms)
         {
-            r.Id,
-            r.SubjectName,
-            r.EnrollmentCode,
-            r.Status,
-            r.RoomImageUrl,
-            r.InstructorId,
-            instructorDisconnected = AcademicSentinel.Server.Hubs.MonitoringHub
-                ._roomsWithDisconnectedInstructor.ContainsKey(r.Id)
-        });
+            var state = await GetLatestSessionStateAsync(r.Id);
+            result.Add(new
+            {
+                r.Id,
+                r.SubjectName,
+                r.EnrollmentCode,
+                r.Status,
+                r.RoomImageUrl,
+                r.InstructorId,
+                isActive = state.IsActive,
+                instructorDisconnected = state.CanTeacherRejoin
+            });
+        }
         return Ok(result);
     }
 
@@ -1302,53 +1355,15 @@ public class RoomsController : ControllerBase
             .Where(u => instructorIds.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id, u => !string.IsNullOrWhiteSpace(u.FullName) ? u.FullName : u.Email);
 
-        // Per-room derivations + SELF-HEAL for stale state. The student
-        // dashboard MUST never show "Joinable" for a room whose teacher
-        // already ended the session. Two bidirectional reconciliations:
-        //   (A) room.Status=Active but no Active ExamSession → reset room.
-        //   (B) room.Status≠Active but Active ExamSession still around →
-        //       force-close those orphans.
-        // After this block the derived state is consistent regardless of
-        // whatever leftover bookkeeping caused the divergence.
-        var roomIds = rooms.Select(r => r.Id).ToList();
-        var activeSessionsByRoom = await _context.ExamSessions
-            .Where(s => roomIds.Contains(s.RoomId) && s.Status == "Active")
-            .GroupBy(s => s.RoomId)
-            .Select(g => new { RoomId = g.Key, Session = g.OrderByDescending(x => x.StartTime).First() })
-            .ToDictionaryAsync(x => x.RoomId, x => x.Session);
-
-        bool healed = false;
+        // Run the canonical helper per room. HasActiveSession below is
+        // derived from the latest session — orphan rows from older
+        // sessions can never make the tile say "Joinable" again.
+        var activeSessionsByRoom = new Dictionary<int, ExamSession>();
         foreach (var room in rooms)
         {
-            bool hasActive = activeSessionsByRoom.ContainsKey(room.Id);
-            bool roomIsActive = string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
-
-            // (A) Orphan room flag — reset.
-            if (roomIsActive && !hasActive)
-            {
-                room.Status = "Pending";
-                room.IsMonitoringActive = false;
-                healed = true;
-            }
-            // (B) Orphan session — close it.
-            else if (!roomIsActive && hasActive)
-            {
-                var staleSessions = await _context.ExamSessions
-                    .Where(s => s.RoomId == room.Id && s.Status == "Active")
-                    .ToListAsync();
-                foreach (var s in staleSessions)
-                {
-                    s.Status = "Completed";
-                    s.EndTime ??= DateTime.UtcNow;
-                }
-                activeSessionsByRoom.Remove(room.Id);
-                healed = true;
-            }
-        }
-        if (healed)
-        {
-            try { await _context.SaveChangesAsync(); }
-            catch { /* best-effort; next poll will retry */ }
+            var state = await GetLatestSessionStateAsync(room.Id);
+            if (state.CanStudentsJoin && state.Latest != null)
+                activeSessionsByRoom[room.Id] = state.Latest;
         }
 
         var disconnectedByRoom = new Dictionary<int, bool>();
