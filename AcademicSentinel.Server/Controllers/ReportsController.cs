@@ -210,8 +210,17 @@ public class ReportsController : ControllerBase
             var user = await _context.Users.FindAsync(studentId);
             if (user == null) continue;
 
+            // Widen the event-window boundaries by ±60s so disconnect
+            // events written immediately at session-end (where event.Timestamp
+            // can fall a few microseconds AFTER session.EndTime due to
+            // DateTime.UtcNow being called at slightly different moments)
+            // still attribute to the session they belong to.
+            var sessionWindowStart = session.StartTime.AddMinutes(-1);
+            var sessionWindowEnd = (session.EndTime ?? DateTime.UtcNow).AddMinutes(1);
             var logs = await _context.MonitoringEvents
-                .Where(e => e.RoomId == session.RoomId && e.StudentId == studentId && e.Timestamp >= session.StartTime && (session.EndTime == null || e.Timestamp <= session.EndTime))
+                .Where(e => e.RoomId == session.RoomId && e.StudentId == studentId
+                            && e.Timestamp >= sessionWindowStart
+                            && e.Timestamp <= sessionWindowEnd)
                 .OrderByDescending(e => e.Timestamp)
                 .Select(e => new {
                     EventType = e.EventType, Description = e.Description,
@@ -243,12 +252,18 @@ public class ReportsController : ControllerBase
                 .Select(l => (DateTime?)l.Timestamp)
                 .Max();
 
-            // Final participant-row state inside this session window.
+            // Final participant-row state inside this session window —
+            // SAME widened tolerance (±60s) as the event window above.
+            // Also accept rows whose DisconnectedAt falls within the
+            // window (covers students who joined just before StartTime
+            // but disconnected during the session).
             var lastParticipantRow = await _context.SessionParticipants
                 .Where(p => p.RoomId == session.RoomId
                             && p.StudentId == studentId
-                            && p.JoinedAt >= session.StartTime
-                            && (session.EndTime == null || p.JoinedAt <= session.EndTime))
+                            && ((p.JoinedAt >= sessionWindowStart && p.JoinedAt <= sessionWindowEnd)
+                                || (p.DisconnectedAt.HasValue
+                                    && p.DisconnectedAt.Value >= sessionWindowStart
+                                    && p.DisconnectedAt.Value <= sessionWindowEnd)))
                 .OrderByDescending(p => p.JoinedAt)
                 .Select(p => new { p.JoinedAt, p.ConnectionStatus, p.DisconnectedAt })
                 .FirstOrDefaultAsync();
