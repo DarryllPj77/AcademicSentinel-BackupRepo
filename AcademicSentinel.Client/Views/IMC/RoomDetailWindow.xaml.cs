@@ -232,13 +232,42 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             var liveWindow = new LiveSessionMonitoringWindow(CurrentRoomId, TxtRoomTitle.Text);
             this.Hide();
-            liveWindow.Closed += (_, __) =>
+            liveWindow.Closed += async (_, __) =>
             {
                 this.Show();
-                _ = LoadPastSessionsAsync();
-                FetchRoomStatus();
+                await RefreshAfterLiveSessionClosedAsync();
             };
             liveWindow.Show();
+        }
+
+        // After the LiveSessionMonitoringWindow closes (end / cancel / timer
+        // expiry), the just-completed ExamSession must show up in the Past
+        // Sessions table immediately — otherwise the teacher sees an empty
+        // table for a beat and assumes End Session failed. Two concrete
+        // problems we're fixing here:
+        //   1) The previous handler used `_ = LoadPastSessionsAsync()` —
+        //      fire-and-forget. The dashboard re-rendered with the OLD
+        //      Sessions list visible before the new GET returned. Now we
+        //      await the load so the table is populated before the user
+        //      sees the window.
+        //   2) Database visibility lag — on slower machines the PUT-end /
+        //      force-reset commits return before the next read sees the
+        //      Status="Completed" row (read-your-write across connection
+        //      pools, especially with EF's tracking layer). We retry up to
+        //      3 times with short back-off if the list comes back empty so
+        //      the table is never visibly blank when a session was just
+        //      ended.
+        private async System.Threading.Tasks.Task RefreshAfterLiveSessionClosedAsync()
+        {
+            FetchRoomStatus();
+
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                await LoadPastSessionsAsync();
+                if (Sessions.Count > 0)
+                    break;
+                await System.Threading.Tasks.Task.Delay(350);
+            }
         }
 
         /// <summary>
@@ -272,11 +301,10 @@ namespace AcademicSentinel.Client.Views.IMC
                     setupWindow.EndSessionWhenTimerEnds,
                     setupWindow.StartDelaySeconds);
                 this.Hide();
-                liveWindow.Closed += (_, __) =>
+                liveWindow.Closed += async (_, __) =>
                 {
                     this.Show();
-                    _ = LoadPastSessionsAsync();
-                    FetchRoomStatus();
+                    await RefreshAfterLiveSessionClosedAsync();
                 };
                 liveWindow.Show();
             }
