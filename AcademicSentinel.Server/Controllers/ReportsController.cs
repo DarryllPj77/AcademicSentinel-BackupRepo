@@ -234,153 +234,57 @@ public class ReportsController : ControllerBase
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
             // =======================================================
-            // 2. CONNECTION QUALITY — SessionParticipants as primary source
+            // 2. CONNECTION QUALITY — STRICTLY LOG-DRIVEN
             // =======================================================
-            // Root cause of the "Clean Connection" ghost bug:
-            //   MonitoringEvents.STUDENT_DISCONNECTED is sometimes never
-            //   written to PostgreSQL (ghost-write failure), so any logic
-            //   that gates on that event produces a false "Clean Connection".
+            // The DB is the source of truth.  DisconnectService is the
+            // single master that writes STUDENT_DISCONNECTED atomically
+            // with the participant UPDATE, so we can trust that the
+            // presence/absence of that log faithfully represents reality.
             //
-            // Fix: use SessionParticipants.DisconnectedAt as the primary
-            // signal.  That column is ALWAYS committed (the live UI proves
-            // it).  MonitoringEvents is kept as a secondary cross-check only.
+            // Rule set:
+            //   • No STUDENT_DISCONNECTED event       → "Clean Connection"
+            //   • STUDENT_DISCONNECTED + REJOIN_APPROVED event
+            //                                          → "Reconnected"
+            //   • STUDENT_DISCONNECTED + current row is "Connected"
+            //                                          → "Reconnected"
+            //   • STUDENT_DISCONNECTED only            → "Disconnected"
+            //
+            // No synthetic-log injection, no DisconnectedAt timing math,
+            // no graceful-exit heuristics — just the logs and the row.
 
-            // Fetch every participant row for this student in this session.
-            // A reconnecting student will have more than one row, ordered by
-            // JoinedAt so the last element is always the most recent.
-            var allParticipantRows = await _context.SessionParticipants
+            // Current participant status (most recent row in this session).
+            var mostRecentParticipantRow = await _context.SessionParticipants
                 .AsNoTracking()
-                .Where(p => p.RoomId == session.RoomId
+                .Where(p => p.RoomId    == session.RoomId
                             && p.StudentId == studentId
-                            && p.JoinedAt >= sessionWindowStart
-                            && p.JoinedAt <= sessionWindowEnd)
-                .OrderBy(p => p.JoinedAt)
-                .ToListAsync();
+                            && p.JoinedAt  >= sessionWindowStart
+                            && p.JoinedAt  <= sessionWindowEnd)
+                .OrderByDescending(p => p.JoinedAt)
+                .FirstOrDefaultAsync();
 
-            var mostRecentParticipantRow = allParticipantRows.LastOrDefault();
             string finalStatus = mostRecentParticipantRow?.ConnectionStatus ?? "Unknown";
 
-            // =======================================================
-            // SYNTHETIC LOG INJECTION
-            // =======================================================
-            // The UI renders whatever rows are in `logs` verbatim.  When
-            // the STUDENT_DISCONNECTED MonitoringEvent is missing (the
-            // ghost-bug write failure), we reconstruct it here from the
-            // SessionParticipants row and inject it into the logs list so
-            // the activity timeline still shows the disconnect.
-            //
-            // Matching window: 60 s.  If a real event landed within ±60 s
-            // of the participant's DisconnectedAt we skip injection so the
-            // archive never shows duplicate disconnect entries.
-            foreach (var p in allParticipantRows)
-            {
-                if (!string.Equals(p.ConnectionStatus, "Disconnected",
-                                   StringComparison.OrdinalIgnoreCase))
-                    continue;
-                if (!p.DisconnectedAt.HasValue)
-                    continue;
-
-                var dropTime = p.DisconnectedAt.Value;
-                bool alreadyLogged = logs.Any(l =>
-                    l.EventType == "STUDENT_DISCONNECTED"
-                    && Math.Abs((l.Timestamp - dropTime).TotalSeconds) < 60);
-
-                if (alreadyLogged) continue;
-
-                // Same anonymous-type shape as the EF Select above so it
-                // appends cleanly into the strongly-typed list.
-                logs.Add(new
-                {
-                    EventType = "STUDENT_DISCONNECTED",
-                    Description = "Connection lost. Reconstructed from session participant record (heartbeat timeout or unexpected closure).",
-                    SeverityScore = 0,
-                    Timestamp = dropTime
-                });
-            }
-
-            // Re-sort newest-first so the synthetic entries slot into the
-            // correct chronological position in the UI grid.
-            logs = logs.OrderByDescending(l => l.Timestamp).ToList();
-
-            // --- PRIMARY: mid-session drops from SessionParticipants ---
-            // A row counts as a mid-session drop when:
-            //   • ConnectionStatus is "Disconnected", AND
-            //   • DisconnectedAt is before session end (minus 30 s grace for
-            //     the end-of-session broadcast lag), OR DisconnectedAt is null
-            //     (we cannot prove it was post-session so we assume the worst).
-            // If session is still running (EndTime == null) every Disconnected
-            // row is a mid-session drop by definition.
-            var sessionEndCutoff = session.EndTime?.AddSeconds(-30);
-
-            var midSessionParticipantDrops = allParticipantRows
-                .Where(p => string.Equals(p.ConnectionStatus, "Disconnected",
-                                          StringComparison.OrdinalIgnoreCase)
-                            && (sessionEndCutoff == null          // ongoing session
-                                || !p.DisconnectedAt.HasValue     // unknown time → conservative
-                                || p.DisconnectedAt.Value < sessionEndCutoff.Value))
-                .ToList();
-
-            // --- SECONDARY: mid-session drops from MonitoringEvents ---
-            // Used as a cross-check only; an empty event log does NOT override
-            // participant-table evidence.
-            var midSessionEventDrops = logs
-                .Where(l => l.EventType == "STUDENT_DISCONNECTED"
-                            && (session.EndTime == null || l.Timestamp < session.EndTime.Value))
-                .ToList();
-
-            bool hadMidSessionDrop = midSessionParticipantDrops.Count > 0
-                                  || midSessionEventDrops.Count > 0;
+            bool hasDisconnectEvent = logs.Any(l => l.EventType == "STUDENT_DISCONNECTED");
 
             string connectionQuality;
 
-            if (!hadMidSessionDrop)
+            if (!hasDisconnectEvent)
             {
+                // Trust the log: no disconnect ever recorded → clean.
                 connectionQuality = "Clean Connection";
             }
             else
             {
-                // Mid-session drop confirmed. Start at Disconnected, then
-                // look for proof of recovery from either data source.
-                connectionQuality = "Disconnected";
+                // Disconnect did occur.  Recovery requires an EXPLICIT
+                // proof: either a REJOIN_APPROVED audit event, or the
+                // student's current row showing "Connected".
+                bool hasRejoinApprovedEvent = logs.Any(l => l.EventType == "REJOIN_APPROVED");
+                bool isCurrentlyConnected   = string.Equals(finalStatus, "Connected",
+                                                            StringComparison.OrdinalIgnoreCase);
 
-                // Proof A — graceful end-of-session exit (participant table):
-                // Their most recent disconnect happened at or after session end,
-                // so they were still live when the exam concluded and only
-                // dropped because the session broadcast closed the connection.
-                bool gracefulExitByTime = session.EndTime.HasValue
-                    && mostRecentParticipantRow?.DisconnectedAt.HasValue == true
-                    && mostRecentParticipantRow.DisconnectedAt.Value
-                       >= session.EndTime.Value.AddSeconds(-30);
-
-                // Proof B — graceful exit (events, if they exist):
-                bool gracefulExitByEvent = session.EndTime.HasValue
-                    && logs.Any(l => l.EventType == "STUDENT_DISCONNECTED"
-                                     && l.Timestamp >= session.EndTime.Value);
-
-                // Proof C — rejoined (participant table):
-                // A later participant row exists whose JoinedAt is strictly
-                // after the last mid-session drop row — the student came back.
-                var lastParticipantDrop = midSessionParticipantDrops.LastOrDefault();
-                bool rejoinedByRow = lastParticipantDrop != null
-                    && allParticipantRows.Any(p => p.JoinedAt > lastParticipantDrop.JoinedAt);
-
-                // Proof D — rejoined (events, if they exist):
-                var lastEventDrop = midSessionEventDrops.Count > 0
-                    ? midSessionEventDrops.MaxBy(l => l.Timestamp)
-                    : null;
-                bool rejoinedByEvent = lastEventDrop != null
-                    && mostRecentParticipantRow?.JoinedAt > lastEventDrop.Timestamp;
-
-                // Proof E — still live or cleanly finished:
-                bool liveAtEnd =
-                    string.Equals(finalStatus, "Connected",  StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(finalStatus, "Completed",  StringComparison.OrdinalIgnoreCase);
-
-                if (gracefulExitByTime || gracefulExitByEvent ||
-                    rejoinedByRow      || rejoinedByEvent      || liveAtEnd)
-                {
-                    connectionQuality = "Reconnected";
-                }
+                connectionQuality = (hasRejoinApprovedEvent || isCurrentlyConnected)
+                    ? "Reconnected"
+                    : "Disconnected";
             }
 
             result.Add(new

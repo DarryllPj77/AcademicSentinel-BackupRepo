@@ -144,6 +144,14 @@ builder.Services.AddSwaggerGen(c =>
 
 builder.Services.AddSignalR();
 
+// Single master for student-disconnect handling.  Used by both
+// MonitoringHub.OnDisconnectedAsync (SignalR transport drop) and
+// DisconnectSweeperService (heartbeat timeout) to eliminate duplicate
+// writes, UI flicker, and JoinApprovalStatus NOT NULL violations.
+// Singleton — owns a process-local 10s idempotency map; acquires its own
+// AppDbContext scope per call via IServiceScopeFactory.
+builder.Services.AddSingleton<AcademicSentinel.Server.Services.DisconnectService>();
+
 // Heartbeat-driven disconnect detector. Runs every 5s, flips participants
 // to Disconnected within ~15s when SAC stops pinging. See
 // Services/DisconnectSweeperService.cs for the full reasoning.

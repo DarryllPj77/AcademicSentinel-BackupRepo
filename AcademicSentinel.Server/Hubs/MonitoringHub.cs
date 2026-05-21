@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using AcademicSentinel.Server.Data;
 using AcademicSentinel.Server.Models;
 using AcademicSentinel.Server.DTOs;
+using AcademicSentinel.Server.Services;
 using System.Security.Claims;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
@@ -51,11 +52,18 @@ public class MonitoringHub : Hub
     //   * EndExamSession (RoomsController) runs (clean close).
     internal static readonly ConcurrentDictionary<int, bool> _roomsWithDisconnectedInstructor = new();
 
-    public MonitoringHub(AppDbContext context, IServiceScopeFactory scopeFactory, ILogger<MonitoringHub> logger)
+    private readonly DisconnectService _disconnectService;
+
+    public MonitoringHub(
+        AppDbContext context,
+        IServiceScopeFactory scopeFactory,
+        ILogger<MonitoringHub> logger,
+        DisconnectService disconnectService)
     {
         _context = context;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _disconnectService = disconnectService;
     }
 
     // =======================================================
@@ -625,20 +633,28 @@ public class MonitoringHub : Hub
         }
         else
         {
-            // Resolve the dropped student. JWT claim is preferred, but on
+            // Resolve the dropped student.  JWT claim is preferred, but on
             // abrupt disconnects (Task Manager kill, network/power loss)
             // Context.User can be empty — the per-connection map populated
-            // in JoinLiveExam is the reliable fallback. Always drain the
-            // map entry afterwards so the dictionary doesn't grow forever.
+            // in JoinLiveExam is the reliable fallback.  The map also
+            // carries the room the student joined into, so we extract
+            // roomId here too and avoid a downstream DB lookup in the
+            // common case.  Always drain the map entry afterwards so the
+            // dictionary doesn't grow forever.
             int studentId = 0;
+            int? roomIdFromMap = null;
             if (userIdString != null && int.TryParse(userIdString, out var parsedFromClaim))
             {
                 studentId = parsedFromClaim;
             }
-            else if (_activeStudentConnections.TryGetValue(Context.ConnectionId, out var mapped))
+            if (_activeStudentConnections.TryGetValue(Context.ConnectionId, out var mapped))
             {
-                studentId = mapped.StudentId;
-                _logger.LogInformation("Disconnect: resolved studentId={StudentId} from ConnectionId map (claim was null).", studentId);
+                if (studentId == 0)
+                {
+                    studentId = mapped.StudentId;
+                    _logger.LogInformation("Disconnect: resolved studentId={StudentId} from ConnectionId map (claim was null).", studentId);
+                }
+                roomIdFromMap = mapped.RoomId;
             }
             _activeStudentConnections.TryRemove(Context.ConnectionId, out _);
 
@@ -653,8 +669,8 @@ public class MonitoringHub : Hub
             //
             // If another live ConnectionId still exists in the map for the
             // same student, the student already reconnected with a fresh
-            // socket. This callback is the LATE timeout of the previously
-            // dropped connection. Marking the participant as Disconnected
+            // socket.  This callback is the LATE timeout of the previously
+            // dropped connection.  Marking the participant as Disconnected
             // here would corrupt the live state — skip silently.
             bool studentHasNewerConnection = false;
             foreach (var kv in _activeStudentConnections)
@@ -672,155 +688,51 @@ public class MonitoringHub : Hub
                 return;
             }
 
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            // =================================================================
+            // ROUTE THROUGH DisconnectService — the single master.
+            // =================================================================
+            // The hub's only responsibility is to identify (studentId, roomId)
+            // and hand off.  DisconnectService owns:
+            //   • the 10-second in-memory idempotency window
+            //   • the Load-Modify-Save UPDATE (JoinApprovalStatus preserved)
+            //   • the atomic MonitoringEvent insert
+            //   • the single SignalR broadcast (after commit)
+            // A concurrent call from the sweeper for the same student is
+            // short-circuited by DisconnectService's dedup map — no
+            // duplicate row, no duplicate event, no duplicate broadcast.
+            const string reason = "SignalR connection dropped unexpectedly.";
 
-            try
+            if (roomIdFromMap.HasValue)
             {
-                // Find every participant row for this student whose status is
-                // neither cleanly Completed nor already Disconnected.
-                // Completed = student pressed Leave and was granted exit.
-                // Disconnected = a prior sweep or disconnect path already ran.
-                var activeParticipants = await db.SessionParticipants
+                // Fast path: the connection map carried the roomId.
+                await _disconnectService.HandleDisconnectAsync(
+                    studentId, roomIdFromMap.Value, reason);
+            }
+            else
+            {
+                // Slow path: no map entry (claim-only disconnect, or the
+                // map was drained earlier).  Find every room where this
+                // student still has a non-terminal participant row, then
+                // route each through DisconnectService.
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var roomsToHandle = await db.SessionParticipants
                     .Where(p => p.StudentId == studentId
                                 && p.ConnectionStatus != "Completed"
                                 && p.ConnectionStatus != "Disconnected")
+                    .Select(p => p.RoomId)
+                    .Distinct()
                     .ToListAsync();
 
-                _logger.LogInformation("Student disconnect path: studentId={StudentId}, foundActiveParticipants={Count}",
-                    studentId, activeParticipants.Count);
+                _logger.LogInformation(
+                    "OnDisconnectedAsync: no map entry for studentId={StudentId}; routing {Count} rooms through DisconnectService.",
+                    studentId, roomsToHandle.Count);
 
-                foreach (var participant in activeParticipants)
+                foreach (var roomId in roomsToHandle)
                 {
-                    // ---------------------------------------------------
-                    // LOAD-BEFORE-MODIFY (Atomic + Idempotent)
-                    // ---------------------------------------------------
-                    // `participant` was loaded from this db scope above
-                    // via .ToListAsync(), so it is a fully populated,
-                    // EF-tracked entity.  We mutate ONLY ConnectionStatus
-                    // and DisconnectedAt.  Every other column — including
-                    // JoinApprovalStatus (NOT NULL, default "Approved") —
-                    // keeps its existing DB value because EF change
-                    // tracking only emits UPDATE columns for properties
-                    // whose values actually changed.  No risk of a 23502
-                    // null-constraint violation, no need for a defensive
-                    // fallback assignment.
-                    participant.ConnectionStatus = "Disconnected";
-                    participant.DisconnectedAt   = DateTime.UtcNow;
-
-                    // ---------------------------------------------------
-                    // DE-DUPLICATION GUARD (10 s window)
-                    // ---------------------------------------------------
-                    // If the sweeper (or a previous fast-firing
-                    // OnDisconnectedAsync) already wrote a
-                    // STUDENT_DISCONNECTED for this student/room within
-                    // the last 10 seconds, skip the event insert.  We
-                    // STILL want the participant UPDATE above to commit,
-                    // so we use `continue` here (not `return`) — the
-                    // outer SaveChangesAsync will persist the row mutation
-                    // even though no event was queued for this iteration.
-                    bool recentlyLogged = await db.MonitoringEvents
-                        .AnyAsync(e => e.StudentId == participant.StudentId
-                                    && e.RoomId    == participant.RoomId
-                                    && e.EventType == "STUDENT_DISCONNECTED"
-                                    && e.Timestamp > DateTime.UtcNow.AddSeconds(-10));
-
-                    if (recentlyLogged)
-                    {
-                        _logger.LogInformation(
-                            "OnDisconnectedAsync: DEDUP skip — STUDENT_DISCONNECTED already logged within 10s for studentId={StudentId} roomId={RoomId}.",
-                            studentId, participant.RoomId);
-                        continue;
-                    }
-
-                    // Write the audit event immediately inside the loop so
-                    // that participant-status update and event insert are
-                    // committed in the same SaveChangesAsync call.
-                    db.MonitoringEvents.Add(new MonitoringEvent
-                    {
-                        EventType     = "STUDENT_DISCONNECTED",
-                        Description   = "SignalR connection dropped unexpectedly.",
-                        SeverityScore = 0,
-                        RoomId        = participant.RoomId,
-                        StudentId     = studentId,
-                        Timestamp     = DateTime.UtcNow
-                    });
+                    await _disconnectService.HandleDisconnectAsync(
+                        studentId, roomId, reason);
                 }
-
-                // One SaveChangesAsync covers all participant rows AND all
-                // MonitoringEvent inserts atomically. The sweeper uses the
-                // same ConnectionStatus != "Disconnected" guard, so it will
-                // skip any row we just committed — no double-event possible.
-                try
-                {
-                    int rowsAffected = await db.SaveChangesAsync();
-                    Console.WriteLine(
-                        $"[OnDisconnectedAsync] COMMIT OK — studentId={studentId}, " +
-                        $"rows={rowsAffected}, participants={activeParticipants.Count}");
-                }
-                catch (DbUpdateException dbEx)
-                {
-                    // Diagnostic dump: print every tracked entity's state and
-                    // current property values so the offending column is
-                    // visible at a glance.  Then re-throw so the outer catch
-                    // still logs it via ILogger.
-                    Console.WriteLine("======================================================");
-                    Console.WriteLine($"[OnDisconnectedAsync] DB UPDATE FAILED — studentId={studentId}");
-                    Console.WriteLine($"[OnDisconnectedAsync] {dbEx.GetType().FullName}: {dbEx.Message}");
-
-                    // Walk inner exceptions to surface the Postgres error.
-                    Exception? walk = dbEx.InnerException;
-                    int depth = 1;
-                    while (walk != null)
-                    {
-                        if (walk is Npgsql.PostgresException pg)
-                        {
-                            Console.WriteLine($"[OnDisconnectedAsync] [depth={depth}] PostgresException");
-                            Console.WriteLine($"[OnDisconnectedAsync]   SqlState   = {pg.SqlState}");
-                            Console.WriteLine($"[OnDisconnectedAsync]   Message    = {pg.MessageText}");
-                            Console.WriteLine($"[OnDisconnectedAsync]   Detail     = {pg.Detail}");
-                            Console.WriteLine($"[OnDisconnectedAsync]   Table      = {pg.TableName}");
-                            Console.WriteLine($"[OnDisconnectedAsync]   Column     = {pg.ColumnName}");
-                            Console.WriteLine($"[OnDisconnectedAsync]   Constraint = {pg.ConstraintName}");
-                            break;
-                        }
-                        Console.WriteLine($"[OnDisconnectedAsync] [depth={depth}] {walk.GetType().Name}: {walk.Message}");
-                        walk = walk.InnerException;
-                        depth++;
-                    }
-
-                    // Entity-state dump: shows EXACTLY what we tried to write,
-                    // so a future column violation is identified on sight.
-                    Console.WriteLine($"[OnDisconnectedAsync] Tracked entities at time of failure:");
-                    foreach (var entry in db.ChangeTracker.Entries())
-                    {
-                        Console.WriteLine($"  • [{entry.State}] {entry.Entity.GetType().Name}");
-                        foreach (var prop in entry.Properties)
-                        {
-                            var val = prop.CurrentValue is null ? "<NULL>" : prop.CurrentValue.ToString();
-                            Console.WriteLine($"      {prop.Metadata.Name} = {val}");
-                        }
-                    }
-                    Console.WriteLine("======================================================");
-
-                    throw; // re-throw so the outer catch logs and we don't broadcast
-                }
-
-                foreach (var participant in activeParticipants)
-                {
-                    var roomGroup = participant.RoomId.ToString();
-                    await Clients.Group(roomGroup).SendAsync("StudentDisconnected", studentId);
-                    await Clients.Group(roomGroup).SendAsync("StudentConnectionLost", studentId);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Log the failure so it surfaces in server logs rather than
-                // vanishing silently. This covers both DbUpdateConcurrencyException
-                // (two disconnect paths racing) and any unexpected DB errors.
-                // The sweeper will re-detect the disconnect on its next 5 s tick
-                // provided the heartbeat map entry was not already drained.
-                _logger.LogError(ex, "OnDisconnectedAsync: failed to persist disconnect state for studentId={StudentId}.", studentId);
             }
         }
 
