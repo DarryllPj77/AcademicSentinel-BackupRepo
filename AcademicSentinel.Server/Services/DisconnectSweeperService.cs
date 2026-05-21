@@ -152,19 +152,20 @@ public sealed class DisconnectSweeperService : BackgroundService
                             continue;
                         }
 
-                        participant.ConnectionStatus    = "Disconnected";
-                        participant.DisconnectedAt      = DateTime.UtcNow;
-                        // JoinApprovalStatus is NOT NULL (default "Approved").
-                        // Writing null here was the ROOT CAUSE of the ghost-
-                        // write bug — PostgreSQL raised 23502 and rolled back
-                        // both the UPDATE and the MonitoringEvent INSERT.
-                        // Preserve the existing value; only repair if somehow
-                        // empty/whitespace (defensive — should never occur).
-                        if (string.IsNullOrWhiteSpace(participant.JoinApprovalStatus))
-                        {
-                            participant.JoinApprovalStatus = "Approved";
-                        }
-                        participant.IsCurrentlyActive   = false;
+                        // ---------------------------------------------------
+                        // LOAD-BEFORE-MODIFY (Atomic + Idempotent)
+                        // ---------------------------------------------------
+                        // `participant` was loaded from THIS scope's db via
+                        // .ToListAsync() above, so it is a fully populated,
+                        // EF-tracked entity.  We mutate ONLY ConnectionStatus
+                        // and DisconnectedAt.  All other columns — including
+                        // the NOT NULL JoinApprovalStatus (default "Approved")
+                        // — retain their existing DB values, because EF change
+                        // tracking only writes columns whose properties were
+                        // changed.  This eliminates the 23502 null-constraint
+                        // violation at the source.
+                        participant.ConnectionStatus = "Disconnected";
+                        participant.DisconnectedAt   = DateTime.UtcNow;
 
                         transitionedThisIteration = true;
                         transitionedRow           = participant;
@@ -179,20 +180,48 @@ public sealed class DisconnectSweeperService : BackgroundService
                     }
 
                     // -----------------------------------------------------------
-                    // 2. Queue the audit event.  Same db, same change tracker.
+                    // 2. DE-DUPLICATION GUARD (10s window)
                     // -----------------------------------------------------------
-                    db.MonitoringEvents.Add(new MonitoringEvent
+                    // If OnDisconnectedAsync (or a previous sweep tick) already
+                    // wrote a STUDENT_DISCONNECTED for this student/room inside
+                    // the last 10 seconds, skip the Add.  The participant UPDATE
+                    // we already staged above will still commit via the
+                    // SaveChangesAsync below — only the duplicate event Add is
+                    // suppressed.
+                    bool recentlyLogged = await db.MonitoringEvents
+                        .AnyAsync(e => e.StudentId == transitionedRow!.StudentId
+                                    && e.RoomId    == transitionedRow!.RoomId
+                                    && e.EventType == "STUDENT_DISCONNECTED"
+                                    && e.Timestamp > DateTime.UtcNow.AddSeconds(-10), ct);
+
+                    if (recentlyLogged)
                     {
-                        EventType     = "STUDENT_DISCONNECTED",
-                        Description   = "Connection lost. Heartbeat timed out (App forcefully closed or network drop).",
-                        SeverityScore = 0,
-                        RoomId        = transitionedRow!.RoomId,
-                        StudentId     = transitionedRow!.StudentId,
-                        Timestamp     = DateTime.UtcNow
-                    });
+                        Console.WriteLine(
+                            $"[Sweeper] DEDUP skip — STUDENT_DISCONNECTED already logged within 10s " +
+                            $"for studentId={ctx.StudentId}, roomId={ctx.RoomId}. " +
+                            $"Participant UPDATE will still commit.");
+                        _logger.LogInformation(
+                            "[Sweeper] DEDUP skip for studentId={StudentId} roomId={RoomId}; participant UPDATE only.",
+                            ctx.StudentId, ctx.RoomId);
+                    }
+                    else
+                    {
+                        // -----------------------------------------------------------
+                        // 3. Queue the audit event.  Same db, same change tracker.
+                        // -----------------------------------------------------------
+                        db.MonitoringEvents.Add(new MonitoringEvent
+                        {
+                            EventType     = "STUDENT_DISCONNECTED",
+                            Description   = "Connection lost. Heartbeat timed out (App forcefully closed or network drop).",
+                            SeverityScore = 0,
+                            RoomId        = transitionedRow!.RoomId,
+                            StudentId     = transitionedRow!.StudentId,
+                            Timestamp     = DateTime.UtcNow
+                        });
+                    }
 
                     // -----------------------------------------------------------
-                    // 3. Atomic commit — UPDATE + INSERT in one transaction.
+                    // 4. Atomic commit — UPDATE (+ optional INSERT) in one transaction.
                     // -----------------------------------------------------------
                     int rowsAffected = await db.SaveChangesAsync(ct);
 

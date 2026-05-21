@@ -692,47 +692,58 @@ public class MonitoringHub : Hub
 
                 foreach (var participant in activeParticipants)
                 {
+                    // ---------------------------------------------------
+                    // LOAD-BEFORE-MODIFY (Atomic + Idempotent)
+                    // ---------------------------------------------------
+                    // `participant` was loaded from this db scope above
+                    // via .ToListAsync(), so it is a fully populated,
+                    // EF-tracked entity.  We mutate ONLY ConnectionStatus
+                    // and DisconnectedAt.  Every other column — including
+                    // JoinApprovalStatus (NOT NULL, default "Approved") —
+                    // keeps its existing DB value because EF change
+                    // tracking only emits UPDATE columns for properties
+                    // whose values actually changed.  No risk of a 23502
+                    // null-constraint violation, no need for a defensive
+                    // fallback assignment.
                     participant.ConnectionStatus = "Disconnected";
-                    participant.DisconnectedAt = DateTime.UtcNow;
+                    participant.DisconnectedAt   = DateTime.UtcNow;
 
-                    // JoinApprovalStatus is a NOT NULL column (default
-                    // "Approved").  The previous `= null` assignment here
-                    // was the root cause of the ghost-write: PostgreSQL
-                    // raised 23502 (null value in column "JoinApprovalStatus")
-                    // and rolled back the ENTIRE atomic transaction —
-                    // taking the participant UPDATE and the MonitoringEvent
-                    // INSERT down with it, which is why the activity log
-                    // never showed STUDENT_DISCONNECTED.
-                    //
-                    // Fix: preserve whatever value is already in the column.
-                    // If somehow it arrives empty/whitespace (shouldn't,
-                    // given the NOT NULL constraint, but defensive) fall
-                    // back to "Approved" so the save can never violate the
-                    // constraint regardless of upstream invariants.
-                    if (string.IsNullOrWhiteSpace(participant.JoinApprovalStatus))
+                    // ---------------------------------------------------
+                    // DE-DUPLICATION GUARD (10 s window)
+                    // ---------------------------------------------------
+                    // If the sweeper (or a previous fast-firing
+                    // OnDisconnectedAsync) already wrote a
+                    // STUDENT_DISCONNECTED for this student/room within
+                    // the last 10 seconds, skip the event insert.  We
+                    // STILL want the participant UPDATE above to commit,
+                    // so we use `continue` here (not `return`) — the
+                    // outer SaveChangesAsync will persist the row mutation
+                    // even though no event was queued for this iteration.
+                    bool recentlyLogged = await db.MonitoringEvents
+                        .AnyAsync(e => e.StudentId == participant.StudentId
+                                    && e.RoomId    == participant.RoomId
+                                    && e.EventType == "STUDENT_DISCONNECTED"
+                                    && e.Timestamp > DateTime.UtcNow.AddSeconds(-10));
+
+                    if (recentlyLogged)
                     {
-                        participant.JoinApprovalStatus = "Approved";
+                        _logger.LogInformation(
+                            "OnDisconnectedAsync: DEDUP skip — STUDENT_DISCONNECTED already logged within 10s for studentId={StudentId} roomId={RoomId}.",
+                            studentId, participant.RoomId);
+                        continue;
                     }
-
-                    participant.IsCurrentlyActive = false;
 
                     // Write the audit event immediately inside the loop so
                     // that participant-status update and event insert are
-                    // committed in the same SaveChangesAsync call. If the
-                    // sweeper already flipped this row to Disconnected before
-                    // we got here the row won't appear in activeParticipants
-                    // and neither path writes a duplicate. Keeping both writes
-                    // in one transaction prevents the race where the status
-                    // update commits but the event insert doesn't (or the
-                    // exception path silently drops the event).
+                    // committed in the same SaveChangesAsync call.
                     db.MonitoringEvents.Add(new MonitoringEvent
                     {
-                        EventType = "STUDENT_DISCONNECTED",
-                        Description = "SignalR connection dropped unexpectedly.",
+                        EventType     = "STUDENT_DISCONNECTED",
+                        Description   = "SignalR connection dropped unexpectedly.",
                         SeverityScore = 0,
-                        RoomId = participant.RoomId,
-                        StudentId = studentId,
-                        Timestamp = DateTime.UtcNow
+                        RoomId        = participant.RoomId,
+                        StudentId     = studentId,
+                        Timestamp     = DateTime.UtcNow
                     });
                 }
 
