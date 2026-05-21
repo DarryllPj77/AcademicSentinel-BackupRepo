@@ -205,26 +205,26 @@ public class ReportsController : ControllerBase
             .ToListAsync();
 
         var result = new List<object>();
+
+        // Expand window slightly to catch disconnect events logged right at session end
+        var sessionWindowStart = session.StartTime.AddMinutes(-1);
+        var sessionWindowEnd = (session.EndTime ?? DateTime.UtcNow).AddMinutes(1);
+
         foreach (var studentId in studentsInSession)
         {
             var user = await _context.Users.FindAsync(studentId);
             if (user == null) continue;
 
-            // Widen the event-window boundaries by ±60s so disconnect
-            // events written immediately at session-end (where event.Timestamp
-            // can fall a few microseconds AFTER session.EndTime due to
-            // DateTime.UtcNow being called at slightly different moments)
-            // still attribute to the session they belong to.
-            var sessionWindowStart = session.StartTime.AddMinutes(-1);
-            var sessionWindowEnd = (session.EndTime ?? DateTime.UtcNow).AddMinutes(1);
             var logs = await _context.MonitoringEvents
                 .Where(e => e.RoomId == session.RoomId && e.StudentId == studentId
                             && e.Timestamp >= sessionWindowStart
                             && e.Timestamp <= sessionWindowEnd)
                 .OrderByDescending(e => e.Timestamp)
                 .Select(e => new {
-                    EventType = e.EventType, Description = e.Description,
-                    SeverityScore = e.SeverityScore, Timestamp = e.Timestamp
+                    EventType = e.EventType,
+                    Description = e.Description,
+                    SeverityScore = e.SeverityScore,
+                    Timestamp = e.Timestamp
                 })
                 .ToListAsync();
 
@@ -232,70 +232,52 @@ public class ReportsController : ControllerBase
             string riskLevel = totalRisk >= 50 ? "CHEATING" : (totalRisk >= 20 ? "SUSPICIOUS" : "SAFE");
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
-            // -------------------------------------------------------------
-            // ConnectionQuality — EVENT-DRIVEN classification.
-            //
-            // The Global Log Feed (MonitoringEvents table) is the source of
-            // truth: if STUDENT_DISCONNECTED was logged, the disconnect
-            // happened — period. Time-window filters and participant-row
-            // state proved unreliable across server restarts and session
-            // boundaries, so we now key off the events themselves with NO
-            // window filter on the primary signal.
-            //
-            // Logic:
-            //   • Look at the latest STUDENT_DISCONNECTED event for this
-            //     (room, student). If none ever existed → "Clean Connection".
-            //   • If a later STUDENT_JOINED / STUDENT_RECONNECTED /
-            //     STUDENT_JOINED_RECONNECTED event came after that
-            //     disconnect → "Reconnected".
-            //   • Otherwise → "Disconnected" (student never came back).
-            //   • As an additional safety net, if the most-recent
-            //     SessionParticipants row's ConnectionStatus is
-            //     "Disconnected", force "Disconnected" regardless.
-            // -------------------------------------------------------------
-            var latestDisconnectEvent = await _context.MonitoringEvents
-                .Where(e => e.RoomId == session.RoomId
-                            && e.StudentId == studentId
-                            && e.EventType == "STUDENT_DISCONNECTED")
-                .OrderByDescending(e => e.Timestamp)
-                .Select(e => (DateTime?)e.Timestamp)
-                .FirstOrDefaultAsync();
+            // =======================================================
+            // ACCURATE CONNECTION QUALITY STATE TRACKING
+            // =======================================================
 
-            DateTime? latestReconnectEvent = null;
-            if (latestDisconnectEvent.HasValue)
-            {
-                latestReconnectEvent = await _context.MonitoringEvents
-                    .Where(e => e.RoomId == session.RoomId
-                                && e.StudentId == studentId
-                                && (e.EventType == "STUDENT_JOINED"
-                                    || e.EventType == "STUDENT_RECONNECTED"
-                                    || e.EventType == "STUDENT_JOINED_RECONNECTED")
-                                && e.Timestamp > latestDisconnectEvent.Value)
-                    .OrderByDescending(e => e.Timestamp)
-                    .Select(e => (DateTime?)e.Timestamp)
-                    .FirstOrDefaultAsync();
-            }
+            // 1. Check if they dropped at all during this specific session
+            int dcCount = logs.Count(l => l.EventType == "STUDENT_DISCONNECTED");
 
+            // 2. Fetch their final status to see if they came back
             var mostRecentParticipantRow = await _context.SessionParticipants
                 .AsNoTracking()
                 .Where(p => p.RoomId == session.RoomId && p.StudentId == studentId)
                 .OrderByDescending(p => p.JoinedAt)
-                .Select(p => new { p.ConnectionStatus })
                 .FirstOrDefaultAsync();
-            bool rowSaysDisconnected = mostRecentParticipantRow != null
-                && string.Equals(mostRecentParticipantRow.ConnectionStatus, "Disconnected",
-                                 StringComparison.OrdinalIgnoreCase);
+
+            string finalStatus = mostRecentParticipantRow?.ConnectionStatus ?? "Unknown";
+
+            // A completed session should never have a "Connected" participant — it
+            // means the disconnect path (OnDisconnectedAsync or the session-end flush)
+            // hasn't committed yet.  This is the core race: the instructor ends the
+            // session within ~15 s of a force-close, the flush sees the student's
+            // heartbeat as still-fresh and skips them, then the archive is opened
+            // before OnDisconnectedAsync fires.  Normalise "Connected" → "Disconnected"
+            // here so the report is accurate immediately.  Students who cleanly left
+            // via NotifyStudentLeftSafely already have "Completed" by this point and
+            // are unaffected.
+            if (session.EndTime.HasValue &&
+                string.Equals(finalStatus, "Connected", StringComparison.OrdinalIgnoreCase))
+            {
+                finalStatus = "Disconnected";
+            }
 
             string connectionQuality;
-            if (latestDisconnectEvent.HasValue)
+
+            if (dcCount > 0)
             {
-                if (latestReconnectEvent.HasValue && !rowSaysDisconnected)
-                    connectionQuality = "Reconnected";
-                else
-                    connectionQuality = "Disconnected";
+                // Event exists: dropped at some point.  "Completed" means they came
+                // back and cleanly finished; anything else means they never recovered.
+                connectionQuality = string.Equals(finalStatus, "Completed", StringComparison.OrdinalIgnoreCase)
+                    ? "Reconnected"
+                    : "Disconnected";
             }
-            else if (rowSaysDisconnected)
+            else if (string.Equals(finalStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
             {
+                // No event in the window but the row is already Disconnected —
+                // the event was written outside the ±1 min window or by a path
+                // we don't control.  Trust the row state.
                 connectionQuality = "Disconnected";
             }
             else
@@ -303,9 +285,13 @@ public class ReportsController : ControllerBase
                 connectionQuality = "Clean Connection";
             }
 
-            result.Add(new {
-                StudentId = studentId, Name = string.IsNullOrWhiteSpace(user.FullName) ? "Unknown" : user.FullName,
-                Email = user.Email, RiskScore = totalRisk, RiskLevel = riskLevel,
+            result.Add(new
+            {
+                StudentId = studentId,
+                Name = string.IsNullOrWhiteSpace(user.FullName) ? "Unknown" : user.FullName,
+                Email = user.Email,
+                RiskScore = totalRisk,
+                RiskLevel = riskLevel,
                 ViolationCount = violationCount,
                 ConnectionQuality = connectionQuality,
                 Logs = logs

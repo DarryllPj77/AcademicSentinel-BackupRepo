@@ -18,7 +18,8 @@
       "Bash(tasklist //FI \"IMAGENAME eq AcademicSentinel.Server.exe\" //FI \"IMAGENAME eq dotnet.exe\")",
       "Bash(Get-ChildItem -Path \"E:\\\\Visual Studio\\\\For Thesis Codes\\\\FourCUDA Clone Projects\" -Directory)",
       "Bash(Select-Object Name)",
-      "Bash(grep -E \"\\\\.cs$\")"
+      "Bash(grep -E \"\\\\.cs$\")",
+      "Bash(Select-String \"error CS\")"
     ]
   }
 }

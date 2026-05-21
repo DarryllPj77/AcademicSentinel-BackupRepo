@@ -677,22 +677,10 @@ public class MonitoringHub : Hub
 
             try
             {
-                // BUG FIX: The previous "hasCompletedSessionParticipant"
-                // short-circuit was a GLOBAL check — if this student had
-                // ever completed ANY session in their history, every future
-                // disconnect was silently swallowed. That left participants
-                // stuck at ConnectionStatus="Connected" in the IMC, no
-                // STUDENT_DISCONNECTED log was written, and the JoinLiveExam
-                // rejoin-approval gate could not fire because it keys off
-                // ConnectionStatus="Disconnected". Per-participant filtering
-                // below already excludes cleanly-completed sessions (their
-                // row sits at "Completed", not "Connected"), so the global
-                // short-circuit was both wrong and redundant.
-                //
-                // Find every participant row for this student whose status
-                // is neither cleanly Completed nor already Disconnected.
-                // Anything that's Connected, Pending (rejoin in flight),
-                // or in any transitional state gets cleaned up here.
+                // Find every participant row for this student whose status is
+                // neither cleanly Completed nor already Disconnected.
+                // Completed = student pressed Leave and was granted exit.
+                // Disconnected = a prior sweep or disconnect path already ran.
                 var activeParticipants = await db.SessionParticipants
                     .Where(p => p.StudentId == studentId
                                 && p.ConnectionStatus != "Completed"
@@ -706,20 +694,22 @@ public class MonitoringHub : Hub
                 {
                     participant.ConnectionStatus = "Disconnected";
                     participant.DisconnectedAt = DateTime.UtcNow;
-                    // Clear any prior "Approved" rejoin so the next
-                    // reconnect attempt re-enters the approval gate
-                    // (closes the auto-rejoin hole described in the bug
-                    // report).
                     participant.JoinApprovalStatus = null;
                     participant.IsCurrentlyActive = false;
 
-                    // Structured event type so the StudentLogsPreviewDialog's
-                    // violations breakdown groups student drops as their own
-                    // category rather than burying them under "SYSTEM".
+                    // Write the audit event immediately inside the loop so
+                    // that participant-status update and event insert are
+                    // committed in the same SaveChangesAsync call. If the
+                    // sweeper already flipped this row to Disconnected before
+                    // we got here the row won't appear in activeParticipants
+                    // and neither path writes a duplicate. Keeping both writes
+                    // in one transaction prevents the race where the status
+                    // update commits but the event insert doesn't (or the
+                    // exception path silently drops the event).
                     db.MonitoringEvents.Add(new MonitoringEvent
                     {
                         EventType = "STUDENT_DISCONNECTED",
-                        Description = "Student lost connection to the session.",
+                        Description = "SignalR connection dropped unexpectedly.",
                         SeverityScore = 0,
                         RoomId = participant.RoomId,
                         StudentId = studentId,
@@ -727,6 +717,10 @@ public class MonitoringHub : Hub
                     });
                 }
 
+                // One SaveChangesAsync covers all participant rows AND all
+                // MonitoringEvent inserts atomically. The sweeper uses the
+                // same ConnectionStatus != "Disconnected" guard, so it will
+                // skip any row we just committed — no double-event possible.
                 await db.SaveChangesAsync();
 
                 foreach (var participant in activeParticipants)
@@ -736,9 +730,14 @@ public class MonitoringHub : Hub
                     await Clients.Group(roomGroup).SendAsync("StudentConnectionLost", studentId);
                 }
             }
-            catch (DbUpdateConcurrencyException)
+            catch (Exception ex)
             {
-                // best-effort disconnect update under concurrent drops
+                // Log the failure so it surfaces in server logs rather than
+                // vanishing silently. This covers both DbUpdateConcurrencyException
+                // (two disconnect paths racing) and any unexpected DB errors.
+                // The sweeper will re-detect the disconnect on its next 5 s tick
+                // provided the heartbeat map entry was not already drained.
+                _logger.LogError(ex, "OnDisconnectedAsync: failed to persist disconnect state for studentId={StudentId}.", studentId);
             }
         }
 

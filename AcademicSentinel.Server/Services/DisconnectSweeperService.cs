@@ -86,52 +86,73 @@ public sealed class DisconnectSweeperService : BackgroundService
 
         if (stale.Count == 0) return;
 
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
         foreach (var (connectionId, ctx) in stale)
         {
             // Remove the entry first so the next sweep doesn't double-fire
             // even if the DB write below is slow.
             MonitoringHub._activeStudentConnections.TryRemove(connectionId, out _);
 
+            // Fresh scope per entry: if SaveChangesAsync throws on one
+            // student the EF change tracker is discarded entirely, so the
+            // next entry starts clean rather than inheriting corrupt state.
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
             try
             {
+                // Fetch active rows. "Disconnected" rows are included here
+                // (unlike the previous guard that skipped them) so we can
+                // detect the OnDisconnectedAsync half-commit: participant
+                // row already Disconnected but no matching event written.
                 var participants = await db.SessionParticipants
                     .Where(p => p.StudentId == ctx.StudentId
                                 && p.RoomId == ctx.RoomId
-                                && p.ConnectionStatus != "Completed"
-                                && p.ConnectionStatus != "Disconnected")
+                                && p.ConnectionStatus != "Completed")
                     .ToListAsync(ct);
 
                 if (participants.Count == 0)
                 {
-                    // Nothing to update — maybe OnDisconnectedAsync already
-                    // beat us to it. Still log so test traces are clear.
                     _logger.LogInformation(
                         "Sweep: studentId={StudentId} in roomId={RoomId} already cleaned up; map entry removed.",
                         ctx.StudentId, ctx.RoomId);
                     continue;
                 }
 
+                // Check whether a STUDENT_DISCONNECTED event already exists
+                // for this student/room (written by OnDisconnectedAsync).
+                // If the participant is already Disconnected but the event
+                // is missing, we still insert the event — that is the
+                // "half-commit" repair path.
+                bool eventAlreadyWritten = await db.MonitoringEvents
+                    .AnyAsync(e => e.StudentId == ctx.StudentId
+                                   && e.RoomId == ctx.RoomId
+                                   && e.EventType == "STUDENT_DISCONNECTED", ct);
+
                 foreach (var p in participants)
                 {
-                    p.ConnectionStatus = "Disconnected";
-                    p.DisconnectedAt = DateTime.UtcNow;
-                    // Clear any prior Approved rejoin token so the next
-                    // JoinLiveExam re-enters the rejoin-approval gate.
-                    p.JoinApprovalStatus = null;
-                    p.IsCurrentlyActive = false;
-
-                    db.MonitoringEvents.Add(new MonitoringEvent
+                    if (p.ConnectionStatus != "Disconnected")
                     {
-                        EventType = "STUDENT_DISCONNECTED",
-                        Description = "Student stopped sending heartbeats — force-close, internet loss, or power loss detected.",
-                        SeverityScore = 0,
-                        RoomId = p.RoomId,
-                        StudentId = ctx.StudentId,
-                        Timestamp = DateTime.UtcNow
-                    });
+                        p.ConnectionStatus = "Disconnected";
+                        p.DisconnectedAt = DateTime.UtcNow;
+                        p.JoinApprovalStatus = null;
+                        p.IsCurrentlyActive = false;
+                    }
+
+                    if (!eventAlreadyWritten)
+                    {
+                        db.MonitoringEvents.Add(new MonitoringEvent
+                        {
+                            EventType = "STUDENT_DISCONNECTED",
+                            Description = "Connection lost. Heartbeat timed out (App forcefully closed or network drop).",
+                            SeverityScore = 0,
+                            RoomId = p.RoomId,
+                            StudentId = p.StudentId,
+                            Timestamp = DateTime.UtcNow
+                        });
+                        // Only insert one event per student/room pair even
+                        // if multiple participant rows exist.
+                        eventAlreadyWritten = true;
+                    }
                 }
 
                 await db.SaveChangesAsync(ct);
@@ -146,9 +167,16 @@ public sealed class DisconnectSweeperService : BackgroundService
             }
             catch (Exception ex)
             {
+                // Unwrap to the root cause so PostgreSQL constraint/column
+                // errors (buried two levels inside DbUpdateException) are
+                // visible in the log rather than showing only the EF wrapper.
+                Exception root = ex;
+                while (root.InnerException != null) root = root.InnerException;
+
                 _logger.LogError(ex,
-                    "Sweep failed for studentId={StudentId} in roomId={RoomId}; will retry on next tick.",
-                    ctx.StudentId, ctx.RoomId);
+                    "Sweep failed for studentId={StudentId} in roomId={RoomId}; will retry on next tick. " +
+                    "Root cause [{RootType}]: {RootMessage}",
+                    ctx.StudentId, ctx.RoomId, root.GetType().Name, root.Message);
             }
         }
     }

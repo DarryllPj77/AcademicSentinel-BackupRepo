@@ -374,3 +374,4 @@ FodyWeavers.xsd
 
 # Ignore Claude temporary worktrees
 .claude/worktrees/
+/.github/copilot-instructions.md

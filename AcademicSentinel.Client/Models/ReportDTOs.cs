@@ -21,11 +21,14 @@ namespace AcademicSentinel.Client.Models
         public int RiskScore { get; set; }
         public string RiskLevel { get; set; }
         public int ViolationCount { get; set; }
-        // Derived per session from MonitoringEvents:
-        //   "Clean Connection" — no STUDENT_DISCONNECTED events.
-        //   "Reconnected"       — disconnected then rejoined within the session.
-        //   "Disconnected"      — disconnected and never returned.
-        public string ConnectionQuality { get; set; } = "Clean Connection";
+        // Populated server-side from MonitoringEvents + final participant row.
+        //   "Clean Connection" — no STUDENT_DISCONNECTED events, ended cleanly.
+        //   "Reconnected"       — disconnected mid-session then rejoined.
+        //   "Disconnected"      — disconnected and never recovered.
+        // No C# default — the server always returns one of the three strings.
+        // A blank cell in the grid means the HTTP response was malformed,
+        // which is preferable to silently showing "Clean Connection".
+        public string ConnectionQuality { get; set; }
         public List<SessionLogDto> Logs { get; set; } = new();
     }
 
