@@ -206,7 +206,7 @@ public class ReportsController : ControllerBase
 
         var result = new List<object>();
 
-        // Expand window slightly to catch disconnect events logged right at session end
+        // Expand window to ensure we catch all events
         var sessionWindowStart = session.StartTime.AddMinutes(-1);
         var sessionWindowEnd = (session.EndTime ?? DateTime.UtcNow).AddMinutes(1);
 
@@ -215,6 +215,7 @@ public class ReportsController : ControllerBase
             var user = await _context.Users.FindAsync(studentId);
             if (user == null) continue;
 
+            // 1. Fetch ALL logs for this student and pass them UNFILTERED to the UI
             var logs = await _context.MonitoringEvents
                 .Where(e => e.RoomId == session.RoomId && e.StudentId == studentId
                             && e.Timestamp >= sessionWindowStart
@@ -233,13 +234,10 @@ public class ReportsController : ControllerBase
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
             // =======================================================
-            // ACCURATE CONNECTION QUALITY STATE TRACKING
+            // 2. ACCURATE STATE TRACKING (Paradox Fixed)
             // =======================================================
+            string connectionQuality = "Clean Connection";
 
-            // 1. Check if they dropped at all during this specific session
-            int dcCount = logs.Count(l => l.EventType == "STUDENT_DISCONNECTED");
-
-            // 2. Fetch their final status to see if they came back
             var mostRecentParticipantRow = await _context.SessionParticipants
                 .AsNoTracking()
                 .Where(p => p.RoomId == session.RoomId && p.StudentId == studentId)
@@ -248,41 +246,36 @@ public class ReportsController : ControllerBase
 
             string finalStatus = mostRecentParticipantRow?.ConnectionStatus ?? "Unknown";
 
-            // A completed session should never have a "Connected" participant — it
-            // means the disconnect path (OnDisconnectedAsync or the session-end flush)
-            // hasn't committed yet.  This is the core race: the instructor ends the
-            // session within ~15 s of a force-close, the flush sees the student's
-            // heartbeat as still-fresh and skips them, then the archive is opened
-            // before OnDisconnectedAsync fires.  Normalise "Connected" → "Disconnected"
-            // here so the report is accurate immediately.  Students who cleanly left
-            // via NotifyStudentLeftSafely already have "Completed" by this point and
-            // are unaffected.
-            if (session.EndTime.HasValue &&
-                string.Equals(finalStatus, "Connected", StringComparison.OrdinalIgnoreCase))
-            {
-                finalStatus = "Disconnected";
-            }
+            // Isolate mid-session drops (ignoring graceful exits at/after session end)
+            var midSessionDrops = logs.Where(l => l.EventType == "STUDENT_DISCONNECTED"
+                                               && (session.EndTime == null || l.Timestamp < session.EndTime)).ToList();
 
-            string connectionQuality;
-
-            if (dcCount > 0)
+            if (midSessionDrops.Any())
             {
-                // Event exists: dropped at some point.  "Completed" means they came
-                // back and cleanly finished; anything else means they never recovered.
-                connectionQuality = string.Equals(finalStatus, "Completed", StringComparison.OrdinalIgnoreCase)
-                    ? "Reconnected"
-                    : "Disconnected";
-            }
-            else if (string.Equals(finalStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
-            {
-                // No event in the window but the row is already Disconnected —
-                // the event was written outside the ±1 min window or by a path
-                // we don't control.  Trust the row state.
+                // They dropped mid-session, default to Disconnected
                 connectionQuality = "Disconnected";
+
+                var lastDropTime = midSessionDrops.Max(l => l.Timestamp);
+
+                // Proof 1: Did they exit gracefully after the session ended?
+                bool gracefulExit = session.EndTime != null && logs.Any(l => l.EventType == "STUDENT_DISCONNECTED" && l.Timestamp >= session.EndTime);
+
+                // Proof 2: Did they rejoin the DB after their last drop?
+                bool rejoinedAfterDrop = mostRecentParticipantRow?.JoinedAt > lastDropTime;
+
+                // Proof 3: Did the session end while they were actively tracked as Connected?
+                bool isLiveOrCompleted = string.Equals(finalStatus, "Completed", StringComparison.OrdinalIgnoreCase) ||
+                                         string.Equals(finalStatus, "Connected", StringComparison.OrdinalIgnoreCase);
+
+                if (gracefulExit || rejoinedAfterDrop || isLiveOrCompleted)
+                {
+                    connectionQuality = "Reconnected";
+                }
             }
-            else
+            else if (session.EndTime == null && string.Equals(finalStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
             {
-                connectionQuality = "Clean Connection";
+                // Edge case: Session ongoing, UI status is Disconnected, but log hasn't posted yet
+                connectionQuality = "Disconnected";
             }
 
             result.Add(new
@@ -294,7 +287,7 @@ public class ReportsController : ControllerBase
                 RiskLevel = riskLevel,
                 ViolationCount = violationCount,
                 ConnectionQuality = connectionQuality,
-                Logs = logs
+                Logs = logs // Passing the pure, untouched logs to the frontend
             });
         }
         return Ok(result);
