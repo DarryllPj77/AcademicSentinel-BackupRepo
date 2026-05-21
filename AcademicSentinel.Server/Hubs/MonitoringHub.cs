@@ -694,7 +694,26 @@ public class MonitoringHub : Hub
                 {
                     participant.ConnectionStatus = "Disconnected";
                     participant.DisconnectedAt = DateTime.UtcNow;
-                    participant.JoinApprovalStatus = null;
+
+                    // JoinApprovalStatus is a NOT NULL column (default
+                    // "Approved").  The previous `= null` assignment here
+                    // was the root cause of the ghost-write: PostgreSQL
+                    // raised 23502 (null value in column "JoinApprovalStatus")
+                    // and rolled back the ENTIRE atomic transaction —
+                    // taking the participant UPDATE and the MonitoringEvent
+                    // INSERT down with it, which is why the activity log
+                    // never showed STUDENT_DISCONNECTED.
+                    //
+                    // Fix: preserve whatever value is already in the column.
+                    // If somehow it arrives empty/whitespace (shouldn't,
+                    // given the NOT NULL constraint, but defensive) fall
+                    // back to "Approved" so the save can never violate the
+                    // constraint regardless of upstream invariants.
+                    if (string.IsNullOrWhiteSpace(participant.JoinApprovalStatus))
+                    {
+                        participant.JoinApprovalStatus = "Approved";
+                    }
+
                     participant.IsCurrentlyActive = false;
 
                     // Write the audit event immediately inside the loop so
@@ -721,7 +740,60 @@ public class MonitoringHub : Hub
                 // MonitoringEvent inserts atomically. The sweeper uses the
                 // same ConnectionStatus != "Disconnected" guard, so it will
                 // skip any row we just committed — no double-event possible.
-                await db.SaveChangesAsync();
+                try
+                {
+                    int rowsAffected = await db.SaveChangesAsync();
+                    Console.WriteLine(
+                        $"[OnDisconnectedAsync] COMMIT OK — studentId={studentId}, " +
+                        $"rows={rowsAffected}, participants={activeParticipants.Count}");
+                }
+                catch (DbUpdateException dbEx)
+                {
+                    // Diagnostic dump: print every tracked entity's state and
+                    // current property values so the offending column is
+                    // visible at a glance.  Then re-throw so the outer catch
+                    // still logs it via ILogger.
+                    Console.WriteLine("======================================================");
+                    Console.WriteLine($"[OnDisconnectedAsync] DB UPDATE FAILED — studentId={studentId}");
+                    Console.WriteLine($"[OnDisconnectedAsync] {dbEx.GetType().FullName}: {dbEx.Message}");
+
+                    // Walk inner exceptions to surface the Postgres error.
+                    Exception? walk = dbEx.InnerException;
+                    int depth = 1;
+                    while (walk != null)
+                    {
+                        if (walk is Npgsql.PostgresException pg)
+                        {
+                            Console.WriteLine($"[OnDisconnectedAsync] [depth={depth}] PostgresException");
+                            Console.WriteLine($"[OnDisconnectedAsync]   SqlState   = {pg.SqlState}");
+                            Console.WriteLine($"[OnDisconnectedAsync]   Message    = {pg.MessageText}");
+                            Console.WriteLine($"[OnDisconnectedAsync]   Detail     = {pg.Detail}");
+                            Console.WriteLine($"[OnDisconnectedAsync]   Table      = {pg.TableName}");
+                            Console.WriteLine($"[OnDisconnectedAsync]   Column     = {pg.ColumnName}");
+                            Console.WriteLine($"[OnDisconnectedAsync]   Constraint = {pg.ConstraintName}");
+                            break;
+                        }
+                        Console.WriteLine($"[OnDisconnectedAsync] [depth={depth}] {walk.GetType().Name}: {walk.Message}");
+                        walk = walk.InnerException;
+                        depth++;
+                    }
+
+                    // Entity-state dump: shows EXACTLY what we tried to write,
+                    // so a future column violation is identified on sight.
+                    Console.WriteLine($"[OnDisconnectedAsync] Tracked entities at time of failure:");
+                    foreach (var entry in db.ChangeTracker.Entries())
+                    {
+                        Console.WriteLine($"  • [{entry.State}] {entry.Entity.GetType().Name}");
+                        foreach (var prop in entry.Properties)
+                        {
+                            var val = prop.CurrentValue is null ? "<NULL>" : prop.CurrentValue.ToString();
+                            Console.WriteLine($"      {prop.Metadata.Name} = {val}");
+                        }
+                    }
+                    Console.WriteLine("======================================================");
+
+                    throw; // re-throw so the outer catch logs and we don't broadcast
+                }
 
                 foreach (var participant in activeParticipants)
                 {

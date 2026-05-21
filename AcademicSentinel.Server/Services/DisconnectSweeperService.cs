@@ -19,16 +19,14 @@ namespace AcademicSentinel.Server.Services;
 ///     can't pump a Hub method call, the student is unambiguously gone,
 ///     regardless of why.
 ///
-/// Loop:
-///   1. Every 5s, scan <see cref="MonitoringHub._activeStudentConnections"/>.
-///   2. Any entry whose LastBeat is older than 15s → stale.
-///   3. Drop the map entry. Mark every non-Completed participant row for that
-///      student in that room as Disconnected. Clear JoinApprovalStatus so the
-///      next JoinLiveExam re-enters the rejoin-approval gate.
-///   4. Write a STUDENT_DISCONNECTED MonitoringEvent if one doesn't already
-///      exist (deduplication guard against the OnDisconnectedAsync path).
-///   5. Broadcast StudentDisconnected + StudentConnectionLost to the room
-///      group so the IMC flips the participant row red.
+/// STRICT TRANSITION CONTRACT (this rewrite):
+///   The MonitoringEvent "STUDENT_DISCONNECTED" is inserted ONLY when this
+///   loop iteration actually flips a participant row from "Connected" to
+///   "Disconnected".  Any row that arrives already-Disconnected (because
+///   OnDisconnectedAsync got there first) is left untouched and writes no
+///   event — that path is responsible for its own audit row.  This makes
+///   duplicate inserts structurally impossible without needing an extra
+///   pre-flight SELECT against MonitoringEvents.
 /// </summary>
 public sealed class DisconnectSweeperService : BackgroundService
 {
@@ -38,16 +36,16 @@ public sealed class DisconnectSweeperService : BackgroundService
     private static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(15);
 
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly IHubContext<MonitoringHub> _hubContext;
     private readonly ILogger<DisconnectSweeperService> _logger;
 
     public DisconnectSweeperService(
-        IServiceScopeFactory scopeFactory,
+        IServiceScopeFactory serviceScopeFactory,
         IHubContext<MonitoringHub> hubContext,
         ILogger<DisconnectSweeperService> logger)
     {
-        _scopeFactory = scopeFactory;
+        _serviceScopeFactory = serviceScopeFactory;
         _hubContext = hubContext;
         _logger = logger;
     }
@@ -88,150 +86,220 @@ public sealed class DisconnectSweeperService : BackgroundService
 
         foreach (var (connectionId, ctx) in stale)
         {
-            // Remove the entry first so the next sweep tick doesn't
-            // double-fire even if the DB write below is slow.
+            // Remove the heartbeat-map entry first so the next 5-second sweep
+            // tick doesn't re-pick this student even if the DB call below is
+            // slow or contended.
             MonitoringHub._activeStudentConnections.TryRemove(connectionId, out _);
 
-            // One isolated scope per stale entry.  This guarantees:
-            //   a) A completely fresh AppDbContext with an empty change
-            //      tracker — no poisoned state carried over from a previous
-            //      iteration that may have thrown mid-save.
-            //   b) The participant rows we fetch ARE tracked by this exact
-            //      db instance, so SaveChangesAsync sees their mutations.
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-            try
+            // =================================================================
+            // HARDENED SCOPE BLOCK
+            // =================================================================
+            // Per the architectural review:
+            //   * AppDbContext is a scoped service and MUST be resolved through
+            //     an explicit IServiceScopeFactory.CreateScope() in a background
+            //     service.  Injecting it via the constructor would resolve a
+            //     singleton-captured instance and produce undefined behaviour.
+            //   * Each stale entry gets its OWN scope.  If SaveChangesAsync
+            //     throws on one student, EF's change tracker is discarded with
+            //     the scope, so the next iteration starts with a clean context
+            //     — no risk of carrying over poisoned tracked entities.
+            using (var scope = _serviceScopeFactory.CreateScope())
             {
-                // --- STEP 1: Fetch participant rows owned by this db scope ---
-                // Include already-Disconnected rows so we can repair the
-                // "half-commit" case: OnDisconnectedAsync updated the row but
-                // failed to insert the MonitoringEvent.
-                var participants = await db.SessionParticipants
-                    .Where(p => p.StudentId == ctx.StudentId
-                                && p.RoomId == ctx.RoomId
-                                && p.ConnectionStatus != "Completed")
-                    .ToListAsync(ct);
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                if (participants.Count == 0)
+                try
                 {
-                    // All rows are "Completed" — student cleanly finished the
-                    // session via NotifyStudentLeftSafely. Nothing to do.
-                    _logger.LogInformation(
-                        "Sweep: studentId={StudentId} in roomId={RoomId} is Completed; skipping.",
-                        ctx.StudentId, ctx.RoomId);
-                    continue;
-                }
+                    // -----------------------------------------------------------
+                    // 1. Fetch participant rows owned by THIS scope's DbContext.
+                    // -----------------------------------------------------------
+                    // Fetching through `db` means every returned entity is
+                    // tracked by `db`'s change tracker.  Mutating their
+                    // properties below will produce an UPDATE statement at
+                    // SaveChangesAsync time.  Fetching from a different
+                    // context (or _context outside the scope) would silently
+                    // skip the UPDATE — that is the classic "ghost write".
+                    var participants = await db.SessionParticipants
+                        .Where(p => p.StudentId == ctx.StudentId
+                                    && p.RoomId    == ctx.RoomId)
+                        .ToListAsync(ct);
 
-                // --- STEP 2: Deduplication guard ---
-                // If OnDisconnectedAsync already wrote the event we must not
-                // insert a second one. One event per student/room pair.
-                bool eventAlreadyWritten = await db.MonitoringEvents
-                    .AnyAsync(e => e.StudentId == ctx.StudentId
-                                   && e.RoomId == ctx.RoomId
-                                   && e.EventType == "STUDENT_DISCONNECTED", ct);
-
-                // --- STEP 3: Mutate rows + queue the event ---
-                foreach (var participant in participants)
-                {
-                    // Transition the row only if it isn't already Disconnected.
-                    // The db.Entry(participant).State will be Modified automatically
-                    // because the entity was fetched from this same db instance.
-                    if (participant.ConnectionStatus != "Disconnected")
+                    if (participants.Count == 0)
                     {
-                        participant.ConnectionStatus = "Disconnected";
-                        participant.DisconnectedAt = DateTime.UtcNow;
-                        participant.JoinApprovalStatus = null;
-                        participant.IsCurrentlyActive = false;
+                        _logger.LogInformation(
+                            "[Sweeper] No participant rows for studentId={StudentId} in roomId={RoomId}. Nothing to do.",
+                            ctx.StudentId, ctx.RoomId);
+                        continue;
                     }
 
-                    // Insert one event per student/room pair, even if multiple
-                    // participant rows exist (e.g. a rejoin creates a second row).
-                    if (!eventAlreadyWritten)
+                    // Track whether ANY row was actually transitioned in this
+                    // iteration.  Only then do we add the MonitoringEvent and
+                    // call SaveChangesAsync — otherwise we'd commit nothing
+                    // and waste a DB round-trip.
+                    bool transitionedThisIteration = false;
+                    SessionParticipant? transitionedRow = null;
+
+                    foreach (var participant in participants)
                     {
-                        db.MonitoringEvents.Add(new MonitoringEvent
+                        // STRICT TRANSITION GUARD
+                        // Only flip rows that are currently "Connected".  A row
+                        // that is "Disconnected" was already handled by
+                        // OnDisconnectedAsync (or a previous sweep tick that
+                        // succeeded); a "Completed" row left the session
+                        // cleanly.  Either way: skip — do not log a duplicate.
+                        if (!string.Equals(participant.ConnectionStatus, "Connected",
+                                           StringComparison.OrdinalIgnoreCase))
                         {
-                            EventType    = "STUDENT_DISCONNECTED",
-                            Description  = "Connection lost. Heartbeat timed out (App forcefully closed or network drop).",
-                            SeverityScore = 0,
-                            RoomId       = participant.RoomId,
-                            StudentId    = participant.StudentId,
-                            Timestamp    = DateTime.UtcNow
-                        });
-                        eventAlreadyWritten = true;
+                            continue;
+                        }
+
+                        participant.ConnectionStatus    = "Disconnected";
+                        participant.DisconnectedAt      = DateTime.UtcNow;
+                        // JoinApprovalStatus is NOT NULL (default "Approved").
+                        // Writing null here was the ROOT CAUSE of the ghost-
+                        // write bug — PostgreSQL raised 23502 and rolled back
+                        // both the UPDATE and the MonitoringEvent INSERT.
+                        // Preserve the existing value; only repair if somehow
+                        // empty/whitespace (defensive — should never occur).
+                        if (string.IsNullOrWhiteSpace(participant.JoinApprovalStatus))
+                        {
+                            participant.JoinApprovalStatus = "Approved";
+                        }
+                        participant.IsCurrentlyActive   = false;
+
+                        transitionedThisIteration = true;
+                        transitionedRow           = participant;
                     }
-                }
 
-                // --- STEP 4: Atomic commit ---
-                // Both the participant UPDATE and the MonitoringEvent INSERT are
-                // flushed inside a single transaction. Either both land or neither
-                // does — no half-commit possible from this path.
-                await db.SaveChangesAsync(ct);
-
-                Console.WriteLine(
-                    $"[Sweeper] SUCCESS: Disconnect committed — " +
-                    $"studentId={ctx.StudentId}, roomId={ctx.RoomId}");
-
-                _logger.LogInformation(
-                    "Sweep flipped studentId={StudentId} in roomId={RoomId} to Disconnected " +
-                    "after {Age:F1}s of silence.",
-                    ctx.StudentId, ctx.RoomId, (DateTime.UtcNow - ctx.LastBeat).TotalSeconds);
-
-                // --- STEP 5: Notify the room ---
-                var roomGroup = ctx.RoomId.ToString();
-                await _hubContext.Clients.Group(roomGroup).SendAsync("StudentDisconnected",    ctx.StudentId, ct);
-                await _hubContext.Clients.Group(roomGroup).SendAsync("StudentConnectionLost", ctx.StudentId, ct);
-            }
-            catch (DbUpdateException dbEx)
-            {
-                // DbUpdateException wraps the raw Npgsql error. Walk the chain
-                // to find PostgresException which carries the SQL state code,
-                // constraint name, and offending column — the exact data needed
-                // to diagnose a schema/migration mismatch at a glance.
-                Console.WriteLine(
-                    $"[Sweeper] FATAL DB ERROR — " +
-                    $"studentId={ctx.StudentId}, roomId={ctx.RoomId}");
-                Console.WriteLine($"[Sweeper] DbUpdateException: {dbEx.Message}");
-
-                Exception inner = dbEx.InnerException!;
-                while (inner != null)
-                {
-                    if (inner is PostgresException pgEx)
+                    if (!transitionedThisIteration)
                     {
-                        Console.WriteLine(
-                            $"[Sweeper] PostgresException " +
-                            $"SqlState={pgEx.SqlState} | {pgEx.MessageText}");
-                        Console.WriteLine(
-                            $"[Sweeper] Table={pgEx.TableName} | " +
-                            $"Column={pgEx.ColumnName} | " +
-                            $"Constraint={pgEx.ConstraintName}");
-                        break;
+                        _logger.LogInformation(
+                            "[Sweeper] studentId={StudentId} in roomId={RoomId} had no Connected→Disconnected transition; skipping insert.",
+                            ctx.StudentId, ctx.RoomId);
+                        continue;
                     }
-                    Console.WriteLine($"[Sweeper] InnerException [{inner.GetType().Name}]: {inner.Message}");
-                    inner = inner.InnerException!;
+
+                    // -----------------------------------------------------------
+                    // 2. Queue the audit event.  Same db, same change tracker.
+                    // -----------------------------------------------------------
+                    db.MonitoringEvents.Add(new MonitoringEvent
+                    {
+                        EventType     = "STUDENT_DISCONNECTED",
+                        Description   = "Connection lost. Heartbeat timed out (App forcefully closed or network drop).",
+                        SeverityScore = 0,
+                        RoomId        = transitionedRow!.RoomId,
+                        StudentId     = transitionedRow!.StudentId,
+                        Timestamp     = DateTime.UtcNow
+                    });
+
+                    // -----------------------------------------------------------
+                    // 3. Atomic commit — UPDATE + INSERT in one transaction.
+                    // -----------------------------------------------------------
+                    int rowsAffected = await db.SaveChangesAsync(ct);
+
+                    Console.WriteLine(
+                        $"[Sweeper] COMMIT OK — studentId={ctx.StudentId}, roomId={ctx.RoomId}, " +
+                        $"rowsAffected={rowsAffected}");
+
+                    _logger.LogInformation(
+                        "Sweep flipped studentId={StudentId} in roomId={RoomId} to Disconnected after {Age:F1}s of silence. rowsAffected={Rows}",
+                        ctx.StudentId, ctx.RoomId,
+                        (DateTime.UtcNow - ctx.LastBeat).TotalSeconds, rowsAffected);
+
+                    // -----------------------------------------------------------
+                    // 4. Notify the room — only after the DB write committed.
+                    // -----------------------------------------------------------
+                    var roomGroup = ctx.RoomId.ToString();
+                    await _hubContext.Clients.Group(roomGroup).SendAsync("StudentDisconnected",    ctx.StudentId, ct);
+                    await _hubContext.Clients.Group(roomGroup).SendAsync("StudentConnectionLost", ctx.StudentId, ct);
                 }
+                // ---------------------------------------------------------------
+                // AGGRESSIVE ERROR TRAPPING
+                // ---------------------------------------------------------------
+                // The whole point of this rewrite: if SaveChangesAsync ever
+                // fails silently again, we WILL see the exact PostgreSQL error
+                // in the console — SQL state code, table, column, constraint.
+                catch (DbUpdateException dbEx)
+                {
+                    Console.WriteLine("======================================================");
+                    Console.WriteLine($"[Sweeper] DbUpdateException — studentId={ctx.StudentId}, roomId={ctx.RoomId}");
+                    Console.WriteLine($"[Sweeper] Outer: {dbEx.GetType().FullName}: {dbEx.Message}");
 
-                _logger.LogError(dbEx,
-                    "Sweep DB write failed for studentId={StudentId} roomId={RoomId}.",
-                    ctx.StudentId, ctx.RoomId);
-            }
-            catch (Exception ex)
-            {
-                // Non-DB failure (e.g. SignalR broadcast, cancellation).
-                Exception root = ex;
-                while (root.InnerException != null) root = root.InnerException;
+                    Exception? walk = dbEx.InnerException;
+                    int depth = 1;
+                    while (walk != null)
+                    {
+                        if (walk is PostgresException pg)
+                        {
+                            Console.WriteLine($"[Sweeper] [depth={depth}] PostgresException");
+                            Console.WriteLine($"[Sweeper]   SqlState   = {pg.SqlState}");
+                            Console.WriteLine($"[Sweeper]   Severity   = {pg.Severity}");
+                            Console.WriteLine($"[Sweeper]   Message    = {pg.MessageText}");
+                            Console.WriteLine($"[Sweeper]   Detail     = {pg.Detail}");
+                            Console.WriteLine($"[Sweeper]   Schema     = {pg.SchemaName}");
+                            Console.WriteLine($"[Sweeper]   Table      = {pg.TableName}");
+                            Console.WriteLine($"[Sweeper]   Column     = {pg.ColumnName}");
+                            Console.WriteLine($"[Sweeper]   Constraint = {pg.ConstraintName}");
+                            Console.WriteLine($"[Sweeper]   DataType   = {pg.DataTypeName}");
+                            Console.WriteLine($"[Sweeper]   Position   = {pg.Position}");
+                            break;
+                        }
 
-                Console.WriteLine(
-                    $"[Sweeper] UNEXPECTED ERROR — " +
-                    $"studentId={ctx.StudentId}, roomId={ctx.RoomId}");
-                Console.WriteLine($"[Sweeper] {ex.GetType().Name}: {ex.Message}");
-                if (root != ex)
-                    Console.WriteLine($"[Sweeper] Root [{root.GetType().Name}]: {root.Message}");
+                        if (walk is NpgsqlException np)
+                        {
+                            Console.WriteLine($"[Sweeper] [depth={depth}] NpgsqlException: {np.Message}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[Sweeper] [depth={depth}] {walk.GetType().FullName}: {walk.Message}");
+                        }
 
-                _logger.LogError(ex,
-                    "Sweep failed for studentId={StudentId} roomId={RoomId}; will retry on next tick.",
-                    ctx.StudentId, ctx.RoomId);
-            }
+                        walk = walk.InnerException;
+                        depth++;
+                    }
+                    Console.WriteLine("======================================================");
+
+                    _logger.LogError(dbEx,
+                        "Sweep DB write FAILED for studentId={StudentId} roomId={RoomId}.",
+                        ctx.StudentId, ctx.RoomId);
+                }
+                catch (NpgsqlException npgsqlEx)
+                {
+                    // Some Npgsql errors (connection drop, broken pipe) escape
+                    // EF without being wrapped in DbUpdateException.  Catch
+                    // them explicitly so the diagnostic surface is identical.
+                    Console.WriteLine("======================================================");
+                    Console.WriteLine($"[Sweeper] NpgsqlException — studentId={ctx.StudentId}, roomId={ctx.RoomId}");
+                    Console.WriteLine($"[Sweeper] {npgsqlEx.GetType().FullName}: {npgsqlEx.Message}");
+
+                    if (npgsqlEx is PostgresException pg2)
+                    {
+                        Console.WriteLine($"[Sweeper]   SqlState   = {pg2.SqlState}");
+                        Console.WriteLine($"[Sweeper]   Table      = {pg2.TableName}");
+                        Console.WriteLine($"[Sweeper]   Column     = {pg2.ColumnName}");
+                        Console.WriteLine($"[Sweeper]   Constraint = {pg2.ConstraintName}");
+                    }
+                    Console.WriteLine("======================================================");
+
+                    _logger.LogError(npgsqlEx,
+                        "Sweep Npgsql error for studentId={StudentId} roomId={RoomId}.",
+                        ctx.StudentId, ctx.RoomId);
+                }
+                catch (Exception ex)
+                {
+                    // Non-DB failure (e.g. SignalR broadcast threw, cancellation).
+                    Exception root = ex;
+                    while (root.InnerException != null) root = root.InnerException;
+
+                    Console.WriteLine($"[Sweeper] UNEXPECTED — studentId={ctx.StudentId}, roomId={ctx.RoomId}");
+                    Console.WriteLine($"[Sweeper] {ex.GetType().Name}: {ex.Message}");
+                    if (root != ex)
+                        Console.WriteLine($"[Sweeper] Root [{root.GetType().Name}]: {root.Message}");
+
+                    _logger.LogError(ex,
+                        "Sweep failed for studentId={StudentId} roomId={RoomId}; will retry on next tick.",
+                        ctx.StudentId, ctx.RoomId);
+                }
+            } // end using scope — DbContext disposed deterministically here
         }
     }
 }
