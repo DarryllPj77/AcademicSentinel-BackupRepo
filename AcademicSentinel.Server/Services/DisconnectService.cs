@@ -195,13 +195,27 @@ public sealed class DisconnectService
             }
 
             // ------------------------------------------------------------
-            // 7. MUTATE  (only the two disconnect-state fields)
+            // 7. MUTATE  (disconnect-state fields + arm the rejoin gate)
             // ------------------------------------------------------------
-            // EF change tracking emits an UPDATE for only these two
-            // columns.  JoinApprovalStatus (NOT NULL, default "Approved")
-            // is never written and cannot trip PostgreSQL 23502.
-            participant.ConnectionStatus = "Disconnected";
-            participant.DisconnectedAt   = DateTime.UtcNow;
+            // EF change tracking emits an UPDATE for only these columns.
+            //
+            // JoinApprovalStatus is flipped to "Pending" so that when the
+            // SAC reconnects and calls MonitoringHub.JoinLiveExam, the
+            // rejoin-approval gate fires:
+            //
+            //     if (ConnectionStatus == "Disconnected"
+            //         && JoinApprovalStatus != "Approved")  // ← now true
+            //
+            // Without this write the column stays "Approved" from the
+            // original join, the gate is bypassed, and the student is
+            // silently restored to the session with no instructor
+            // prompt. "Pending" is a non-null string so the NOT NULL
+            // constraint on JoinApprovalStatus is preserved (no 23502
+            // risk). The teacher's Approve action later flips this back
+            // to "Approved"; Deny flips it to "Denied".
+            participant.ConnectionStatus    = "Disconnected";
+            participant.DisconnectedAt      = DateTime.UtcNow;
+            participant.JoinApprovalStatus  = "Pending";
 
             // ------------------------------------------------------------
             // 8. AUDIT EVENT  (atomic with the UPDATE)
