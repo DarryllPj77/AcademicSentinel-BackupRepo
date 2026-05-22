@@ -417,7 +417,12 @@ public class MonitoringHub : Hub
 
                 participant.ConnectionStatus = "Disconnected";
                 participant.DisconnectedAt = DateTime.UtcNow;
-                participant.JoinApprovalStatus = null;
+                // "Pending" (not null) — JoinApprovalStatus is NOT NULL in
+                // Postgres. "Pending" also satisfies the rejoin gate below
+                // (!= "Approved") and matches DisconnectService's contract,
+                // so the kicked-style /request-join approval pipeline can
+                // pick this up consistently on the next attempt.
+                participant.JoinApprovalStatus = "Pending";
                 participant.IsCurrentlyActive = false;
 
                 _context.MonitoringEvents.Add(new MonitoringEvent

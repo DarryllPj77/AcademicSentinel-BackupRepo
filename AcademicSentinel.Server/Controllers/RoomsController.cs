@@ -1279,11 +1279,31 @@ public class RoomsController : ControllerBase
             .Select(e => (DateTime?)e.Timestamp)
             .FirstOrDefaultAsync();
 
-        // Compose the blocking-event high-water mark across all three sources.
-        // Any of {LEAVE_GRANTED, STUDENT_REMOVED, JOIN_DENIED} requires a
-        // fresh REJOIN_APPROVED with a newer timestamp before the gate opens.
+        // Treat an unexpected disconnect (STUDENT_DISCONNECTED, written by
+        // DisconnectService for both OnDisconnectedAsync and heartbeat-timeout
+        // drops) as a blocking event — same pattern as STUDENT_REMOVED. Without
+        // this, a student who dropped mid-exam would be auto-approved here
+        // (the gate would see no blocking event), JoinApprovalStatus would be
+        // flipped to "Approved", and the hub's rejoin gate in JoinLiveExam
+        // would then be bypassed — silently restoring the student to the
+        // session with no instructor prompt. Including STUDENT_DISCONNECTED
+        // routes disconnect-reconnects through the exact same 202 Pending →
+        // StudentPendingApproval → JOIN_REQ pipeline used by kicked students.
+        var lastStudentDisconnected = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "STUDENT_DISCONNECTED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // Compose the blocking-event high-water mark across all sources.
+        // Any of {LEAVE_GRANTED, STUDENT_REMOVED, JOIN_DENIED,
+        // STUDENT_DISCONNECTED} requires a fresh REJOIN_APPROVED with a newer
+        // timestamp before the gate opens.
         DateTime? lastBlockingEvent = null;
-        foreach (var ts in new[] { lastStudentRemoved, lastJoinDenied })
+        foreach (var ts in new[] { lastStudentRemoved, lastJoinDenied, lastStudentDisconnected })
         {
             if (ts.HasValue && (!lastBlockingEvent.HasValue || ts > lastBlockingEvent))
                 lastBlockingEvent = ts;
