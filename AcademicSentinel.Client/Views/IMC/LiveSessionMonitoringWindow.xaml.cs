@@ -77,6 +77,16 @@ namespace AcademicSentinel.Client.Views.IMC
         // to restore the per-row flags after Clear().
         private readonly Dictionary<int, HandRaiseRequestDto> _pendingHandRaiseRequests = new();
         private readonly HashSet<int> _activeHandRaiseStudentIds = new();
+
+        // Mirror of the Done bucket — survives LoadParticipantsFromServerAsync
+        // refreshes. Set by the StudentLeftSession handler (and the
+        // BtnApproveLeave_Click optimistic path) when a student
+        // completes the exam via Done. The rebuild loop in
+        // LoadParticipantsFromServerAsync consults this set so a
+        // student returned by the server as "Disconnected" who is
+        // actually a Done completion stays visible under the Done
+        // header instead of vanishing entirely.
+        private readonly HashSet<int> _doneStudentIds = new();
         private readonly HashSet<int> _safelyLeftStudentIds = new();
         private readonly HashSet<int> _permanentlyDismissedStudents = new HashSet<int>();
         // Tracks students for whom a STUDENT_DISCONNECTED line has already
@@ -128,11 +138,20 @@ namespace AcademicSentinel.Client.Views.IMC
             _studentsView = CollectionViewSource.GetDefaultView(ActiveStudents);
             _logsView = CollectionViewSource.GetDefaultView(LogFeed);
 
-            // NEW: Auto-Sort Logic! 
-            // 1st Priority: Most violations go to the top
-            // 2nd Priority: Alphabetical by Email
+            // Sort & group:
+            //   1. Section first (Taking before Done) — gives the two
+            //      headers in the participant panel.
+            //   2. Within a section, most violations go to the top.
+            //   3. Alphabetical by Email as the stable tiebreaker.
+            _studentsView.SortDescriptions.Add(new SortDescription(nameof(LiveStudentStatus.SectionSortOrder), ListSortDirection.Ascending));
             _studentsView.SortDescriptions.Add(new SortDescription("ViolationCount", ListSortDirection.Descending));
             _studentsView.SortDescriptions.Add(new SortDescription("Email", ListSortDirection.Ascending));
+
+            // PropertyGroupDescription on Section yields two
+            // CollectionViewGroup buckets keyed "Taking" / "Done". The
+            // GroupStyle defined in XAML renders the bucket headers
+            // and exposes ItemCount automatically.
+            _studentsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(LiveStudentStatus.Section)));
 
             StudentsItemsControl.ItemsSource = _studentsView;
             LogFeedItemsControl.ItemsSource = _logsView;
@@ -1251,12 +1270,41 @@ namespace AcademicSentinel.Client.Views.IMC
                 var student = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (student != null)
                 {
+                    // Move the row into the Done bucket instead of
+                    // deleting it. The CollectionViewSource grouping
+                    // on Section flips this student under the "Done"
+                    // header automatically after Refresh().
                     student.IsOffline = false;
-                    student.Status = "Completed";
+                    student.IsDone = true;
+                    student.Status = "Done";
                     student.StatusColor = "#1B5E20";
+
+                    // Clear interaction flags — Done students do not
+                    // get Approve/Deny or hand-raise affordances. The
+                    // template's data triggers stop emitting those
+                    // controls as soon as these flip to false.
+                    student.IsLeaveRequested = false;
+                    student.IsJoinApprovalPending = false;
+                    student.IsHandRaisePending = false;
+                    student.IsHandRaiseActive = false;
+
+                    // Persist the Done state so LoadParticipantsFromServerAsync
+                    // can re-derive it on the next 4 s refresh — without
+                    // this, the rebuild would skip the row (server reports
+                    // Disconnected, the loader filters that out) and the
+                    // student would disappear from the Done section after
+                    // the very next poll. NOT adding to
+                    // _permanentlyDismissedStudents on purpose: that set
+                    // is reserved for kicks/denials that should fully
+                    // hide the row, which is the opposite of what we
+                    // want here.
+                    _doneStudentIds.Add(studentId);
+                    _leaveRequestedStateByStudentId.Remove(studentId);
+                    _pendingJoinApprovals.Remove(studentId);
+                    _pendingHandRaiseRequests.Remove(studentId);
+                    _activeHandRaiseStudentIds.Remove(studentId);
+
                     LogActivity("SYSTEM", "SYSTEM", $"EXAM COMPLETED. Student exited properly. {student.Name}", "#1B5E20");
-                    _permanentlyDismissedStudents.Add(studentId);
-                    ActiveStudents.Remove(student);
                     _studentsView.Refresh();
                     UpdateParticipantCount();
                 }
@@ -1301,10 +1349,16 @@ namespace AcademicSentinel.Client.Views.IMC
             {
                 await _hubConnection.InvokeAsync("GrantLeave", _roomId, student.StudentId);
 
-                _permanentlyDismissedStudents.Add(student.StudentId);
+                // Optimistic UI: the StudentLeftSession broadcast that
+                // GrantLeave triggers will officially move the student
+                // into the Done bucket, but we set the row up here so
+                // the instructor sees the transition immediately
+                // without waiting for the round-trip.
+                _doneStudentIds.Add(student.StudentId);
                 _leaveRequestedStateByStudentId[student.StudentId] = false;
                 student.IsLeaveRequested = false;
-                student.Status = "Approved to Leave";
+                student.IsDone = true;
+                student.Status = "Done";
                 student.StatusColor = "#1B5E20";
 
                 LogActivity(student.Email, "UNLOCK", "Instructor granted leave.", "#1B5E20");
@@ -1403,10 +1457,24 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void UpdateParticipantCount()
         {
-            if (EmptyParticipantsState != null && ActiveStudents.Count > 0) EmptyParticipantsState.Visibility = Visibility.Collapsed;
-            TxtParticipantCount.Text = $"{ActiveStudents.Count}/{_enrolledCount}";
-            var missing = Math.Max(0, _enrolledCount - ActiveStudents.Count);
-            if (FindName("TxtMissingCount") is TextBlock txtMissing) txtMissing.Text = $"Missing: {missing}";
+            int takingCount = ActiveStudents.Count(s => !s.IsDone);
+            int doneCount   = ActiveStudents.Count(s => s.IsDone);
+
+            if (EmptyParticipantsState != null && ActiveStudents.Count > 0)
+                EmptyParticipantsState.Visibility = Visibility.Collapsed;
+
+            // Header pill shows Taking out of total enrolled — that's
+            // the "still being monitored" headline number the
+            // instructor cares about most.
+            TxtParticipantCount.Text = $"{takingCount}/{_enrolledCount}";
+
+            // Missing = enrolled minus everyone we currently have on
+            // screen (Taking AND Done). The Done count is spelled out
+            // alongside so the teacher can see at a glance how many
+            // have finished.
+            var missing = Math.Max(0, _enrolledCount - takingCount - doneCount);
+            if (FindName("TxtMissingCount") is TextBlock txtMissing)
+                txtMissing.Text = $"Done: {doneCount} · Missing: {missing}";
         }
 
         // Tracks the last known ParticipationStatus per student between
@@ -1456,6 +1524,14 @@ namespace AcademicSentinel.Client.Views.IMC
                     _previousParticipantStatus[p.StudentId] = p.ParticipationStatus;
                 }
 
+                // Preserve Done rows across the rebuild — the server
+                // reports them as "Disconnected" so the main loop below
+                // (which only keeps "Joined" rows) would drop them
+                // otherwise. Pull the existing instances out, wipe the
+                // collection, then add the new Taking snapshot and
+                // re-append the Done bucket at the end.
+                var preservedDone = ActiveStudents.Where(s => s.IsDone).ToList();
+
                 ActiveStudents.Clear();
 
                 // 1. Add ONLY currently-Joined students to the live sidebar.
@@ -1473,6 +1549,14 @@ namespace AcademicSentinel.Client.Views.IMC
                     && !_safelyLeftStudentIds.Contains(p.StudentId)))
                 {
                     if (_permanentlyDismissedStudents.Contains(p.StudentId))
+                        continue;
+
+                    // Done students live in the Done bucket — even if
+                    // the server transiently reports them as Joined
+                    // again (e.g., a race where the participant row
+                    // hasn't flipped yet), skip the Taking add and
+                    // let the preserved-Done loop below own the row.
+                    if (_doneStudentIds.Contains(p.StudentId))
                         continue;
 
                     var isLeaveRequested = _leaveRequestedStateByStudentId.TryGetValue(p.StudentId, out var requested) && requested;
@@ -1581,6 +1665,25 @@ namespace AcademicSentinel.Client.Views.IMC
                     var existing = ActiveStudents.FirstOrDefault(s => s.StudentId == activeId);
                     if (existing != null)
                         existing.IsHandRaiseActive = true;
+                }
+
+                // 4. Restore the Done bucket. Preserved instances are
+                //    re-added intact so their accumulated state
+                //    (ViolationCount, HasViolation, hardware flags,
+                //    profile image) survives the refresh. If a Done id
+                //    isn't in the preserved set (e.g., the IMC was just
+                //    reopened mid-session and we've never seen them
+                //    live), skip — we don't have a snapshot to render
+                //    a row from and the next StudentLeftSession or the
+                //    session-archive view will surface them properly.
+                foreach (var done in preservedDone)
+                {
+                    if (!_doneStudentIds.Contains(done.StudentId))
+                        continue;
+                    if (ActiveStudents.Any(s => s.StudentId == done.StudentId))
+                        continue;
+                    done.IsDone = true;
+                    ActiveStudents.Add(done);
                 }
 
                 _studentsView.Refresh();
@@ -2170,6 +2273,14 @@ namespace AcademicSentinel.Client.Views.IMC
         // Lower Hand button. Set when HandRaiseResolved arrives with
         // decision="Approved"; cleared by HandLowered.
         private bool _isHandRaiseActive;
+        // True after the student's Done request has been approved by
+        // the instructor (StudentLeftSession broadcast). Drives the
+        // Section grouping below so finished students show up under
+        // the "Done" header instead of staying mixed with the active
+        // Taking list. Once set, this row stops emitting violation
+        // / hand-raise / leave-request UI affordances because all
+        // those interaction flows assume an active monitored student.
+        private bool _isDone;
         private bool _hasViolation;
         private bool _hasHardwareViolation;
         private bool _isUsingVm;
@@ -2199,6 +2310,27 @@ namespace AcademicSentinel.Client.Views.IMC
         public bool IsJoinApprovalPending { get => _isJoinApprovalPending; set { _isJoinApprovalPending = value; OnPropertyChanged(); } }
         public bool IsHandRaisePending { get => _isHandRaisePending; set { _isHandRaisePending = value; OnPropertyChanged(); } }
         public bool IsHandRaiseActive { get => _isHandRaiseActive; set { _isHandRaiseActive = value; OnPropertyChanged(); } }
+        public bool IsDone
+        {
+            get => _isDone;
+            set
+            {
+                if (_isDone == value) return;
+                _isDone = value;
+                OnPropertyChanged();
+                // Section and SectionSortOrder are derived from IsDone;
+                // notify both so the CollectionViewSource re-groups and
+                // re-sorts immediately on the next Refresh().
+                OnPropertyChanged(nameof(Section));
+                OnPropertyChanged(nameof(SectionSortOrder));
+            }
+        }
+        // CollectionViewSource keys off these two properties to render
+        // Taking and Done as separate sections. Taking sorts first
+        // because its order key is 0; Done is 1. The string label is
+        // what the GroupStyle header binds to.
+        public string Section => _isDone ? "Done" : "Taking";
+        public int SectionSortOrder => _isDone ? 1 : 0;
         public bool HasViolation { get => _hasViolation; set { _hasViolation = value; OnPropertyChanged(); } }
         public bool HasHardwareViolation { get => _hasHardwareViolation; set { _hasHardwareViolation = value; OnPropertyChanged(); } }
         public bool IsUsingVM { get => _isUsingVm; set { _isUsingVm = value; OnPropertyChanged(); } }
