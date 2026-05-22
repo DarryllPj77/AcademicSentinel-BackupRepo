@@ -148,12 +148,14 @@ namespace AcademicSentinel.Client.Views.IMC
                                 // Duration column = how long the session actually ran,
                                 // in minutes. Empty string if never ended.
                                 string durationOnly = "—";
+                                string endedAtText = "—";
                                 if (s.EndTime.HasValue)
                                 {
                                     DateTime endTime = s.EndTime.Value.ToLocalTime();
                                     int minutes = (int)Math.Round((endTime - startTime).TotalMinutes);
                                     if (minutes < 1) minutes = 1;
                                     durationOnly = $"{minutes} min{(minutes == 1 ? "" : "s")}";
+                                    endedAtText = endTime.ToString("MMM dd, yyyy - hh:mm tt");
                                 }
 
                                 Sessions.Add(new SessionItem
@@ -162,6 +164,7 @@ namespace AcademicSentinel.Client.Views.IMC
                                     RealSessionId = s.Id,
                                     DateDuration = dateText,
                                     Duration = durationOnly,
+                                    EndedAtDisplay = endedAtText,
                                     StatusText = status,
                                     Status = status,
                                     ExamType = string.IsNullOrWhiteSpace(s.ExamType) ? "Summative" : s.ExamType,
@@ -429,6 +432,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
             return (item.SessionId?.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
                 || (item.DateDuration?.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
+                || (item.EndedAtDisplay?.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
                 || (item.ExamType?.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0);
         }
         private void BtnViewArchive_Click(object sender, System.Windows.RoutedEventArgs e)
@@ -451,6 +455,12 @@ namespace AcademicSentinel.Client.Views.IMC
         public int RealSessionId { get; set; } // DB primary key (ExamSessions.Id) for SessionArchiveDetailWindow lookups
         public string DateDuration { get; set; } = string.Empty; // formatted "MMM dd, yyyy - hh:mm tt"
         public string Duration { get; set; } = string.Empty;     // formatted "N mins" or "—" if not ended
+        // Session end timestamp, formatted in local time. Falls back to
+        // "—" when the underlying ExamSession.EndTime is null (the row
+        // was force-closed by a self-heal pass that never stamped a
+        // wall-clock end). The Duration column already handles the same
+        // fallback so the two columns stay visually consistent.
+        public string EndedAtDisplay { get; set; } = "—";
         public string StatusText { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public string ExamType { get; set; } = string.Empty;
