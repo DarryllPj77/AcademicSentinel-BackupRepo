@@ -71,15 +71,25 @@ public class RoomsController : ControllerBase
         // PHANTOM-ACTIVE DETECTION.
         //
         // A session can be Status="Active" in the DB but functionally
-        // dead — IMC was force-closed, server crashed, etc. The teacher
-        // dashboard then shows a phantom "Monitoring Session In Progress"
-        // banner that never goes away.
+        // dead — IMC was force-closed mid-setup before any student
+        // joined and never came back. The teacher dashboard then shows a
+        // phantom "Monitoring Session In Progress" banner that never
+        // goes away.
         //
-        // Rule: an exam with NO live student heartbeats for ≥30 seconds
-        // is functionally over. The instructor's connection state is
-        // irrelevant — if no student is being monitored, there's no
-        // monitoring happening. Close the session and drain the
-        // instructor-disconnect flag so the banner can't resurrect.
+        // Criterion (tightened): the session is only "phantom" when
+        //   (a) it has been Active for ≥30 s, AND
+        //   (b) NO student has a live heartbeat in
+        //       _activeStudentConnections for this room, AND
+        //   (c) NO SessionParticipant row exists for this session at all.
+        //
+        // (c) is the rejoin-safety guard. Without it, the moment the
+        // last connected student dropped, the next /api/rooms/student
+        // poll would see an empty heartbeat map, kill the session, and
+        // strand the disconnected student on a "Not Joinable Yet" tile
+        // even though the instructor still believes the session is
+        // running. Closing a session that has real participants is the
+        // job of EndExamSession / EndSessionOnDisconnect — not this
+        // best-effort phantom sweep.
         if (latestIsActive && latest != null
             && (DateTime.UtcNow - latest.StartTime).TotalSeconds > 30)
         {
@@ -93,13 +103,17 @@ public class RoomsController : ControllerBase
                 }
             }
 
-            if (!anyLiveStudent)
+            bool anySessionParticipant = !anyLiveStudent && await _context.SessionParticipants
+                .AnyAsync(p => p.RoomId == roomId && p.JoinedAt >= latest.StartTime);
+
+            if (!anyLiveStudent && !anySessionParticipant)
             {
                 latest.Status = "Completed";
                 latest.EndTime ??= DateTime.UtcNow;
                 latestIsActive = false;
-                // Drain the instructor flag — no live students means the
-                // session is over; teacher can't "rejoin" something dead.
+                // Drain the instructor flag — no live students AND no
+                // participant rows means the session never really
+                // started; teacher can't "rejoin" something dead.
                 AcademicSentinel.Server.Hubs.MonitoringHub
                     ._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
                 changed = true;
