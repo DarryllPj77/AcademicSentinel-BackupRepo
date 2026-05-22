@@ -59,6 +59,24 @@ namespace AcademicSentinel.Client.Views.IMC
         private List<ParticipantDto> _allParticipants = new List<ParticipantDto>();
         private readonly Dictionary<int, bool> _leaveRequestedStateByStudentId = new();
         private readonly Dictionary<int, JoinApprovalRequestDto> _pendingJoinApprovals = new();
+
+        // ============================================================
+        // RAISED-HAND PERSISTENCE (decouples hub state from the periodic
+        // /participants refresh in LoadParticipantsFromServerAsync).
+        // ============================================================
+        // Symptom this fixes: the participant refresh DispatcherTimer
+        // fires every 4 s and rebuilds ActiveStudents from a fresh
+        // HTTP snapshot. The new LiveStudentStatus rows default
+        // IsHandRaisePending / IsHandRaiseActive to false, so the
+        // Approve/Deny/Lower Hand controls were being wiped within
+        // seconds of the request arriving — and almost always before
+        // the instructor could even see them.
+        //
+        // Same shape as _pendingJoinApprovals / _leaveRequestedStateByStudentId:
+        // mutated by the hub handlers, consulted by the rebuild loop
+        // to restore the per-row flags after Clear().
+        private readonly Dictionary<int, HandRaiseRequestDto> _pendingHandRaiseRequests = new();
+        private readonly HashSet<int> _activeHandRaiseStudentIds = new();
         private readonly HashSet<int> _safelyLeftStudentIds = new();
         private readonly HashSet<int> _permanentlyDismissedStudents = new HashSet<int>();
         // Tracks students for whom a STUDENT_DISCONNECTED line has already
@@ -1028,18 +1046,31 @@ namespace AcademicSentinel.Client.Views.IMC
             // fails to populate the payload at runtime.
             _hubSubscriptions.Add(_hubConnection.On<HandRaiseRequestDto>("HandRaiseRequested", payload => Dispatcher.Invoke(() =>
             {
-                if (payload == null) return;
+                if (payload == null)
+                {
+                    Console.WriteLine("[HandRaise] HandRaiseRequested received but payload was null.");
+                    return;
+                }
+
+                Console.WriteLine($"[HandRaise] HandRaiseRequested received: studentId={payload.StudentId}, name={payload.StudentName}, email={payload.StudentEmail}");
+
+                // Persist BEFORE mutating ActiveStudents so a refresh
+                // that races our Dispatcher.Invoke can still rebuild
+                // the flag from this dictionary. This is the actual
+                // anti-race guard — without it, the 4 s refresh wipes
+                // IsHandRaisePending within seconds.
+                _pendingHandRaiseRequests[payload.StudentId] = payload;
+                _activeHandRaiseStudentIds.Remove(payload.StudentId); // not active yet
 
                 var target = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
-                if (target == null)
+                bool materialized = target == null;
+                if (materialized)
                 {
                     // The requesting student might not be present in
                     // ActiveStudents if the periodic participant refresh
                     // hasn't completed yet. Materialise a row from the
                     // payload — mirrors what StudentPendingApproval does
-                    // for late-arriving join requests — so the Approve
-                    // / Deny buttons render immediately. The next poll
-                    // will reconcile the rest of the fields.
+                    // for late-arriving join requests.
                     target = new LiveStudentStatus
                     {
                         StudentId = payload.StudentId,
@@ -1053,6 +1084,8 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 target.IsHandRaisePending = true;
                 target.IsHandRaiseActive  = false;
+
+                Console.WriteLine($"[HandRaise] participant row {(materialized ? "materialised" : "found")}; IsHandRaisePending={target.IsHandRaisePending}; ActiveStudents.Count={ActiveStudents.Count}");
 
                 LogActivity(target.Email, "HAND_RAISED",
                     $"{target.Name} raised hand — requesting Q&A access.", "#1565C0");
@@ -1068,11 +1101,22 @@ namespace AcademicSentinel.Client.Views.IMC
             {
                 if (payload == null) return;
 
+                bool approved = string.Equals(payload.Decision, "Approved", StringComparison.OrdinalIgnoreCase);
+
+                // Keep the persistence sets authoritative so the next
+                // /participants refresh restores the correct flag.
+                _pendingHandRaiseRequests.Remove(payload.StudentId);
+                if (approved)
+                    _activeHandRaiseStudentIds.Add(payload.StudentId);
+                else
+                    _activeHandRaiseStudentIds.Remove(payload.StudentId);
+
+                Console.WriteLine($"[HandRaise] HandRaiseResolved received: studentId={payload.StudentId}, decision={payload.Decision}");
+
                 var target = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
                 if (target == null) return;
 
                 target.IsHandRaisePending = false;
-                bool approved = string.Equals(payload.Decision, "Approved", StringComparison.OrdinalIgnoreCase);
                 target.IsHandRaiseActive = approved;
 
                 LogActivity(target.Email,
@@ -1089,15 +1133,23 @@ namespace AcademicSentinel.Client.Views.IMC
             // pending and active so the tile/buttons return to normal.
             _hubSubscriptions.Add(_hubConnection.On<int>("HandLowered", studentId => Dispatcher.Invoke(() =>
             {
+                Console.WriteLine($"[HandRaise] HandLowered received: studentId={studentId}");
+
+                // Drain the persistence sets first — even if the
+                // student row isn't currently in ActiveStudents, the
+                // next /participants refresh shouldn't re-mark them.
+                bool wasPending = _pendingHandRaiseRequests.Remove(studentId);
+                bool wasActive  = _activeHandRaiseStudentIds.Remove(studentId);
+
                 var target = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (target == null) return;
-                if (!target.IsHandRaisePending && !target.IsHandRaiseActive) return;
+                if (!target.IsHandRaisePending && !target.IsHandRaiseActive && !wasPending && !wasActive) return;
 
-                bool wasActive = target.IsHandRaiseActive;
+                bool tileWasActive = target.IsHandRaiseActive || wasActive;
                 target.IsHandRaisePending = false;
                 target.IsHandRaiseActive  = false;
 
-                if (wasActive)
+                if (tileWasActive)
                 {
                     LogActivity(target.Email, "HAND_LOWERED",
                         $"{target.Name} lowered hand — monitoring resumed.", "#1B5E20");
@@ -1440,6 +1492,13 @@ namespace AcademicSentinel.Client.Views.IMC
                         statusColor = "#4CAF50";
                     }
 
+                    // Carry forward raised-hand state from the
+                    // persistence sets so the 4 s refresh doesn't wipe
+                    // the Approve/Deny/Lower Hand controls between hub
+                    // events.
+                    bool isHandRaisePending = _pendingHandRaiseRequests.ContainsKey(p.StudentId);
+                    bool isHandRaiseActive  = _activeHandRaiseStudentIds.Contains(p.StudentId);
+
                     ActiveStudents.Add(new LiveStudentStatus
                     {
                         StudentId = p.StudentId,
@@ -1452,6 +1511,8 @@ namespace AcademicSentinel.Client.Views.IMC
                                 : $"{ApiEndpoints.BaseUrl}{p.ProfileImageUrl}"),
                         HasViolation = _studentsWithViolations.Contains(p.StudentId),
                         IsLeaveRequested = isLeaveRequested,
+                        IsHandRaisePending = isHandRaisePending,
+                        IsHandRaiseActive  = isHandRaiseActive,
                         IsOffline = isDisconnected,
                         Status = statusText,
                         StatusColor = statusColor
@@ -1490,11 +1551,47 @@ namespace AcademicSentinel.Client.Views.IMC
                     }
                 }
 
+                // 3. Stitch raised-hand state back in for any student
+                //    whose request arrived before the next /participants
+                //    snapshot landed (or whose tile flags were lost
+                //    because the row was rebuilt). Same shape as the
+                //    pending-join re-stitch above.
+                foreach (var pending in _pendingHandRaiseRequests.Values)
+                {
+                    var existing = ActiveStudents.FirstOrDefault(s => s.StudentId == pending.StudentId);
+                    if (existing == null)
+                    {
+                        ActiveStudents.Add(new LiveStudentStatus
+                        {
+                            StudentId = pending.StudentId,
+                            Name = string.IsNullOrWhiteSpace(pending.StudentName) ? pending.StudentEmail : pending.StudentName,
+                            Email = pending.StudentEmail ?? string.Empty,
+                            Status = "Hand Raised",
+                            StatusColor = "#1565C0",
+                            IsHandRaisePending = true
+                        });
+                    }
+                    else
+                    {
+                        existing.IsHandRaisePending = true;
+                    }
+                }
+                foreach (var activeId in _activeHandRaiseStudentIds)
+                {
+                    var existing = ActiveStudents.FirstOrDefault(s => s.StudentId == activeId);
+                    if (existing != null)
+                        existing.IsHandRaiseActive = true;
+                }
+
                 _studentsView.Refresh();
                 UpdateParticipantCount();
             }
-            catch
+            catch (Exception ex)
             {
+                // Diagnostic — silent swallow was hiding the original
+                // hand-raise issue; surface it to the VS Output window
+                // without breaking the periodic poll.
+                Console.WriteLine($"[Participants] LoadParticipantsFromServerAsync failed: {ex.Message}");
             }
         }
 
