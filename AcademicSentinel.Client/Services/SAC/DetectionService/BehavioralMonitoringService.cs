@@ -247,9 +247,27 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // dropped to prevent double-scoring with WINDOW_SWITCH.)
 
         // Tracks whether the previous foreground evaluation considered the
-        // student to be on the LMS. Used to fire CANVAS_RETURNED exactly on
-        // the false → true transition (instructor-facing positive log entry).
+        // student to be on the LMS. Retained for any consumer that needs
+        // the raw signal; the CANVAS_RETURNED gate no longer keys off it
+        // alone — see _wasPreviouslyOutOfExamFocus below.
         private bool _wasPreviouslyOnLms;
+
+        // Tracks whether the previous evaluation considered the student
+        // to be OUT OF THE EXAM ENTIRELY — i.e., foreground was neither
+        // the SAC window nor the LMS. This is the only state from which
+        // a "returned to the LMS" transition is semantically meaningful.
+        //
+        // Without this flag, _wasPreviouslyOnLms=false conflated two
+        // very different prior states:
+        //   (a) student was on a real off-exam window (violation context)
+        //   (b) student was on the SAC itself (legitimate exam context)
+        //
+        // Treating (b) as a "left the exam" precondition produced
+        // spurious CANVAS_RETURNED entries whenever focus oscillated
+        // between SAC and LMS — most visibly on every maximize / expand
+        // click that briefly handed focus to the SAC before settling
+        // back on the LMS browser.
+        private bool _wasPreviouslyOutOfExamFocus;
 
         public BehavioralMonitoringService(DetectionSettings settings, IEnumerable<string> blacklistedProcessNames)
         {
@@ -293,10 +311,11 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // (CANVAS_NOT_FOUND grace-timer reset removed alongside the
             //  penalty emission — see CheckCanvasPresence.)
 
-            // Treat the start of monitoring as "not yet on LMS" so the very
-            // first time the student actually focuses the LMS window we
-            // emit CANVAS_RETURNED (instructor-visible "they're on Canvas").
+            // Initial state — no prior evaluation. Neither flag should
+            // ever cause CANVAS_RETURNED on the very first poll: the
+            // student hasn't "returned" from anything yet.
             _wasPreviouslyOnLms = false;
+            _wasPreviouslyOutOfExamFocus = false;
         }
 
         /// <summary>
@@ -642,15 +661,34 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 _anchoredCanvasWindow = foreground;
             }
 
-            // ---- CANVAS_RETURNED — student was OFF the LMS, now back.
-            //      Informational only (0 pts); IMC renders green RETURN badge.
-            if (isOnLms && !_wasPreviouslyOnLms)
+            // ---- CANVAS_RETURNED — student returned to the LMS FROM a
+            //      real out-of-exam window (Facebook tab, Word, another
+            //      app). Informational only (0 pts); IMC renders the
+            //      green RETURN badge.
+            //
+            //      Gate requires BOTH:
+            //        • current foreground is the LMS, AND
+            //        • previous foreground was neither SAC nor LMS
+            //          (i.e., the student had actually left the exam).
+            //
+            //      Without the second clause, every focus oscillation
+            //      between SAC and LMS (most commonly: clicking maximize
+            //      / expand on the softlock overlay, which briefly hands
+            //      focus to the SAC before the LMS settles back on top)
+            //      produced a false "returned focus" entry.
+            if (isOnLms && _wasPreviouslyOutOfExamFocus)
             {
                 AddEvent(findings, DetectionConstants.EventCanvasReturned, 0,
                     $"Student returned focus to the LMS exam ({_anchoredLmsDomain}).",
                     cooldownSeconds: 2);
             }
             _wasPreviouslyOnLms = isOnLms;
+            // Update the out-of-exam tracker AFTER the gate so the next
+            // poll's CANVAS_RETURNED check sees the correct prior state.
+            // True only when the student is neither in the SAC nor in
+            // the LMS — i.e., the only state from which a return is
+            // semantically meaningful.
+            _wasPreviouslyOutOfExamFocus = !isSacWindowActive && !isOnLms;
 
             // ---- Violation: not SAC, not approved as LMS.
             if (!isSacWindowActive && !isOnLms)
