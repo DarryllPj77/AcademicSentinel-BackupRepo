@@ -379,6 +379,16 @@
                                                                    FontWeight="Bold"
                                                                    Foreground="#E65100"
                                                                    Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Text="✋ WANTS TO ASK"
+                                                                   FontSize="9"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="#1565C0"
+                                                                   Visibility="{Binding IsHandRaisePending, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Text="✋ HAND RAISED — Q&amp;A ACTIVE"
+                                                                   FontSize="9"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="#E65100"
+                                                                   Visibility="{Binding IsHandRaiseActive, Converter={StaticResource BoolToVis}}"/>
                                                         <TextBlock Text="{Binding Status}" FontSize="10" Foreground="{Binding StatusColor}"/>
                                                     </StackPanel>
                                                     <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="6,0,18,0">
@@ -413,6 +423,29 @@
                                                                 Padding="8,4"
                                                                 Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
                                                                 Click="BtnDenyLeave_Click"/>
+                                                        <Button x:Name="BtnApproveHandRaise"
+                                                                Content="Allow Q&amp;A"
+                                                                Style="{StaticResource PrimaryBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsHandRaisePending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnApproveHandRaise_Click"/>
+                                                        <Button x:Name="BtnDenyHandRaise"
+                                                                Content="Deny"
+                                                                Style="{StaticResource GhostBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsHandRaisePending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnDenyHandRaise_Click"/>
+                                                        <Button x:Name="BtnLowerHand"
+                                                                Content="Lower Hand"
+                                                                Style="{StaticResource GhostBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Visibility="{Binding IsHandRaiseActive, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnLowerHand_Click"/>
                                                     </StackPanel>
                                                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0">
                                                         <materialDesign:PackIcon Kind="AlertCircle"

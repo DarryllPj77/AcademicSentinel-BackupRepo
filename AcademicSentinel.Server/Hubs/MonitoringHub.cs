@@ -52,6 +52,41 @@ public class MonitoringHub : Hub
     //   * EndExamSession (RoomsController) runs (clean close).
     internal static readonly ConcurrentDictionary<int, bool> _roomsWithDisconnectedInstructor = new();
 
+    // ============================================================
+    // RAISED-HAND STATE (process-local; resets on server restart).
+    // ============================================================
+    // Key   = studentId
+    // Value = roomId for which the raise-hand is currently approved.
+    //
+    // Presence means: the instructor has explicitly approved this
+    // student's "raise hand" request, granting them a temporary
+    // exception to alt-tab into approved meeting apps (Teams/Zoom/
+    // Meet) without generating behavioural violations.
+    //
+    // The map is consulted by SendMonitoringEvent: events of types
+    // listed in _handRaiseSuppressedEventTypes are dropped while a
+    // student's entry is present. Hardware/screenshot/clipboard
+    // detections remain enforced because they are not affected by
+    // a Q&A context switch.
+    //
+    // Entries are added by ApproveRaiseHand, removed by LowerHand,
+    // ForceLowerHand, and any session-ending path. Drained when the
+    // student disconnects (OnDisconnectedAsync) so a re-join cannot
+    // inherit a stale exception.
+    internal static readonly ConcurrentDictionary<int, int> _raisedHandActive = new();
+
+    private static readonly HashSet<string> _handRaiseSuppressedEventTypes =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "ALT_TAB",
+            "WINDOW_SWITCH",
+            "FOCUS_LOST",
+            "RTFM",
+            "IDLE",
+            "INACTIVITY",
+            "PROCESS_DETECTED"
+        };
+
     private readonly DisconnectService _disconnectService;
 
     public MonitoringHub(
@@ -693,6 +728,16 @@ public class MonitoringHub : Hub
                 return;
             }
 
+            // Drain any active raised-hand exception. If the student
+            // dropped while their hand was raised, a re-join must NOT
+            // inherit the suppression — the new connection has to
+            // request approval again.
+            if (_raisedHandActive.TryRemove(studentId, out var drainedRoomId))
+            {
+                await Clients.Group(drainedRoomId.ToString())
+                    .SendAsync("HandLowered", studentId);
+            }
+
             // =================================================================
             // ROUTE THROUGH DisconnectService — the single master.
             // =================================================================
@@ -801,6 +846,33 @@ public class MonitoringHub : Hub
         // Verify the room exists
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return;
+
+        // ============================================================
+        // RAISED-HAND VIOLATION SUPPRESSION (defence-in-depth).
+        // ============================================================
+        // The SAC also gates these locally, but a tampered/older client
+        // could still emit them. If this student currently holds an
+        // instructor-approved raised hand for this room AND the event
+        // type is one we explicitly allow during Q&A (alt-tab / focus
+        // changes / approved-meeting-app process / idle), drop the
+        // event silently and write a zero-score audit row so the
+        // suppression itself is auditable.
+        if (_raisedHandActive.TryGetValue(studentId, out var approvedRoomId)
+            && approvedRoomId == roomId
+            && _handRaiseSuppressedEventTypes.Contains(eventData.EventType ?? string.Empty))
+        {
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                RoomId        = roomId,
+                StudentId     = studentId,
+                EventType     = "HAND_RAISED_SUPPRESSED",
+                Description   = $"Suppressed '{eventData.EventType}' while raised hand is active.",
+                SeverityScore = 0,
+                Timestamp     = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+            return;
+        }
 
         // Create the monitoring event record
         var monitoringEvent = new MonitoringEvent
@@ -1188,5 +1260,223 @@ public class MonitoringHub : Hub
             studentId,
             decision = "Denied"
         });
+    }
+
+    // ============================================================
+    // RAISED HAND FLOW
+    // ============================================================
+    // Student presses Raise Hand in the SAC softlock UI to ask the
+    // instructor a question via the existing meeting app (Teams /
+    // Zoom / Meet). The flow mirrors the existing approval patterns:
+    //
+    //   1. RaiseHand           — student → "I want to ask a question"
+    //   2. ApproveRaiseHand    — instructor → "Yes, you may alt-tab"
+    //      (or DenyRaiseHand)
+    //   3. LowerHand           — student → "I'm done, resume monitoring"
+    //      (or ForceLowerHand by instructor)
+    //
+    // While Approved, the in-memory map _raisedHandActive holds the
+    // (studentId → roomId) pair. SendMonitoringEvent consults it to
+    // drop alt-tab / focus / process / idle events for this student.
+    // Hardware integrity, clipboard, and screenshot detections are
+    // NOT suppressed — those represent academic-integrity risks that
+    // a Q&A pause does not justify.
+
+    public async Task RaiseHand(int roomId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Student", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdString == null) return;
+        int studentId = int.Parse(userIdString);
+
+        // Must be a real participant in an active session — same gate
+        // as RequestLeave / StudentFinishedExam.
+        var isParticipant = await _context.SessionParticipants
+            .AnyAsync(p => p.RoomId == roomId && p.StudentId == studentId);
+        if (!isParticipant) return;
+
+        var activeSession = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        if (activeSession == null) return;
+
+        // Already raised — no-op (idempotent so a double-click is safe).
+        if (_raisedHandActive.TryGetValue(studentId, out var existingRoom)
+            && existingRoom == roomId)
+        {
+            await Clients.Caller.SendAsync("OnHandRaiseAlreadyActive", roomId);
+            return;
+        }
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId        = roomId,
+            StudentId     = studentId,
+            EventType     = "HAND_RAISED_REQUESTED",
+            Description   = "Student raised hand — requesting temporary Q&A access.",
+            SeverityScore = 0,
+            Timestamp     = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        var studentUser = await _context.Users.FindAsync(studentId);
+        var studentName = string.IsNullOrWhiteSpace(studentUser?.FullName)
+            ? studentUser?.Email : studentUser.FullName;
+
+        // Broadcast to the room group — the IMC's HandRaiseRequested
+        // handler surfaces this on the participant tile (Approve /
+        // Deny buttons) and logs JOIN_REQ-style entry to the Global
+        // Log Feed.
+        await Clients.Group(roomId.ToString()).SendAsync("HandRaiseRequested", new
+        {
+            roomId,
+            studentId,
+            studentName  = studentName ?? $"Student #{studentId}",
+            studentEmail = studentUser?.Email,
+            requestedAt  = DateTime.UtcNow
+        });
+    }
+
+    public async Task ApproveRaiseHand(int roomId, int studentId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var instructorIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return;
+
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null || room.InstructorId != instructorId) return;
+
+        // Arm the in-memory exception BEFORE writing the audit row so
+        // that any race between SendMonitoringEvent and the approval
+        // resolves in favour of suppression.
+        _raisedHandActive[studentId] = roomId;
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId        = roomId,
+            StudentId     = studentId,
+            EventType     = "HAND_RAISED_APPROVED",
+            Description   = "Instructor approved raised hand — Q&A access granted.",
+            SeverityScore = 0,
+            Timestamp     = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        await Clients.User(studentId.ToString()).SendAsync("OnHandRaiseApproved", roomId);
+        await Clients.Group(roomId.ToString()).SendAsync("HandRaiseResolved", new
+        {
+            roomId,
+            studentId,
+            decision = "Approved"
+        });
+    }
+
+    public async Task DenyRaiseHand(int roomId, int studentId, string? reason)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var instructorIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return;
+
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null || room.InstructorId != instructorId) return;
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId        = roomId,
+            StudentId     = studentId,
+            EventType     = "HAND_RAISED_DENIED",
+            Description   = string.IsNullOrWhiteSpace(reason)
+                                ? "Instructor denied raised-hand request."
+                                : $"Instructor denied raised-hand request: {reason}",
+            SeverityScore = 0,
+            Timestamp     = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        await Clients.User(studentId.ToString()).SendAsync("OnHandRaiseDenied", new
+        {
+            roomId,
+            reason = string.IsNullOrWhiteSpace(reason)
+                        ? "Your raised-hand request was denied by the instructor."
+                        : reason
+        });
+        await Clients.Group(roomId.ToString()).SendAsync("HandRaiseResolved", new
+        {
+            roomId,
+            studentId,
+            decision = "Denied"
+        });
+    }
+
+    public async Task LowerHand(int roomId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Student", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdString == null) return;
+        int studentId = int.Parse(userIdString);
+
+        // Drop the exception first — even if the audit write fails,
+        // monitoring must resume so the student can't keep alt-tabbing.
+        bool wasActive = _raisedHandActive.TryRemove(studentId, out _);
+        if (!wasActive) return; // nothing to lower
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId        = roomId,
+            StudentId     = studentId,
+            EventType     = "HAND_RAISED_LOWERED",
+            Description   = "Student lowered hand — resuming normal monitoring.",
+            SeverityScore = 0,
+            Timestamp     = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        await Clients.Group(roomId.ToString()).SendAsync("HandLowered", studentId);
+    }
+
+    public async Task ForceLowerHand(int roomId, int studentId)
+    {
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var instructorIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return;
+
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null || room.InstructorId != instructorId) return;
+
+        bool wasActive = _raisedHandActive.TryRemove(studentId, out _);
+        if (!wasActive) return;
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId        = roomId,
+            StudentId     = studentId,
+            EventType     = "HAND_RAISED_LOWERED",
+            Description   = "Instructor lowered student's raised hand — resuming monitoring.",
+            SeverityScore = 0,
+            Timestamp     = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        await Clients.User(studentId.ToString()).SendAsync("OnHandLoweredByInstructor", roomId);
+        await Clients.Group(roomId.ToString()).SendAsync("HandLowered", studentId);
     }
 }

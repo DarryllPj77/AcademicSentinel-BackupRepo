@@ -1017,6 +1017,91 @@ namespace AcademicSentinel.Client.Views.IMC
                 UpdateParticipantCount();
             })));
 
+            // ============================================================
+            // RAISED-HAND HUB EVENTS
+            // ============================================================
+            // Pending: student tapped Raise Hand on the softlock UI.
+            // Surface the request through the existing participant tile
+            // (✋ WANTS TO ASK label + Allow Q&A / Deny buttons) and add
+            // a HAND_RAISED entry to the Global Log Feed.
+            _hubSubscriptions.Add(_hubConnection.On<dynamic>("HandRaiseRequested", payload => Dispatcher.Invoke(() =>
+            {
+                if (payload == null) return;
+                int studentId;
+                string studentEmail;
+                string studentName;
+                try
+                {
+                    studentId    = (int)payload.studentId;
+                    studentEmail = (string)payload.studentEmail ?? string.Empty;
+                    studentName  = (string)payload.studentName  ?? studentEmail;
+                }
+                catch { return; }
+
+                var target = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                if (target != null)
+                {
+                    target.IsHandRaisePending = true;
+                    target.IsHandRaiseActive  = false;
+                }
+
+                LogActivity(studentEmail, "HAND_RAISED",
+                    $"{studentName} raised hand — requesting Q&A access.", "#1565C0");
+                _studentsView.Refresh();
+            })));
+
+            // HandRaiseResolved: instructor (any IMC, including the one
+            // that clicked Approve) decided the request. On Approved we
+            // flip the tile to "Active" so the Lower Hand button shows.
+            _hubSubscriptions.Add(_hubConnection.On<dynamic>("HandRaiseResolved", payload => Dispatcher.Invoke(() =>
+            {
+                if (payload == null) return;
+                int studentId;
+                string decision;
+                try
+                {
+                    studentId = (int)payload.studentId;
+                    decision  = (string)payload.decision ?? string.Empty;
+                }
+                catch { return; }
+
+                var target = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                if (target == null) return;
+
+                target.IsHandRaisePending = false;
+                bool approved = string.Equals(decision, "Approved", StringComparison.OrdinalIgnoreCase);
+                target.IsHandRaiseActive = approved;
+
+                LogActivity(target.Email,
+                    approved ? "HAND_APPROVED" : "HAND_DENIED",
+                    approved
+                        ? $"{target.Name} is now in Q&A mode — alt-tab / focus events suppressed."
+                        : $"Raised-hand request from {target.Name} denied.",
+                    approved ? "#E65100" : "#9E9E9E");
+                _studentsView.Refresh();
+            })));
+
+            // HandLowered fires for both self-lower (student clicked
+            // Lower Hand) and force-lower (instructor). Clear both
+            // pending and active so the tile/buttons return to normal.
+            _hubSubscriptions.Add(_hubConnection.On<int>("HandLowered", studentId => Dispatcher.Invoke(() =>
+            {
+                var target = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                if (target == null) return;
+                if (!target.IsHandRaisePending && !target.IsHandRaiseActive) return;
+
+                bool wasActive = target.IsHandRaiseActive;
+                target.IsHandRaisePending = false;
+                target.IsHandRaiseActive  = false;
+
+                if (wasActive)
+                {
+                    LogActivity(target.Email, "HAND_LOWERED",
+                        $"{target.Name} lowered hand — monitoring resumed.", "#1B5E20");
+                }
+                _studentsView.Refresh();
+            })));
+
             _hubSubscriptions.Add(_hubConnection.On<dynamic>("StudentJoinApprovalResolved", payload => Dispatcher.Invoke(() =>
             {
                 try
@@ -1198,6 +1283,60 @@ namespace AcademicSentinel.Client.Views.IMC
             catch (Exception ex)
             {
                 MessageBox.Show($"Failed to deny leave: {ex.Message}", "Deny Leave", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        // ============================================================
+        // RAISED-HAND APPROVAL HANDLERS (IMC → hub)
+        // ============================================================
+        // The tile state transitions are driven by the server-side
+        // HandRaiseResolved / HandLowered broadcasts (see the hub
+        // subscriptions above), not optimistically here, so every IMC
+        // instance in the room stays in sync.
+
+        private async void BtnApproveHandRaise_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn || btn.DataContext is not LiveStudentStatus student)
+                return;
+            try
+            {
+                await _hubConnection.InvokeAsync("ApproveRaiseHand", _roomId, student.StudentId);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to approve raised hand: {ex.Message}",
+                    "Allow Q&A", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private async void BtnDenyHandRaise_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn || btn.DataContext is not LiveStudentStatus student)
+                return;
+            try
+            {
+                await _hubConnection.InvokeAsync("DenyRaiseHand", _roomId, student.StudentId,
+                    "Please continue with the exam.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to deny raised hand: {ex.Message}",
+                    "Deny Hand", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private async void BtnLowerHand_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn || btn.DataContext is not LiveStudentStatus student)
+                return;
+            try
+            {
+                await _hubConnection.InvokeAsync("ForceLowerHand", _roomId, student.StudentId);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to lower hand: {ex.Message}",
+                    "Lower Hand", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
@@ -1923,6 +2062,14 @@ namespace AcademicSentinel.Client.Views.IMC
         private int _violations;
         private bool _isLeaveRequested;
         private bool _isJoinApprovalPending;
+        // Drives the "✋ WANTS TO ASK" tile label and the Allow Q&A /
+        // Deny buttons. Set true when the server broadcasts
+        // HandRaiseRequested; cleared by HandRaiseResolved.
+        private bool _isHandRaisePending;
+        // Drives the "✋ HAND RAISED — Q&A ACTIVE" tile label and the
+        // Lower Hand button. Set when HandRaiseResolved arrives with
+        // decision="Approved"; cleared by HandLowered.
+        private bool _isHandRaiseActive;
         private bool _hasViolation;
         private bool _hasHardwareViolation;
         private bool _isUsingVm;
@@ -1950,6 +2097,8 @@ namespace AcademicSentinel.Client.Views.IMC
         }
         public bool IsLeaveRequested { get => _isLeaveRequested; set { _isLeaveRequested = value; OnPropertyChanged(); } }
         public bool IsJoinApprovalPending { get => _isJoinApprovalPending; set { _isJoinApprovalPending = value; OnPropertyChanged(); } }
+        public bool IsHandRaisePending { get => _isHandRaisePending; set { _isHandRaisePending = value; OnPropertyChanged(); } }
+        public bool IsHandRaiseActive { get => _isHandRaiseActive; set { _isHandRaiseActive = value; OnPropertyChanged(); } }
         public bool HasViolation { get => _hasViolation; set { _hasViolation = value; OnPropertyChanged(); } }
         public bool HasHardwareViolation { get => _hasHardwareViolation; set { _hasHardwareViolation = value; OnPropertyChanged(); } }
         public bool IsUsingVM { get => _isUsingVm; set { _isUsingVm = value; OnPropertyChanged(); } }

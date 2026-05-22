@@ -78,6 +78,25 @@
                             Padding="10,6" FontSize="13" Cursor="Hand"
                             Content="□" Click="BtnExpandCompact_Click"/>
 
+                    <!-- Raise Hand request — temporary Q&A access via the
+                         meeting app (Teams / Zoom / Meet). Visibility &
+                         content are driven by UpdateUIForPhase() in tandem
+                         with _handRaiseState. Same compact-only visibility
+                         rule as BtnDone. -->
+                    <Button x:Name="BtnRaiseHand"
+                            Content="Raise Hand"
+                            Padding="12,7"
+                            MinWidth="120"
+                            FontSize="16"
+                            FontWeight="Bold"
+                            Cursor="Hand"
+                            Background="#1565C0"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Margin="0,0,8,0"
+                            Visibility="Collapsed"
+                            Click="BtnRaiseHand_Click"/>
+
                     <!-- The only exit button. Visibility controlled strictly
                          by the state machine in UpdateUIForPhase(): visible
                          during Active, hidden in Pre-Exam / Paused / Compact. -->

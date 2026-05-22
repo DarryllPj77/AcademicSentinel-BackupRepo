@@ -1208,6 +1208,74 @@ namespace AcademicSentinel.Client.Views.SAC
                         "Reconnection request sent. Waiting for instructor approval..."));
                 });
 
+                // ============================================================
+                // RAISED-HAND APPROVAL EVENTS (server → SAC)
+                // ============================================================
+                _hubConnection.On<int>("OnHandRaiseApproved", approvedRoomId => Dispatcher.Invoke(() =>
+                {
+                    if (approvedRoomId != _roomId) return;
+                    _handRaiseState = HandRaiseState.Active;
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsHandRaised = true;
+                    DetectionReports.Insert(0,
+                        $"System: Instructor approved raised hand. Temporary Q&A access ACTIVE — alt-tab / focus events suppressed. ({DateTime.Now:h:mm:ss tt})");
+                    UpdateUIForPhase();
+                }));
+
+                _hubConnection.On<dynamic>("OnHandRaiseDenied", payload => Dispatcher.Invoke(() =>
+                {
+                    string reason;
+                    try { reason = (string)payload.reason; }
+                    catch { reason = "Your raised-hand request was denied."; }
+
+                    _handRaiseState = HandRaiseState.Inactive;
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsHandRaised = false;
+                    DetectionReports.Insert(0,
+                        $"System: Raised-hand request denied. {reason} ({DateTime.Now:h:mm:ss tt})");
+                    UpdateUIForPhase();
+                }));
+
+                // Server already-active reply — set state to Active without
+                // logging a new approval line (handles double-click idempotency).
+                _hubConnection.On<int>("OnHandRaiseAlreadyActive", activeRoomId => Dispatcher.Invoke(() =>
+                {
+                    if (activeRoomId != _roomId) return;
+                    _handRaiseState = HandRaiseState.Active;
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsHandRaised = true;
+                    UpdateUIForPhase();
+                }));
+
+                // Instructor forced the hand down (or the student's own
+                // LowerHand round-trip echoed back via HandLowered).
+                _hubConnection.On<int>("OnHandLoweredByInstructor", loweredRoomId => Dispatcher.Invoke(() =>
+                {
+                    if (loweredRoomId != _roomId) return;
+                    _handRaiseState = HandRaiseState.Inactive;
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsHandRaised = false;
+                    DetectionReports.Insert(0,
+                        $"System: Instructor lowered your raised hand — monitoring resumed. ({DateTime.Now:h:mm:ss tt})");
+                    UpdateUIForPhase();
+                }));
+
+                // Room-group broadcast for any lowered hand. Use it as
+                // a backstop in case OnHandLoweredByInstructor doesn't fire
+                // (e.g. self-lower path) so the SAC UI never gets stuck in
+                // Active after the suppression has actually been dropped.
+                _hubConnection.On<int>("HandLowered", loweredStudentId => Dispatcher.Invoke(() =>
+                {
+                    var selfId = SessionManager.CurrentUser?.Id ?? 0;
+                    if (loweredStudentId != selfId) return;
+                    if (_handRaiseState == HandRaiseState.Inactive) return;
+
+                    _handRaiseState = HandRaiseState.Inactive;
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsHandRaised = false;
+                    UpdateUIForPhase();
+                }));
+
                 // Server side: RoomsController.RemoveStudentFromCurrentSession sends
                 //     Clients.User(studentId).SendAsync("RemovedFromSession", roomId)
                 // The integer payload is the ROOM id, not the student id. The previous
@@ -1560,6 +1628,13 @@ namespace AcademicSentinel.Client.Views.SAC
         // way out of an active session.
         private bool _hasSentDone;
 
+        // Raised-hand state machine — drives BtnRaiseHand label / colour
+        // and SacDetectorRuntime.IsHandRaised. Inactive → Raise Hand
+        // button enabled. Pending → button reads "Waiting…" + disabled.
+        // Active → button label flips to "Lower Hand" + green/orange.
+        private enum HandRaiseState { Inactive, Pending, Active }
+        private HandRaiseState _handRaiseState = HandRaiseState.Inactive;
+
         private async void BtnDone_Click(object sender, RoutedEventArgs e)
         {
             int studentId = SessionManager.CurrentUser?.Id ?? 0;
@@ -1600,6 +1675,60 @@ namespace AcademicSentinel.Client.Views.SAC
                 UpdateRequestLeaveButtonState();
 
                 MessageBox.Show($"Could not send Done signal: {ex.Message}", "Done",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        // Raise Hand / Lower Hand toggle. Behaviour depends on
+        // _handRaiseState:
+        //   Inactive → ask the server to raise our hand.
+        //   Pending  → no-op (still awaiting instructor decision).
+        //   Active   → ask the server to lower our hand (resume monitoring).
+        // The actual state transition is driven by the server's
+        // OnHandRaiseApproved / OnHandRaiseDenied / HandLowered events,
+        // never optimistically here — so a denied raise doesn't briefly
+        // grant suppression locally.
+        private async void BtnRaiseHand_Click(object sender, RoutedEventArgs e)
+        {
+            int studentId = SessionManager.CurrentUser?.Id ?? 0;
+            if (studentId <= 0) return;
+            if (_sessionEnded || _currentPhase != ExamPhase.Active) return;
+            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected) return;
+
+            try
+            {
+                if (_handRaiseState == HandRaiseState.Active)
+                {
+                    // Lower hand — drop suppression immediately on the
+                    // SAC side too so monitoring resumes the instant the
+                    // user clicks, before the server round-trip.
+                    if (_detectorRuntime != null)
+                        _detectorRuntime.IsHandRaised = false;
+                    _handRaiseState = HandRaiseState.Inactive;
+                    UpdateUIForPhase();
+
+                    await _hubConnection.InvokeAsync("LowerHand", _roomId);
+                    DetectionReports.Insert(0,
+                        $"System: Lowered hand — monitoring resumed. ({DateTime.Now:h:mm:ss tt})");
+                    return;
+                }
+
+                if (_handRaiseState == HandRaiseState.Pending)
+                    return;
+
+                _handRaiseState = HandRaiseState.Pending;
+                UpdateUIForPhase();
+
+                await _hubConnection.InvokeAsync("RaiseHand", _roomId);
+                DetectionReports.Insert(0,
+                    $"System: Raised hand — waiting for instructor approval... ({DateTime.Now:h:mm:ss tt})");
+            }
+            catch (Exception ex)
+            {
+                // Rollback to Inactive so the student can retry.
+                _handRaiseState = HandRaiseState.Inactive;
+                UpdateUIForPhase();
+                MessageBox.Show($"Could not send raise-hand request: {ex.Message}", "Raise Hand",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
@@ -1660,6 +1789,11 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 // Default — hide Done. Visible below ONLY in Active state.
                 BtnDone.Visibility = Visibility.Collapsed;
+                // Same default for Raise Hand — it's a softlock-overlay
+                // affordance that only makes sense while the session is
+                // Active and the window is in compact mode.
+                if (BtnRaiseHand != null)
+                    BtnRaiseHand.Visibility = Visibility.Collapsed;
 
                 // Permission text is always "Blocked" — no more Allowed state.
                 string permissionText = "Leave Permission: Blocked";
@@ -1756,6 +1890,38 @@ namespace AcademicSentinel.Client.Views.SAC
                         BtnDone.IsEnabled = true;
                         BtnDone.Background = new SolidColorBrush(Color.FromRgb(27, 94, 32));
                         BtnDone.Foreground = Brushes.White;
+                    }
+
+                    // Raise / Lower Hand button — only meaningful in the
+                    // softlock-overlay (compact) view, alongside Done.
+                    if (BtnRaiseHand != null)
+                    {
+                        BtnRaiseHand.Visibility = Visibility.Visible;
+                        switch (_handRaiseState)
+                        {
+                            case HandRaiseState.Pending:
+                                BtnRaiseHand.Content   = "Waiting for approval...";
+                                BtnRaiseHand.IsEnabled = false;
+                                BtnRaiseHand.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                                BtnRaiseHand.Foreground = new SolidColorBrush(
+                                    (Color)ColorConverter.ConvertFromString("#424242"));
+                                break;
+                            case HandRaiseState.Active:
+                                BtnRaiseHand.Content   = "Lower Hand (Q&A Active)";
+                                BtnRaiseHand.IsEnabled = true;
+                                // Orange — same colour family the IMC uses
+                                // for "waiting" / attention states, so the
+                                // student is reminded the exception is on.
+                                BtnRaiseHand.Background = new SolidColorBrush(Color.FromRgb(230, 81, 0));
+                                BtnRaiseHand.Foreground = Brushes.White;
+                                break;
+                            default:
+                                BtnRaiseHand.Content   = "Raise Hand";
+                                BtnRaiseHand.IsEnabled = true;
+                                BtnRaiseHand.Background = new SolidColorBrush(Color.FromRgb(21, 101, 192));
+                                BtnRaiseHand.Foreground = Brushes.White;
+                                break;
+                        }
                     }
                 }
             });

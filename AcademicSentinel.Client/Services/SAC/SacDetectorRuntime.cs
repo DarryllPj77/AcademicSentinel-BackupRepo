@@ -19,6 +19,34 @@ namespace AcademicSentinel.Client.Services.SAC
         public bool IsPaused { get; set; } = false;
         public bool IsLoggingEnabled { get; private set; } = true;
 
+        // Set to true while the instructor has approved this student's
+        // raised-hand request. While active, the runtime drops findings
+        // whose EventType is in <see cref="_handRaiseSuppressedEventTypes"/>
+        // — alt-tab / focus / process / idle — so the student can use
+        // the meeting app without generating violations. Hardware (VAC),
+        // clipboard, and screenshot detections still fire because those
+        // represent academic-integrity risks unaffected by a Q&A pause.
+        // The SAC window flips this in response to the server's
+        // OnHandRaiseApproved / HandLowered hub events.
+        public bool IsHandRaised { get; set; } = false;
+
+        private static readonly HashSet<string> _handRaiseSuppressedEventTypes =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "ALT_TAB",
+                "WINDOW_SWITCH",
+                "FOCUS_LOST",
+                "RTFM",
+                "IDLE",
+                "INACTIVITY",
+                "PROCESS_DETECTED"
+            };
+
+        private bool IsSuppressedByRaisedHand(string eventType) =>
+            IsHandRaised
+            && !string.IsNullOrEmpty(eventType)
+            && _handRaiseSuppressedEventTypes.Contains(eventType);
+
         public SacDetectorRuntime(DetectorRuntimeOptions options)
         {
             _options = options;
@@ -104,6 +132,15 @@ namespace AcademicSentinel.Client.Services.SAC
 
         private void EmitSyntheticFinding(MonitoringDetectionEvent rawEvent)
         {
+            // Raised-hand suppression — drop the event before it reaches
+            // the decision engine so the cumulative risk score is not
+            // inflated by allowed Q&A behaviour. The check is scoped to
+            // alt-tab / focus / idle / process events only; screenshot
+            // hooks (PRINTSCREEN / SNIP_TOOL) and hardware artifacts
+            // still fire because they are not whitelisted during Q&A.
+            if (IsSuppressedByRaisedHand(rawEvent.EventType))
+                return;
+
             var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
             var description = $"{rawEvent.Description} | CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}";
             var finding = new DetectorFinding(rawEvent.EventType, rawEvent.SeverityScore, description);
@@ -234,6 +271,10 @@ namespace AcademicSentinel.Client.Services.SAC
             var mapped = new List<DetectorFinding>(events.Count);
             foreach (var rawEvent in events)
             {
+                // Same scoped suppression as the synthetic-finding path.
+                if (IsSuppressedByRaisedHand(rawEvent.EventType))
+                    continue;
+
                 var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
                 var severityScore = rawEvent.SeverityScore;
                 var description = string.IsNullOrWhiteSpace(rawEvent.Description)
