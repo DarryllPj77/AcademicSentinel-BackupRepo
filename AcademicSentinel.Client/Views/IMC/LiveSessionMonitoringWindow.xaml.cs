@@ -61,6 +61,12 @@ namespace AcademicSentinel.Client.Views.IMC
         private readonly Dictionary<int, JoinApprovalRequestDto> _pendingJoinApprovals = new();
         private readonly HashSet<int> _safelyLeftStudentIds = new();
         private readonly HashSet<int> _permanentlyDismissedStudents = new HashSet<int>();
+        // Tracks students for whom a STUDENT_DISCONNECTED line has already
+        // been written to the Global Feed since their last join. Both the
+        // SignalR push handler and the participant-poll diff guard against
+        // it so the same disconnect can't be logged twice. Cleared on
+        // rejoin via the StudentJoinedOrReconnected handler.
+        private readonly HashSet<int> _disconnectLoggedStudentIds = new();
         private readonly HashSet<int> _studentsWithViolations = new HashSet<int>();
         private readonly ConcurrentDictionary<int, ObservableCollection<StudentMonitoringEvent>> _studentLogs = new();
         private readonly List<IDisposable> _hubSubscriptions = new();
@@ -804,8 +810,15 @@ namespace AcademicSentinel.Client.Views.IMC
                 // momentarily absent from ActiveStudents (race with the
                 // periodic refresh). This is the entry the instructor
                 // expects to see for "STUDENT_DISCONNECTED" scenarios.
-                LogActivity(displayEmail, "STUDENT_DISCONNECTED",
-                    $"⚠ CONNECTION LOST. {displayName} disconnected unexpectedly.", "#D32F2F");
+                // Guard: the participant-poll diff in LoadParticipantsFromServerAsync
+                // also catches Joined→Disconnected transitions as a safety net.
+                // Mark the student here so the poller doesn't emit a second
+                // identical entry for the same disconnect.
+                if (_disconnectLoggedStudentIds.Add(studentId))
+                {
+                    LogActivity(displayEmail, "STUDENT_DISCONNECTED",
+                        $"⚠ CONNECTION LOST. {displayName} disconnected unexpectedly.", "#D32F2F");
+                }
 
                 _studentsView.Refresh();
             })));
@@ -826,6 +839,9 @@ namespace AcademicSentinel.Client.Views.IMC
                 // student is treated as a fresh participant.
                 _permanentlyDismissedStudents.Remove(studentId);
                 _safelyLeftStudentIds.Remove(studentId);
+                // Clear the disconnect-logged mark so a future disconnect for
+                // this same student is allowed to log again.
+                _disconnectLoggedStudentIds.Remove(studentId);
 
                 LogActivity("SYSTEM", "SYSTEM", $"✅ SESSION JOINED / CONNECTION RESTORED. {studentName}", "#4CAF50");
                 _ = LoadParticipantsFromServerAsync();
@@ -1232,9 +1248,16 @@ namespace AcademicSentinel.Client.Views.IMC
                         && !_safelyLeftStudentIds.Contains(p.StudentId)
                         && !_permanentlyDismissedStudents.Contains(p.StudentId))
                     {
-                        string displayName = string.IsNullOrWhiteSpace(p.StudentName) ? p.StudentEmail : p.StudentName;
-                        LogActivity(p.StudentEmail ?? "SYSTEM", "STUDENT_DISCONNECTED",
-                            $"⚠ CONNECTION LOST. {displayName} disconnected unexpectedly.", "#D32F2F");
+                        // Safety-net path. Suppress if the SignalR push handler
+                        // already wrote the disconnect line for this student
+                        // — otherwise the Global Feed shows two identical
+                        // entries with the same timestamp.
+                        if (_disconnectLoggedStudentIds.Add(p.StudentId))
+                        {
+                            string displayName = string.IsNullOrWhiteSpace(p.StudentName) ? p.StudentEmail : p.StudentName;
+                            LogActivity(p.StudentEmail ?? "SYSTEM", "STUDENT_DISCONNECTED",
+                                $"⚠ CONNECTION LOST. {displayName} disconnected unexpectedly.", "#D32F2F");
+                        }
                     }
                     _previousParticipantStatus[p.StudentId] = p.ParticipationStatus;
                 }
