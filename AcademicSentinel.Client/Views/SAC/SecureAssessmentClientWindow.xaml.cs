@@ -1222,11 +1222,11 @@ namespace AcademicSentinel.Client.Views.SAC
                     UpdateUIForPhase();
                 }));
 
-                _hubConnection.On<dynamic>("OnHandRaiseDenied", payload => Dispatcher.Invoke(() =>
+                _hubConnection.On<HandRaiseDeniedPayload>("OnHandRaiseDenied", payload => Dispatcher.Invoke(() =>
                 {
-                    string reason;
-                    try { reason = (string)payload.reason; }
-                    catch { reason = "Your raised-hand request was denied."; }
+                    string reason = string.IsNullOrWhiteSpace(payload?.Reason)
+                        ? "Your raised-hand request was denied."
+                        : payload!.Reason;
 
                     _handRaiseState = HandRaiseState.Inactive;
                     if (_detectorRuntime != null)
@@ -2243,6 +2243,16 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             public int RoomId { get; set; }
             public int StudentId { get; set; }
+            public string Reason { get; set; } = string.Empty;
+        }
+
+        // Same `dynamic`-vs-strongly-typed lesson as JoinDeniedDto:
+        // SignalR's System.Text.Json delivers anonymous objects as
+        // JsonElement; explicit casts off `dynamic` throw at runtime
+        // and the handler swallows the failure. Concrete DTO fixes it.
+        private class HandRaiseDeniedPayload
+        {
+            public int RoomId { get; set; }
             public string Reason { get; set; } = string.Empty;
         }
     }

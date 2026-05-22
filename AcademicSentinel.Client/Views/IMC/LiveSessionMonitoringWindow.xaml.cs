@@ -1021,55 +1021,58 @@ namespace AcademicSentinel.Client.Views.IMC
             // RAISED-HAND HUB EVENTS
             // ============================================================
             // Pending: student tapped Raise Hand on the softlock UI.
-            // Surface the request through the existing participant tile
-            // (✋ WANTS TO ASK label + Allow Q&A / Deny buttons) and add
-            // a HAND_RAISED entry to the Global Log Feed.
-            _hubSubscriptions.Add(_hubConnection.On<dynamic>("HandRaiseRequested", payload => Dispatcher.Invoke(() =>
+            // Surface the request through the participant tile (✋ WANTS
+            // TO ASK label + Allow Q&A / Deny buttons) and log a
+            // HAND_RAISED entry to the Global Log Feed. Strongly-typed
+            // DTO — see HandRaiseRequestDto for the reason `dynamic`
+            // fails to populate the payload at runtime.
+            _hubSubscriptions.Add(_hubConnection.On<HandRaiseRequestDto>("HandRaiseRequested", payload => Dispatcher.Invoke(() =>
             {
                 if (payload == null) return;
-                int studentId;
-                string studentEmail;
-                string studentName;
-                try
-                {
-                    studentId    = (int)payload.studentId;
-                    studentEmail = (string)payload.studentEmail ?? string.Empty;
-                    studentName  = (string)payload.studentName  ?? studentEmail;
-                }
-                catch { return; }
 
-                var target = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
-                if (target != null)
+                var target = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
+                if (target == null)
                 {
-                    target.IsHandRaisePending = true;
-                    target.IsHandRaiseActive  = false;
+                    // The requesting student might not be present in
+                    // ActiveStudents if the periodic participant refresh
+                    // hasn't completed yet. Materialise a row from the
+                    // payload — mirrors what StudentPendingApproval does
+                    // for late-arriving join requests — so the Approve
+                    // / Deny buttons render immediately. The next poll
+                    // will reconcile the rest of the fields.
+                    target = new LiveStudentStatus
+                    {
+                        StudentId = payload.StudentId,
+                        Name = string.IsNullOrWhiteSpace(payload.StudentName) ? payload.StudentEmail : payload.StudentName,
+                        Email = payload.StudentEmail ?? string.Empty,
+                        Status = "Hand Raised",
+                        StatusColor = "#1565C0"
+                    };
+                    ActiveStudents.Add(target);
                 }
 
-                LogActivity(studentEmail, "HAND_RAISED",
-                    $"{studentName} raised hand — requesting Q&A access.", "#1565C0");
+                target.IsHandRaisePending = true;
+                target.IsHandRaiseActive  = false;
+
+                LogActivity(target.Email, "HAND_RAISED",
+                    $"{target.Name} raised hand — requesting Q&A access.", "#1565C0");
                 _studentsView.Refresh();
+                UpdateParticipantCount();
             })));
 
-            // HandRaiseResolved: instructor (any IMC, including the one
-            // that clicked Approve) decided the request. On Approved we
-            // flip the tile to "Active" so the Lower Hand button shows.
-            _hubSubscriptions.Add(_hubConnection.On<dynamic>("HandRaiseResolved", payload => Dispatcher.Invoke(() =>
+            // HandRaiseResolved: any IMC in the room (including the one
+            // that clicked Approve) gets this so every dashboard stays
+            // in sync. Approved → tile flips to Active and the Lower
+            // Hand button takes over. Denied → both flags cleared.
+            _hubSubscriptions.Add(_hubConnection.On<HandRaiseResolvedDto>("HandRaiseResolved", payload => Dispatcher.Invoke(() =>
             {
                 if (payload == null) return;
-                int studentId;
-                string decision;
-                try
-                {
-                    studentId = (int)payload.studentId;
-                    decision  = (string)payload.decision ?? string.Empty;
-                }
-                catch { return; }
 
-                var target = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
+                var target = ActiveStudents.FirstOrDefault(s => s.StudentId == payload.StudentId);
                 if (target == null) return;
 
                 target.IsHandRaisePending = false;
-                bool approved = string.Equals(decision, "Approved", StringComparison.OrdinalIgnoreCase);
+                bool approved = string.Equals(payload.Decision, "Approved", StringComparison.OrdinalIgnoreCase);
                 target.IsHandRaiseActive = approved;
 
                 LogActivity(target.Email,
@@ -2137,6 +2140,30 @@ namespace AcademicSentinel.Client.Views.IMC
         public bool IsRejoin { get; set; }
         public bool IsLate { get; set; }
         public DateTime RequestedAt { get; set; }
+    }
+
+    // Strongly-typed payload for the HandRaiseRequested hub broadcast.
+    // Mirrors the anonymous object the server emits in
+    // MonitoringHub.RaiseHand. Using a concrete class (rather than
+    // `dynamic`) is what makes SignalR's System.Text.Json deserializer
+    // actually populate the fields — the dynamic path returns
+    // JsonElement, on which `(int)payload.studentId` throws and gets
+    // swallowed by the handler's try/catch, hiding the request from
+    // the participant list entirely.
+    public class HandRaiseRequestDto
+    {
+        public int RoomId { get; set; }
+        public int StudentId { get; set; }
+        public string StudentName { get; set; } = string.Empty;
+        public string StudentEmail { get; set; } = string.Empty;
+        public DateTime RequestedAt { get; set; }
+    }
+
+    public class HandRaiseResolvedDto
+    {
+        public int RoomId { get; set; }
+        public int StudentId { get; set; }
+        public string Decision { get; set; } = string.Empty;
     }
 
     public class LogEntry { public string Timestamp { get; set; } public string StudentEmail { get; set; } public string BadgeText { get; set; } public string BadgeColor { get; set; } public string Message { get; set; } }
