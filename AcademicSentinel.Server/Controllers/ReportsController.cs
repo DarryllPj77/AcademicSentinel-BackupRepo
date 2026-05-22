@@ -234,31 +234,49 @@ public class ReportsController : ControllerBase
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
             // =======================================================
-            // 2. CONNECTION QUALITY — TIMESTAMP-ORDERED, LOG-DRIVEN
+            // 2. CONNECTION QUALITY — KICK vs NETWORK-DROP, ORDERED
             // =======================================================
-            // The DB is the source of truth. DisconnectService writes
-            // STUDENT_DISCONNECTED atomically with the participant
-            // UPDATE; RoomsController.RemoveStudentFromCurrentSession
-            // writes STUDENT_REMOVED for instructor kicks. Both end the
-            // student's participation in the same way for archive
-            // purposes — what matters is whether they came back AFTER
-            // their LATEST exit.
+            // The DB is the source of truth. Three distinct event
+            // sources drive the classifier:
             //
-            // Rule set (high-water-mark, mirrors the blocking-event
-            // pattern used by RoomsController.RequestJoinSession):
-            //   • No disconnect-equivalent event ever   → "Clean Connection"
-            //   • REJOIN_APPROVED OR current row "Connected"
-            //     timestamped AFTER the latest disconnect-equivalent
-            //                                            → "Reconnected"
-            //   • Otherwise                              → "Disconnected"
+            //   STUDENT_DISCONNECTED  — written by DisconnectService
+            //                           and the stale-reconnect path.
+            //                           Represents a TRUE network
+            //                           failure (transport drop or
+            //                           heartbeat timeout).
             //
-            // STUDENT_REMOVED is treated as a disconnect-equivalent so:
-            //   (a) a kicked-only student is no longer mis-labelled
-            //       "Clean Connection",
-            //   (b) a student who reconnected and was THEN kicked is
-            //       no longer mis-labelled "Reconnected" (the historical
-            //       REJOIN_APPROVED predates the kick → ordering rule
-            //       correctly returns Disconnected).
+            //   STUDENT_REMOVED       — written by
+            //                           RemoveStudentFromCurrentSession
+            //                           when the instructor kicks. NOT
+            //                           a network event; the student's
+            //                           connection was fine.
+            //
+            //   REJOIN_APPROVED       — written by ApproveStudentJoin
+            //                           when the instructor admits the
+            //                           student back (after either a
+            //                           kick or a real disconnect).
+            //
+            // The "Connection" column reports the student's NETWORK
+            // experience. Reserve "Reconnected" for genuine recovery
+            // from STUDENT_DISCONNECTED only. A kick is an instructor
+            // policy action and must not pollute the network label.
+            //
+            // Rule set:
+            //   (1) Latest STUDENT_REMOVED NOT followed by a later
+            //       REJOIN_APPROVED          → "Disconnected"
+            //       (student was forcibly removed and never readmitted
+            //        before session end — the final state is "removed",
+            //        which is rendered as Disconnected in this column.)
+            //   (2) No STUDENT_DISCONNECTED ever recorded
+            //                                → "Clean Connection"
+            //       (covers fresh runs AND kick → rejoin: the kick was
+            //        not a network event, so without an actual
+            //        STUDENT_DISCONNECTED the network experience was
+            //        clean.)
+            //   (3) STUDENT_DISCONNECTED recorded:
+            //       • REJOIN_APPROVED after the latest STUDENT_DISCONNECTED
+            //         OR current row "Connected"      → "Reconnected"
+            //       • otherwise                       → "Disconnected"
 
             // Current participant status (most recent row in this session).
             var mostRecentParticipantRow = await _context.SessionParticipants
@@ -271,17 +289,25 @@ public class ReportsController : ControllerBase
                 .FirstOrDefaultAsync();
 
             string finalStatus = mostRecentParticipantRow?.ConnectionStatus ?? "Unknown";
-            string finalApprovalStatus = mostRecentParticipantRow?.JoinApprovalStatus ?? string.Empty;
 
-            // Latest disconnect-equivalent event.
-            DateTime? lastDisconnectTs = logs
-                .Where(l => l.EventType == "STUDENT_DISCONNECTED"
-                         || l.EventType == "STUDENT_REMOVED")
+            // Latest TRUE network-disconnect event. STUDENT_REMOVED is
+            // tracked separately because it represents an instructor
+            // action, not a network event.
+            DateTime? lastNetworkDisconnectTs = logs
+                .Where(l => l.EventType == "STUDENT_DISCONNECTED")
                 .Select(l => (DateTime?)l.Timestamp)
                 .OrderByDescending(t => t)
                 .FirstOrDefault();
 
-            // Latest explicit recovery event.
+            // Latest instructor kick.
+            DateTime? lastKickTs = logs
+                .Where(l => l.EventType == "STUDENT_REMOVED")
+                .Select(l => (DateTime?)l.Timestamp)
+                .OrderByDescending(t => t)
+                .FirstOrDefault();
+
+            // Latest explicit recovery event (covers both kick-return
+            // and disconnect-return — same REJOIN_APPROVED path).
             DateTime? lastRejoinApprovedTs = logs
                 .Where(l => l.EventType == "REJOIN_APPROVED")
                 .Select(l => (DateTime?)l.Timestamp)
@@ -290,47 +316,49 @@ public class ReportsController : ControllerBase
 
             string connectionQuality;
 
-            if (!lastDisconnectTs.HasValue)
+            bool kickedAndNotReadmitted =
+                lastKickTs.HasValue
+                && (!lastRejoinApprovedTs.HasValue || lastRejoinApprovedTs < lastKickTs);
+
+            if (kickedAndNotReadmitted)
             {
-                // No disconnect-equivalent ever recorded → clean.
+                // Rule (1): student was kicked and never came back. The
+                // final state is "removed" — render as Disconnected.
+                connectionQuality = "Disconnected";
+            }
+            else if (!lastNetworkDisconnectTs.HasValue)
+            {
+                // Rule (2): no real network disconnect ever occurred.
+                // This branch covers BOTH:
+                //   • students who ran cleanly from start to finish,
+                //   • kicked-then-readmitted students (Rule 1 already
+                //     filtered out the kicked-and-stayed-out case;
+                //     anything reaching here had a superseding rejoin
+                //     after the kick, and their network experience was
+                //     fine because no STUDENT_DISCONNECTED was ever
+                //     written).
                 connectionQuality = "Clean Connection";
             }
             else
             {
-                // A student forced off with JoinApprovalStatus="Removed"
-                // and no subsequent re-approval is definitively gone —
-                // even if some other code path left ConnectionStatus
-                // briefly as "Connected", the kick is the final word.
-                bool kickedAndNotReadmitted =
-                    string.Equals(finalApprovalStatus, "Removed", StringComparison.OrdinalIgnoreCase)
-                    && (!lastRejoinApprovedTs.HasValue
-                        || lastRejoinApprovedTs < lastDisconnectTs);
+                // Rule (3): A real network disconnect occurred at some
+                // point. The label depends on whether the LATEST
+                // STUDENT_DISCONNECTED was followed by a recovery.
+                bool hasRejoinAfterNetworkDisconnect =
+                    lastRejoinApprovedTs.HasValue
+                    && lastRejoinApprovedTs > lastNetworkDisconnectTs;
 
-                if (kickedAndNotReadmitted)
-                {
-                    connectionQuality = "Disconnected";
-                }
-                else
-                {
-                    bool hasRejoinAfterLastDisconnect =
-                        lastRejoinApprovedTs.HasValue
-                        && lastRejoinApprovedTs > lastDisconnectTs;
+                // Live-row fallback: a fast WithAutomaticReconnect can
+                // restore ConnectionStatus="Connected" without writing
+                // REJOIN_APPROVED. The kicked-and-not-readmitted branch
+                // above already shielded us from accidentally rescuing
+                // a kicked-out student via this path.
+                bool isCurrentlyConnected = string.Equals(
+                    finalStatus, "Connected", StringComparison.OrdinalIgnoreCase);
 
-                    // Live-row fallback: if there's no REJOIN_APPROVED
-                    // after the latest disconnect but the participant's
-                    // current row says "Connected", treat as recovered
-                    // (covers fast WithAutomaticReconnect paths that
-                    // restore Connected without writing REJOIN_APPROVED).
-                    // The kicked-and-not-readmitted branch above
-                    // prevents this from rescuing a kicked student
-                    // because their row is forced to "Disconnected".
-                    bool isCurrentlyConnected = string.Equals(
-                        finalStatus, "Connected", StringComparison.OrdinalIgnoreCase);
-
-                    connectionQuality = (hasRejoinAfterLastDisconnect || isCurrentlyConnected)
-                        ? "Reconnected"
-                        : "Disconnected";
-                }
+                connectionQuality = (hasRejoinAfterNetworkDisconnect || isCurrentlyConnected)
+                    ? "Reconnected"
+                    : "Disconnected";
             }
 
             result.Add(new
