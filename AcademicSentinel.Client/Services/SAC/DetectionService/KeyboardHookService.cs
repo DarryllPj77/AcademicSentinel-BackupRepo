@@ -19,8 +19,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         public event Action SnippingToolComboDetected;
 
         private const int WH_KEYBOARD_LL = 13;
-        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_KEYDOWN    = 0x0100;
+        private const int WM_KEYUP      = 0x0101;
         private const int WM_SYSKEYDOWN = 0x0104;
+        private const int WM_SYSKEYUP   = 0x0105;
 
         private const int VK_SNAPSHOT = 0x2C;
         private const int VK_LWIN = 0x5B;
@@ -33,10 +35,46 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private IntPtr _hookId = IntPtr.Zero;
         private bool _isDisposed;
 
+        // ----------------------------------------------------------------
+        // Hook-queue-synchronized modifier state (Phase 4)
+        // ----------------------------------------------------------------
+        // The low-level keyboard hook delivers WM_KEYDOWN / WM_SYSKEYDOWN
+        // and the matching key-up messages in the exact order the OS
+        // sees them.  GetAsyncKeyState polls a separate global table that
+        // can drift out of phase with the hook queue under load — when
+        // VK_S arrives we may observe modifier states that are either
+        // STALE (key already released) or AHEAD (key release not yet
+        // queued).  Tracking the modifiers off the hook stream itself
+        // eliminates that gap: the modifier flags update on the SAME
+        // queue as the trigger key, so the combo check sees a perfectly
+        // consistent snapshot.
+        //
+        // Threading: all writes happen inside HookCallback, which is
+        // invoked serially by the OS on the hook thread.  No other
+        // thread reads or writes these fields, so plain `bool` is
+        // sufficient — no `volatile` / lock needed.
+        private bool _isLWinDown;
+        private bool _isRWinDown;
+        private bool _isLShiftDown;
+        private bool _isRShiftDown;
+
         public void Install()
         {
             if (_hookId != IntPtr.Zero || _isDisposed)
                 return;
+
+            // Reset modifier-state flags before the hook is wired up.  If
+            // the user happened to be holding a modifier when monitoring
+            // started, we'd otherwise miss the eventual key-up (the hook
+            // wasn't installed during the keydown) and the flag would
+            // stay stuck true indefinitely.  Starting from false means
+            // we may briefly fail to detect a combo if the user was
+            // already holding Win/Shift before Install — acceptable, the
+            // next press cycle restores correct tracking.
+            _isLWinDown   = false;
+            _isRWinDown   = false;
+            _isLShiftDown = false;
+            _isRShiftDown = false;
 
             _proc = HookCallback;
             _hookId = SetHook(_proc);
@@ -75,11 +113,36 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         {
             if (nCode >= 0)
             {
-                int wm = wParam.ToInt32();
-                if (wm == WM_KEYDOWN || wm == WM_SYSKEYDOWN)
-                {
-                    int vkCode = Marshal.ReadInt32(lParam);
+                int wm     = wParam.ToInt32();
+                int vkCode = Marshal.ReadInt32(lParam);
 
+                bool isDown = wm == WM_KEYDOWN || wm == WM_SYSKEYDOWN;
+                bool isUp   = wm == WM_KEYUP   || wm == WM_SYSKEYUP;
+
+                // -----------------------------------------------------------
+                // Track modifier state DIRECTLY off the hook stream.
+                // -----------------------------------------------------------
+                // The OS delivers down / up messages in queue order, so the
+                // modifier flag is always consistent with whatever trigger
+                // key arrives next on the SAME queue.  This is what fixes
+                // the GetAsyncKeyState race — there is no separate global
+                // table to fall out of sync with.
+                if (isDown || isUp)
+                {
+                    switch (vkCode)
+                    {
+                        case VK_LWIN:   _isLWinDown   = isDown; break;
+                        case VK_RWIN:   _isRWinDown   = isDown; break;
+                        case VK_LSHIFT: _isLShiftDown = isDown; break;
+                        case VK_RSHIFT: _isRShiftDown = isDown; break;
+                    }
+                }
+
+                // -----------------------------------------------------------
+                // Trigger detection only on keydown of the action keys.
+                // -----------------------------------------------------------
+                if (isDown)
+                {
                     // Plain PrintScreen key → fire screenshot event.
                     if (vkCode == VK_SNAPSHOT)
                     {
@@ -87,11 +150,13 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     }
 
                     // Win+Shift+S — Snipping Tool / ScreenSketch overlay.
-                    // The hook only sees one keydown at a time, so check
-                    // modifier state synchronously when 'S' is pressed.
+                    // Combo evaluated against the hook-tracked boolean
+                    // fields rather than GetAsyncKeyState, so the
+                    // modifier snapshot is queue-consistent with the
+                    // VK_S keydown we're acting on.
                     if (vkCode == VK_S
-                        && IsKeyDownSync(VK_LWIN, VK_RWIN)
-                        && IsKeyDownSync(VK_LSHIFT, VK_RSHIFT))
+                        && (_isLWinDown   || _isRWinDown)
+                        && (_isLShiftDown || _isRShiftDown))
                     {
                         InvokeOnDispatcherSafe(SnippingToolComboDetected);
                     }
@@ -123,16 +188,6 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             }
         }
 
-        private static bool IsKeyDownSync(params int[] vKeys)
-        {
-            foreach (var vk in vKeys)
-            {
-                if ((GetAsyncKeyState(vk) & 0x8000) != 0)
-                    return true;
-            }
-            return false;
-        }
-
         private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -147,8 +202,5 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
         [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern IntPtr GetModuleHandle(string lpModuleName);
-
-        [DllImport("user32.dll")]
-        private static extern short GetAsyncKeyState(int vKey);
     }
 }

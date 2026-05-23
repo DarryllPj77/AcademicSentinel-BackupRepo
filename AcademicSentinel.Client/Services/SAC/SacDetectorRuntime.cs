@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows;
+using System.Windows.Threading;
 using AcademicSentinel.Client.Services.SAC.DetectionService;
 using AcademicSentinel.Client.Services.SAC.Models;
 
@@ -141,13 +143,59 @@ namespace AcademicSentinel.Client.Services.SAC
             if (IsSuppressedByRaisedHand(rawEvent.EventType))
                 return;
 
+            // Refuse to run the decision engine after the runtime has
+            // been torn down — a late event from the hardware-artifact
+            // watcher could otherwise reach a disposed consumer callback
+            // and crash the dispatcher.
+            if (_isDisposed)
+                return;
+
             var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
             var description = $"{rawEvent.Description} | CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}";
             var finding = new DetectorFinding(rawEvent.EventType, rawEvent.SeverityScore, description);
 
+            // Dispatch onto the WPF UI thread before invoking the consumer
+            // callback.  The keyboard-hook path already marshals via
+            // KeyboardHookService.InvokeOnDispatcherSafe, but the hardware-
+            // artifact path (OnHasArtifactDetected → here) can arrive on a
+            // background WMI/timer thread.  Since the callback ultimately
+            // mutates an ObservableCollection in the SAC window, marshalling
+            // here is the only place that protects every entry path
+            // uniformly.
+            //
             // Reuse the preflight callback as a generic "out-of-band finding"
             // channel — the SAC window already routes that to ReportViolationAsync.
-            _options.OnPreFlightViolationDetected?.Invoke(finding);
+            InvokeOnDispatcherSafe(() => _options.OnPreFlightViolationDetected?.Invoke(finding));
+        }
+
+        /// <summary>
+        /// Posts <paramref name="action"/> onto the WPF UI thread when
+        /// invoked from a background thread; runs it synchronously if
+        /// already on the UI thread.  Mirrors KeyboardHookService's helper
+        /// of the same name so every entry point into the consumer
+        /// callback observes identical thread-affinity guarantees.
+        /// </summary>
+        private static void InvokeOnDispatcherSafe(Action action)
+        {
+            if (action == null) return;
+            try
+            {
+                var dispatcher = Application.Current?.Dispatcher;
+                if (dispatcher != null && !dispatcher.CheckAccess())
+                {
+                    dispatcher.BeginInvoke(DispatcherPriority.Normal, action);
+                }
+                else
+                {
+                    action();
+                }
+            }
+            catch
+            {
+                // Swallow — the consumer callback owns its own error
+                // reporting; we just don't want a late background event
+                // to bring down the dispatcher.
+            }
         }
 
         public IReadOnlyList<DetectorFinding> Poll(bool isWindowActive)
@@ -248,13 +296,45 @@ namespace AcademicSentinel.Client.Services.SAC
                 return;
 
             _isDisposed = true;
-            try { Stop(); } catch { }
-            try { _keyboardHookService.Dispose(); } catch { }
+
+            // Step 1 — Stop the monitoring loop.  This synchronously
+            // detaches the WinEvent hook and the WMI watcher inside
+            // BehavioralMonitoringService and uninstalls the low-level
+            // keyboard hook.  Wrapped in try/catch so a partial failure
+            // doesn't prevent the other teardown steps below from running.
+            try { Stop(); } catch { /* swallow — best-effort shutdown */ }
+
+            // Step 2 — Explicitly unsubscribe before disposing the child
+            // services.  Each child's Dispose already nulls its own event
+            // delegates, but doing it here too breaks the closure-held
+            // references to `this` immediately — important when the
+            // runtime is being torn down from the WPF dispatcher and
+            // background callbacks may still be in flight.
+            try
+            {
+                _keyboardHookService.ScreenshotKeyDetected      -= OnScreenshotKeyDetected;
+                _keyboardHookService.SnippingToolComboDetected  -= OnSnippingToolComboDetected;
+                _hardwareSoftwareArtifactService.ArtifactDetected -= OnHasArtifactDetected;
+            }
+            catch { /* swallow — handler list may already be cleared */ }
+
+            // Step 3 — Dispose every child service that owns OS-level
+            // resources.  BehavioralMonitoringService was missed in the
+            // pre-Phase-5 implementation — its Dispose now invokes
+            // StopMonitoring idempotently to detach the WinEvent hook,
+            // dispose the WMI watcher, and clear the BrowserUrlReader
+            // UIA cache.  Without this, rapid Start/Stop toggles followed
+            // by Dispose could leak an OS hook handle on every cycle.
+            try { _behavioralMonitoringService.Dispose(); }     catch { }
+            try { _keyboardHookService.Dispose(); }             catch { }
             try { _hardwareSoftwareArtifactService.Dispose(); } catch { }
 
-            // Detach the option callbacks so the captured closures (which hold a
-            // reference to the SAC window) cannot fire after disposal.
-            _options.OnHardwareStateDetected = null;
+            // Step 4 — Detach the option callbacks so the captured closures
+            // (which hold a reference to the SAC window) cannot fire after
+            // disposal.  Belt-and-suspenders for any late event that
+            // squeezes through before the child services finish their own
+            // teardown.
+            _options.OnHardwareStateDetected      = null;
             _options.OnPreFlightViolationDetected = null;
 
             IsPaused = true;
