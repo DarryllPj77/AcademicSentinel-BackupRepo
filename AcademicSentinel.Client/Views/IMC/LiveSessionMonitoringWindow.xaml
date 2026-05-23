@@ -313,7 +313,46 @@
                             </Grid>
                         </Border>
 
-                        <Border Padding="12,12,12,6">
+                        <!-- Participant cohort filter. RbFilterTaking is IsChecked=True
+                             so the panel opens with the active-taking cohort visible
+                             by default; flipping to Done shows finished students; All
+                             shows both cohorts (still sorted Taking-before-Done by
+                             the CollectionView's SectionSortOrder). The Content text
+                             is updated in code-behind so the running counts stay
+                             live without a binding-converter dance. -->
+                        <Border Padding="12,10,12,4">
+                            <StackPanel Orientation="Horizontal">
+                                <RadioButton x:Name="RbFilterTaking"
+                                             Content="Taking (0)"
+                                             GroupName="ParticipantFilter"
+                                             IsChecked="True"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,6,0"
+                                             Padding="10,4"
+                                             Foreground="{StaticResource FEUGreenBrush}"
+                                             Checked="RbFilterTaking_Checked"/>
+                                <RadioButton x:Name="RbFilterDone"
+                                             Content="Done (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,6,0"
+                                             Padding="10,4"
+                                             Foreground="#616161"
+                                             Checked="RbFilterDone_Checked"/>
+                                <RadioButton x:Name="RbFilterAll"
+                                             Content="All (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Padding="10,4"
+                                             Foreground="#616161"
+                                             Checked="RbFilterAll_Checked"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Padding="12,4,12,6">
                             <Border Background="#F5F5F5" CornerRadius="6" Padding="10,6">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
@@ -345,39 +384,6 @@
                                            HorizontalAlignment="Center" Margin="0,2,0,0"/>
                                 </StackPanel>
                                 <ItemsControl x:Name="StudentsItemsControl">
-                                    <!-- Section headers ("Taking" / "Done") rendered from the
-                                         CollectionViewSource grouping on LiveStudentStatus.Section.
-                                         The DataContext at the header level is the
-                                         CollectionViewGroup, which exposes Name (the section
-                                         label) and ItemCount (number of students in the bucket). -->
-                                    <ItemsControl.GroupStyle>
-                                        <GroupStyle>
-                                            <GroupStyle.HeaderTemplate>
-                                                <DataTemplate>
-                                                    <Border Padding="12,6,12,4" Margin="6,8,6,2"
-                                                            Background="#F1F8E9" CornerRadius="4">
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding Name}"
-                                                                       FontSize="11"
-                                                                       FontWeight="Bold"
-                                                                       Foreground="#1B5E20"
-                                                                       VerticalAlignment="Center"/>
-                                                            <TextBlock Text=" · "
-                                                                       FontSize="11"
-                                                                       Foreground="#9E9E9E"
-                                                                       Margin="6,0,6,0"
-                                                                       VerticalAlignment="Center"/>
-                                                            <TextBlock Text="{Binding ItemCount}"
-                                                                       FontSize="11"
-                                                                       FontWeight="SemiBold"
-                                                                       Foreground="#616161"
-                                                                       VerticalAlignment="Center"/>
-                                                        </StackPanel>
-                                                    </Border>
-                                                </DataTemplate>
-                                            </GroupStyle.HeaderTemplate>
-                                        </GroupStyle>
-                                    </ItemsControl.GroupStyle>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border x:Name="row" Padding="10,10" Margin="8,2"

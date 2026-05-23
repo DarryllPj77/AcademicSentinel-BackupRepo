@@ -85,8 +85,37 @@ namespace AcademicSentinel.Client.Views.IMC
         // LoadParticipantsFromServerAsync consults this set so a
         // student returned by the server as "Disconnected" who is
         // actually a Done completion stays visible under the Done
-        // header instead of vanishing entirely.
+        // filter instead of vanishing entirely.
         private readonly HashSet<int> _doneStudentIds = new();
+
+        // Participant-panel cohort filter. Default "Taking" so the
+        // instructor's primary attention is on active students. The
+        // three radio-buttons in XAML (RbFilterTaking / RbFilterDone /
+        // RbFilterAll) flip this and call _studentsView.Refresh().
+        private enum ParticipantFilterMode { Taking, Done, All }
+        private ParticipantFilterMode _participantFilter = ParticipantFilterMode.Taking;
+
+        // The search box's lowercased current text. Kept as a field so
+        // ParticipantFilterPredicate can read it without re-querying
+        // the UI thread.
+        private string _participantSearchTerm = string.Empty;
+
+        private bool ParticipantFilterPredicate(object obj)
+        {
+            if (obj is not LiveStudentStatus s) return false;
+
+            bool cohortMatch = _participantFilter switch
+            {
+                ParticipantFilterMode.Taking => !s.IsDone,
+                ParticipantFilterMode.Done   =>  s.IsDone,
+                _                            =>  true,
+            };
+            if (!cohortMatch) return false;
+
+            if (string.IsNullOrEmpty(_participantSearchTerm)) return true;
+            return !string.IsNullOrEmpty(s.Email)
+                && s.Email.ToLower().Contains(_participantSearchTerm);
+        }
         private readonly HashSet<int> _safelyLeftStudentIds = new();
         private readonly HashSet<int> _permanentlyDismissedStudents = new HashSet<int>();
         // Tracks students for whom a STUDENT_DISCONNECTED line has already
@@ -138,20 +167,20 @@ namespace AcademicSentinel.Client.Views.IMC
             _studentsView = CollectionViewSource.GetDefaultView(ActiveStudents);
             _logsView = CollectionViewSource.GetDefaultView(LogFeed);
 
-            // Sort & group:
-            //   1. Section first (Taking before Done) — gives the two
-            //      headers in the participant panel.
+            // Sort:
+            //   1. Section first (Taking ahead of Done) so the All view
+            //      still renders the two cohorts together in order.
             //   2. Within a section, most violations go to the top.
             //   3. Alphabetical by Email as the stable tiebreaker.
             _studentsView.SortDescriptions.Add(new SortDescription(nameof(LiveStudentStatus.SectionSortOrder), ListSortDirection.Ascending));
             _studentsView.SortDescriptions.Add(new SortDescription("ViolationCount", ListSortDirection.Descending));
             _studentsView.SortDescriptions.Add(new SortDescription("Email", ListSortDirection.Ascending));
 
-            // PropertyGroupDescription on Section yields two
-            // CollectionViewGroup buckets keyed "Taking" / "Done". The
-            // GroupStyle defined in XAML renders the bucket headers
-            // and exposes ItemCount automatically.
-            _studentsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(LiveStudentStatus.Section)));
+            // Filter (defaults to Taking on construction — see field
+            // declaration). The predicate combines the participant
+            // cohort filter with the existing text search so toggling
+            // tabs and typing in the search box compose cleanly.
+            _studentsView.Filter = ParticipantFilterPredicate;
 
             StudentsItemsControl.ItemsSource = _studentsView;
             LogFeedItemsControl.ItemsSource = _logsView;
@@ -381,9 +410,32 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void TxtStudentSearch_TextChanged(object sender, TextChangedEventArgs e)
         {
-            string filter = TxtStudentSearch.Text.ToLower();
-            _studentsView.Filter = obj => string.IsNullOrEmpty(filter) || (obj as LiveStudentStatus).Email.ToLower().Contains(filter);
+            _participantSearchTerm = TxtStudentSearch.Text.ToLower();
+            // ParticipantFilterPredicate consults both _participantFilter
+            // and _participantSearchTerm — a single Refresh() applies
+            // both. The Filter delegate itself was installed once in
+            // the constructor; reassigning it here would clobber the
+            // cohort filter, so we just trigger re-evaluation.
             _studentsView.Refresh();
+        }
+
+        // Cohort filter — radio buttons in the participant panel header.
+        private void RbFilterTaking_Checked(object sender, RoutedEventArgs e)
+            => SetParticipantFilter(ParticipantFilterMode.Taking);
+
+        private void RbFilterDone_Checked(object sender, RoutedEventArgs e)
+            => SetParticipantFilter(ParticipantFilterMode.Done);
+
+        private void RbFilterAll_Checked(object sender, RoutedEventArgs e)
+            => SetParticipantFilter(ParticipantFilterMode.All);
+
+        private void SetParticipantFilter(ParticipantFilterMode mode)
+        {
+            if (_studentsView == null) return; // pre-init Checked callback
+            if (_participantFilter == mode) return;
+            _participantFilter = mode;
+            _studentsView.Refresh();
+            UpdateParticipantCount();
         }
 
         private void CmbLogFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1459,22 +1511,32 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             int takingCount = ActiveStudents.Count(s => !s.IsDone);
             int doneCount   = ActiveStudents.Count(s => s.IsDone);
+            int totalCount  = ActiveStudents.Count;
 
-            if (EmptyParticipantsState != null && ActiveStudents.Count > 0)
+            if (EmptyParticipantsState != null && totalCount > 0)
                 EmptyParticipantsState.Visibility = Visibility.Collapsed;
 
             // Header pill shows Taking out of total enrolled — that's
             // the "still being monitored" headline number the
-            // instructor cares about most.
+            // instructor cares about most regardless of which filter
+            // tab is currently active.
             TxtParticipantCount.Text = $"{takingCount}/{_enrolledCount}";
 
             // Missing = enrolled minus everyone we currently have on
-            // screen (Taking AND Done). The Done count is spelled out
-            // alongside so the teacher can see at a glance how many
-            // have finished.
+            // screen (Taking AND Done). Done is spelled out so the
+            // teacher can see at a glance how many have finished.
             var missing = Math.Max(0, _enrolledCount - takingCount - doneCount);
             if (FindName("TxtMissingCount") is TextBlock txtMissing)
                 txtMissing.Text = $"Done: {doneCount} · Missing: {missing}";
+
+            // Refresh the filter-tab labels so each carries its own
+            // running count without needing a binding converter.
+            if (FindName("RbFilterTaking") is RadioButton rbTaking)
+                rbTaking.Content = $"Taking ({takingCount})";
+            if (FindName("RbFilterDone") is RadioButton rbDone)
+                rbDone.Content = $"Done ({doneCount})";
+            if (FindName("RbFilterAll") is RadioButton rbAll)
+                rbAll.Content = $"All ({totalCount})";
         }
 
         // Tracks the last known ParticipationStatus per student between
