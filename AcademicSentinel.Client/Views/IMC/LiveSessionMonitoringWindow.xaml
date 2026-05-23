@@ -413,7 +413,12 @@
                                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                                         <TextBlock Text="{Binding Email}" FontSize="10" Foreground="{StaticResource FEUSubTextBrush}" TextTrimming="CharacterEllipsis"/>
-                                                        <TextBlock Text="WANTS TO LEAVE"
+                                                        <!-- "WANTS TO FINISH" (renamed from "WANTS TO LEAVE")
+                                                             surfaces the pending state of the Done flow:
+                                                             student clicked Done, awaiting instructor
+                                                             approval. The row stays in the Taking tab
+                                                             until teacher Approve flips IsDone=true. -->
+                                                        <TextBlock Text="WANTS TO FINISH"
                                                                    FontSize="9"
                                                                    FontWeight="Bold"
                                                                    Foreground="#E65100"
