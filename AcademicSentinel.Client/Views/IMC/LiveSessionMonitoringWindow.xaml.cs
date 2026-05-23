@@ -88,6 +88,15 @@ namespace AcademicSentinel.Client.Views.IMC
         // filter instead of vanishing entirely.
         private readonly HashSet<int> _doneStudentIds = new();
 
+        // Mirror of the pending-Done sub-state — survives the same
+        // periodic refresh. Set by the SessionCompletionRequested
+        // handler; cleared by Approve / Deny / StudentLeftSession.
+        // The rebuild loop in LoadParticipantsFromServerAsync uses
+        // it to restore IsDoneRequested on rebuilt LiveStudentStatus
+        // rows so a pending-Done student doesn't lose their row
+        // state every 4 seconds.
+        private readonly HashSet<int> _doneRequestedStudentIds = new();
+
         // Participant-panel cohort filter. Default "Taking" so the
         // instructor's primary attention is on active students. The
         // three radio-buttons in XAML (RbFilterTaking / RbFilterDone /
@@ -104,10 +113,20 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (obj is not LiveStudentStatus s) return false;
 
+            // Done tab = pending-Done OR approved-Done. The student
+            // moves there the moment they click Done; the Approve /
+            // Deny buttons rendered on the row (visibility bound to
+            // IsLeaveRequested, which the SessionCompletionRequested
+            // handler sets alongside IsDoneRequested) let the teacher
+            // resolve the pending request from inside the Done tab.
+            // Deny clears IsDoneRequested so the student naturally
+            // returns to Taking on the next Refresh().
+            bool isInDoneCohort = s.IsDone || s.IsDoneRequested;
+
             bool cohortMatch = _participantFilter switch
             {
-                ParticipantFilterMode.Taking => !s.IsDone,
-                ParticipantFilterMode.Done   =>  s.IsDone,
+                ParticipantFilterMode.Taking => !isInDoneCohort,
+                ParticipantFilterMode.Done   =>  isInDoneCohort,
                 _                            =>  true,
             };
             if (!cohortMatch) return false;
@@ -1035,13 +1054,34 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 if (targetStudent != null)
                 {
-                    targetStudent.IsLeaveRequested = true;   // ← shows Approve/Deny buttons via XAML binding
-                    targetStudent.Status = "Awaiting Approval";
-                    targetStudent.StatusColor = "#1B5E20";
+                    // IsDoneRequested=true moves the row into the Done
+                    // tab via the cohort filter (Done = IsDone OR
+                    // IsDoneRequested). IsLeaveRequested=true is also
+                    // set because the XAML Approve / Deny button
+                    // visibility is bound to it — keeping both flags
+                    // up at the same time means the row appears in
+                    // the Done tab WITH its action buttons rendered.
+                    // IsDone stays false: the student is only pending
+                    // approval, not finalized. Teacher Approve flips
+                    // IsDone→true (and clears IsDoneRequested + IsLeaveRequested);
+                    // teacher Deny clears IsDoneRequested + IsLeaveRequested
+                    // so the row falls back to the Taking tab.
+                    targetStudent.IsDoneRequested = true;
+                    targetStudent.IsLeaveRequested = true;
+                    targetStudent.Status = "Awaiting Done Approval";
+                    targetStudent.StatusColor = "#E65100";
                 }
+
+                // Persist the pending-Done flag the same way
+                // _leaveRequestedStateByStudentId persists the legacy
+                // leave flag — the 4 s LoadParticipantsFromServerAsync
+                // refresh rebuilds LiveStudentStatus rows and would
+                // otherwise wipe IsDoneRequested back to false.
+                _doneRequestedStudentIds.Add(studentId);
 
                 LogActivity(email, "DONE", "Student finished the assessment — awaiting instructor approval.", "#1B5E20");
                 _studentsView.Refresh();
+                UpdateParticipantCount();
             })));
 
             _hubSubscriptions.Add(_hubConnection.On<JoinApprovalRequestDto>("StudentPendingApproval", payload => Dispatcher.Invoke(() =>
@@ -1336,6 +1376,10 @@ namespace AcademicSentinel.Client.Views.IMC
                     // template's data triggers stop emitting those
                     // controls as soon as these flip to false.
                     student.IsLeaveRequested = false;
+                    // Pending-Done is resolved by this approval; clear
+                    // the flag so the row's Section computation now
+                    // keys solely off IsDone.
+                    student.IsDoneRequested = false;
                     student.IsJoinApprovalPending = false;
                     student.IsHandRaisePending = false;
                     student.IsHandRaiseActive = false;
@@ -1351,6 +1395,7 @@ namespace AcademicSentinel.Client.Views.IMC
                     // hide the row, which is the opposite of what we
                     // want here.
                     _doneStudentIds.Add(studentId);
+                    _doneRequestedStudentIds.Remove(studentId);
                     _leaveRequestedStateByStudentId.Remove(studentId);
                     _pendingJoinApprovals.Remove(studentId);
                     _pendingHandRaiseRequests.Remove(studentId);
@@ -1402,13 +1447,16 @@ namespace AcademicSentinel.Client.Views.IMC
                 await _hubConnection.InvokeAsync("GrantLeave", _roomId, student.StudentId);
 
                 // Optimistic UI: the StudentLeftSession broadcast that
-                // GrantLeave triggers will officially move the student
-                // into the Done bucket, but we set the row up here so
-                // the instructor sees the transition immediately
-                // without waiting for the round-trip.
+                // GrantLeave triggers will officially flip the row
+                // into the approved-Done sub-state, but we set it up
+                // here so the instructor sees the transition (Approve
+                // / Deny buttons disappear, status becomes "Done")
+                // immediately without waiting for the round-trip.
                 _doneStudentIds.Add(student.StudentId);
+                _doneRequestedStudentIds.Remove(student.StudentId);
                 _leaveRequestedStateByStudentId[student.StudentId] = false;
                 student.IsLeaveRequested = false;
+                student.IsDoneRequested = false;
                 student.IsDone = true;
                 student.Status = "Done";
                 student.StatusColor = "#1B5E20";
@@ -1433,13 +1481,20 @@ namespace AcademicSentinel.Client.Views.IMC
             {
                 await _hubConnection.InvokeAsync("DenyLeaveRequest", _roomId, student.StudentId);
 
+                // Clear BOTH the pending Done flag and the legacy
+                // leave flag. With IsDoneRequested=false and IsDone
+                // still false, the cohort filter relocates this row
+                // back into the Taking tab on the next Refresh().
                 _leaveRequestedStateByStudentId[student.StudentId] = false;
+                _doneRequestedStudentIds.Remove(student.StudentId);
                 student.IsLeaveRequested = false;
+                student.IsDoneRequested = false;
                 student.Status = "Connected";
                 student.StatusColor = "#4CAF50";
 
                 LogActivity(student.Email, "DENY", "Instructor denied the Done request — student can resume work.", "#FF9800");
                 _studentsView.Refresh();
+                UpdateParticipantCount();
             }
             catch (Exception ex)
             {
@@ -1509,8 +1564,11 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void UpdateParticipantCount()
         {
-            int takingCount = ActiveStudents.Count(s => !s.IsDone);
-            int doneCount   = ActiveStudents.Count(s => s.IsDone);
+            // Done cohort = pending-Done OR approved-Done. Mirrors the
+            // ParticipantFilterPredicate so the tab labels and the
+            // visible row counts always agree.
+            int takingCount = ActiveStudents.Count(s => !s.IsDone && !s.IsDoneRequested);
+            int doneCount   = ActiveStudents.Count(s =>  s.IsDone ||  s.IsDoneRequested);
             int totalCount  = ActiveStudents.Count;
 
             if (EmptyParticipantsState != null && totalCount > 0)
@@ -1645,6 +1703,13 @@ namespace AcademicSentinel.Client.Views.IMC
                     bool isHandRaisePending = _pendingHandRaiseRequests.ContainsKey(p.StudentId);
                     bool isHandRaiseActive  = _activeHandRaiseStudentIds.Contains(p.StudentId);
 
+                    // Carry forward pending-Done state. Without this,
+                    // a student who clicked Done would briefly bounce
+                    // back into the Taking tab whenever the 4 s
+                    // participant snapshot lands, until the next hub
+                    // event re-asserted the flag.
+                    bool isDoneRequested = _doneRequestedStudentIds.Contains(p.StudentId);
+
                     ActiveStudents.Add(new LiveStudentStatus
                     {
                         StudentId = p.StudentId,
@@ -1657,6 +1722,7 @@ namespace AcademicSentinel.Client.Views.IMC
                                 : $"{ApiEndpoints.BaseUrl}{p.ProfileImageUrl}"),
                         HasViolation = _studentsWithViolations.Contains(p.StudentId),
                         IsLeaveRequested = isLeaveRequested,
+                        IsDoneRequested = isDoneRequested,
                         IsHandRaisePending = isHandRaisePending,
                         IsHandRaiseActive  = isHandRaiseActive,
                         IsOffline = isDisconnected,
@@ -2343,6 +2409,20 @@ namespace AcademicSentinel.Client.Views.IMC
         // / hand-raise / leave-request UI affordances because all
         // those interaction flows assume an active monitored student.
         private bool _isDone;
+
+        // True from the moment the student clicks Done in the SAC
+        // (SessionCompletionRequested hub event) until the teacher
+        // either Approves (IsDoneRequested→false, IsDone→true) or
+        // Denies (IsDoneRequested→false, IsDone stays false). While
+        // this is true the row lives in the Done tab as a PENDING
+        // sub-state — the existing Approve/Deny buttons (bound to
+        // IsLeaveRequested, set alongside) and the WANTS TO FINISH
+        // label remain visible. Distinct from IsDone so that
+        // approved-and-completed vs awaiting-approval can be styled
+        // independently and so the filter predicate can include
+        // both in the Done tab without confusing them at the row
+        // level.
+        private bool _isDoneRequested;
         private bool _hasViolation;
         private bool _hasHardwareViolation;
         private bool _isUsingVm;
@@ -2380,19 +2460,35 @@ namespace AcademicSentinel.Client.Views.IMC
                 if (_isDone == value) return;
                 _isDone = value;
                 OnPropertyChanged();
-                // Section and SectionSortOrder are derived from IsDone;
-                // notify both so the CollectionViewSource re-groups and
-                // re-sorts immediately on the next Refresh().
+                // Section and SectionSortOrder are derived from BOTH
+                // IsDone and IsDoneRequested; notify both so the
+                // CollectionView re-sorts immediately on the next
+                // Refresh().
                 OnPropertyChanged(nameof(Section));
                 OnPropertyChanged(nameof(SectionSortOrder));
             }
         }
-        // CollectionViewSource keys off these two properties to render
-        // Taking and Done as separate sections. Taking sorts first
-        // because its order key is 0; Done is 1. The string label is
-        // what the GroupStyle header binds to.
-        public string Section => _isDone ? "Done" : "Taking";
-        public int SectionSortOrder => _isDone ? 1 : 0;
+        public bool IsDoneRequested
+        {
+            get => _isDoneRequested;
+            set
+            {
+                if (_isDoneRequested == value) return;
+                _isDoneRequested = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(Section));
+                OnPropertyChanged(nameof(SectionSortOrder));
+            }
+        }
+        // Section / SectionSortOrder both treat "Done" as the union of
+        // pending-Done and approved-Done. The filter predicate uses the
+        // same union for the Done tab so a student who clicked Done
+        // disappears from Taking and shows up in Done immediately,
+        // with their Approve/Deny buttons (driven by IsLeaveRequested,
+        // set alongside IsDoneRequested) still visible in their new
+        // tab.
+        public string Section => (_isDone || _isDoneRequested) ? "Done" : "Taking";
+        public int SectionSortOrder => (_isDone || _isDoneRequested) ? 1 : 0;
         public bool HasViolation { get => _hasViolation; set { _hasViolation = value; OnPropertyChanged(); } }
         public bool HasHardwareViolation { get => _hasHardwareViolation; set { _hasHardwareViolation = value; OnPropertyChanged(); } }
         public bool IsUsingVM { get => _isUsingVm; set { _isUsingVm = value; OnPropertyChanged(); } }
