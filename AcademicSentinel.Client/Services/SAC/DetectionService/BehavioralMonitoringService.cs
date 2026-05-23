@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Management;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -12,7 +13,7 @@ using Microsoft.Win32;
 
 namespace AcademicSentinel.Client.Services.SAC.DetectionService
 {
-    internal sealed class BehavioralMonitoringService
+    internal sealed class BehavioralMonitoringService : IDisposable
     {
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
@@ -56,6 +57,59 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // a chance to anchor to the LMS by title.
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        // ============================================================
+        // EVENT-DRIVEN FOREGROUND TRACKING (Phase 1, Task A)
+        // ============================================================
+        // SetWinEventHook with EVENT_SYSTEM_FOREGROUND gives us a callback
+        // the instant the OS changes the foreground window — there's no
+        // polling-interval delay to evade. This complements (does not
+        // replace) the existing per-poll re-evaluation: the timer remains
+        // the safety net, the hook is the immediate signal.
+        //
+        // WINEVENT_OUTOFCONTEXT delivers events to the thread that called
+        // SetWinEventHook, so that thread MUST have a message pump.
+        // StartMonitoring is expected to be invoked from the WPF UI
+        // thread (which always has one).
+        private delegate void WinEventDelegate(
+            IntPtr hWinEventHook,
+            uint eventType,
+            IntPtr hwnd,
+            int idObject,
+            int idChild,
+            uint dwEventThread,
+            uint dwmsEventTime);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWinEventHook(
+            uint eventMin,
+            uint eventMax,
+            IntPtr hmodWinEventProc,
+            WinEventDelegate lpfnWinEventProc,
+            uint idProcess,
+            uint idThread,
+            uint dwFlags);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+        private const uint EVENT_SYSTEM_FOREGROUND  = 0x0003;
+        private const uint WINEVENT_OUTOFCONTEXT    = 0x0000;
+        private const uint WINEVENT_SKIPOWNPROCESS  = 0x0002;
+        // OBJECT_SELF: idObject value indicating the event is about the
+        // window itself, not a child control or accessibility element.
+        private const int  OBJID_WINDOW             = 0;
+
+        // GetSystemMetrics — used for the multi-monitor check (Phase 3,
+        // Task A).  SM_CMONITORS returns the number of display monitors
+        // on the desktop.  Cheap (a single user32 call), so safe to call
+        // every Poll().  An external display being attached IS a high-
+        // severity violation per spec, so emission goes through the
+        // normal AddEvent pipeline with a long cooldown.
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+        private const int SM_CMONITORS = 80;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct LASTINPUTINFO
@@ -219,6 +273,12 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
         private int _lastReportedIdleLevel;
         private bool _isMonitoring;
+        // Set permanently by Dispose() to block re-entry into StartMonitoring
+        // after the runtime tears the service down.  Phase 5 — unmanaged
+        // resources (WinEvent hook, WMI watcher) are released via the
+        // existing StopMonitoring() path; Dispose just invokes it once and
+        // raises the gate so accidental restart cannot re-install them.
+        private bool _isDisposed;
         private DateTime _monitoringStartedAtUtc;
 
         // ---- LMS-anchored focus detection state ----
@@ -269,6 +329,43 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // back on the LMS browser.
         private bool _wasPreviouslyOutOfExamFocus;
 
+        // ---- WinEvent foreground-hook state (Phase 1, Task A) ----
+        // Handle returned by SetWinEventHook; IntPtr.Zero when not installed.
+        private IntPtr _foregroundHookHandle = IntPtr.Zero;
+        // Strong reference to the marshalled delegate.  Windows holds the
+        // function pointer for the lifetime of the hook, so if this
+        // managed delegate is collected by the GC the next callback
+        // crashes the process.  Keep it alive at the instance level.
+        private WinEventDelegate _foregroundHookDelegate;
+        // Events produced from inside the hook callback are pushed here
+        // and drained at the top of the next Poll() so the public
+        // contract (Poll returns a snapshot list) is preserved.
+        private readonly System.Collections.Concurrent.ConcurrentQueue<MonitoringDetectionEvent> _hookEventQueue
+            = new();
+        // Latest known "is the SAC window the foreground?" value, refreshed
+        // every Poll().  Read by the WinEvent callback because the OS
+        // gives us the new HWND but not the caller's perspective on it.
+        private volatile bool _latestKnownSacActive;
+        // Mutex that serialises DetectFocus / DetectFocusAnchored access
+        // between Poll() (timer thread) and the WinEvent callback (the
+        // thread that registered the hook).  All shared focus-tracking
+        // state mutations live inside this lock.  Phase 3 reuses the
+        // same lock for thread-safe AddEvent calls from the WMI
+        // background thread — the lock is held only for microseconds
+        // (one dictionary lookup + maybe a write), so contention is
+        // negligible and we avoid introducing a second AddEvent lock.
+        private readonly object _focusDetectionLock = new();
+
+        // ---- WMI process-creation watcher state (Phase 3, Task B) ----
+        // Supplements the 5-second polling scan in
+        // ScanAndHandleBlacklistedProcesses with an instant kernel-driven
+        // notification: WMI fires __InstanceCreationEvent for Win32_Process
+        // at WITHIN-interval granularity (we pick 1s).  Watcher events
+        // arrive on a WMI worker thread, so AddEvent calls are routed
+        // through EmitFromBackgroundThread which acquires
+        // _focusDetectionLock and enqueues to _hookEventQueue.
+        private ManagementEventWatcher _processCreationWatcher;
+
         public BehavioralMonitoringService(DetectionSettings settings, IEnumerable<string> blacklistedProcessNames)
         {
             _settings = settings ?? new DetectionSettings();
@@ -280,6 +377,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
         public void StartMonitoring()
         {
+            // Refuse to start after Dispose so we cannot re-install the
+            // unmanaged WinEvent hook / WMI watcher on a torn-down service.
+            if (_isDisposed) return;
+
             DisableTaskManager();
             _isMonitoring = true;
             _lastForegroundWindow = GetForegroundWindow();
@@ -316,6 +417,16 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // student hasn't "returned" from anything yet.
             _wasPreviouslyOnLms = false;
             _wasPreviouslyOutOfExamFocus = false;
+
+            // Drain any stale findings left in the queue from a previous
+            // monitoring cycle that wasn't shut down cleanly.
+            while (_hookEventQueue.TryDequeue(out _)) { /* drop */ }
+            _latestKnownSacActive = false;
+
+            // Install the event-driven detectors LAST so they cannot fire
+            // before _isMonitoring / state is fully initialised above.
+            InstallForegroundHook();
+            InstallProcessCreationWatcher();
         }
 
         /// <summary>
@@ -411,7 +522,21 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         public void StopMonitoring()
         {
             EnableTaskManager();
+            // Flip the monitoring flag BEFORE removing the hook so any
+            // callback already in flight returns early via the guard at
+            // the top of OnForegroundWinEvent.
             _isMonitoring = false;
+
+            // Uninstall the foreground hook deterministically — must run
+            // even if a later reset throws so we never leak the OS-level
+            // hook handle.
+            UninstallForegroundHook();
+            UninstallProcessCreationWatcher();
+
+            // Drop any findings that landed between the last Poll and
+            // shutdown — they're no longer relevant.
+            while (_hookEventQueue.TryDequeue(out _)) { /* drop */ }
+
             _copyDown = false;
             _pasteDown = false;
             _temporarilyExemptWindow = IntPtr.Zero;
@@ -420,6 +545,34 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _anchoredTabSignature = null;
             _lastReportedProcesses.Clear();
             _lastReportedAtByEvent.Clear();
+
+            // Drop UIA COM references held by BrowserUrlReader's per-HWND
+            // cache (Phase 2) so the underlying COM proxies for closed
+            // browser tabs/windows can be reclaimed by the GC.  Without
+            // this, a long-lived process that runs many exam sessions
+            // would slowly accumulate AutomationElement wrappers — they
+            // don't leak unmanaged memory per se but they do pin COM
+            // RCWs and prevent GC collection of large UIA trees.
+            BrowserUrlReader.Clear();
+        }
+
+        /// <summary>
+        /// Releases the unmanaged WinEvent hook and the WMI process-creation
+        /// watcher by delegating to <see cref="StopMonitoring"/>.  After
+        /// Dispose, <see cref="StartMonitoring"/> is a no-op so the service
+        /// cannot resurrect the OS-level resources.  Idempotent.
+        /// </summary>
+        public void Dispose()
+        {
+            if (_isDisposed) return;
+            _isDisposed = true;
+
+            // StopMonitoring is the single owner of the hook + watcher
+            // teardown logic (UninstallForegroundHook, UninstallProcess-
+            // CreationWatcher, BrowserUrlReader.Clear).  Wrap in try/catch
+            // so that even a teardown failure cannot leave a half-disposed
+            // service that still holds OS handles.
+            try { StopMonitoring(); } catch { /* swallow — best effort */ }
         }
 
         public IReadOnlyList<MonitoringDetectionEvent> Poll(bool isSacWindowActive)
@@ -427,13 +580,38 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             if (!_isMonitoring)
                 return Array.Empty<MonitoringDetectionEvent>();
 
+            // Refresh the cached SAC-active flag so the WinEvent hook
+            // callback (which fires asynchronously and doesn't receive
+            // this argument) can pass through the latest known value
+            // when it calls DetectFocus.
+            _latestKnownSacActive = isSacWindowActive;
+
             var findings = new List<MonitoringDetectionEvent>();
 
-            DetectFocus(isSacWindowActive, findings);
-            CheckCanvasPresence(findings);
-            DetectClipboardAndScreenshot(findings);
-            DetectIdle(findings);
-            ScanAndHandleBlacklistedProcesses(findings);
+            // Drain anything the WinEvent hook produced since the last
+            // poll — preserves "instant" detection by guaranteeing those
+            // findings ship on the very next Poll() turnaround.
+            while (_hookEventQueue.TryDequeue(out var queued))
+                findings.Add(queued);
+
+            // The hook callback (Phase 1) and the WMI watcher (Phase 3) can
+            // run concurrently with this Poll on different threads, and both
+            // call AddEvent which mutates the shared _lastReportedAtByEvent
+            // dictionary.  Hold the focus-detection lock around EVERY
+            // detector — not just DetectFocus — so every AddEvent in the
+            // class is serialised against the background callers.  The lock
+            // is uncontended in the common case (the polling thread holds
+            // it for the duration of one Poll; hook / WMI threads wait at
+            // most a few hundred microseconds).
+            lock (_focusDetectionLock)
+            {
+                DetectFocus(isSacWindowActive, findings);
+                CheckCanvasPresence(findings);
+                DetectClipboardAndScreenshot(findings);
+                DetectIdle(findings);
+                ScanAndHandleBlacklistedProcesses(findings);
+                DetectMultiMonitor(findings);
+            }
 
             _lastForegroundWasSac = isSacWindowActive;
 
@@ -640,6 +818,41 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                         urlViolationReason = urlResult.Reason;
                     }
                 }
+                else
+                {
+                    // ----------------------------------------------------
+                    // STRICT TAB WHITELISTING FALLBACK (Phase 1, Task B)
+                    // ----------------------------------------------------
+                    // UIA URL read failed (browser still painting, page
+                    // marked as protected / off-screen, etc.).  The
+                    // previous behaviour fell back to the non-LMS title
+                    // blacklist — a known-bad list.  Blacklists can
+                    // always be evaded by renaming a tab to anything not
+                    // on the list, so we invert the logic to a strict
+                    // whitelist: the foreground window's title MUST
+                    // contain _anchoredLmsDomain.
+                    //
+                    // sameAnchoredHwnd and browserFallback are NOT
+                    // sufficient on their own when the URL can't be
+                    // verified — both can be true for a tab that has
+                    // navigated AWAY from the LMS but still shares the
+                    // browser HWND.  Domain-in-title is the only signal
+                    // we trust here.
+                    //
+                    // The SAC window itself is exempted downstream by
+                    // the existing `!isSacWindowActive && !isOnLms`
+                    // gate, so this branch never produces a false
+                    // positive on the SAC.
+                    if (!titleSaysLms)
+                    {
+                        isOnLms = false;
+                        urlViolationReason =
+                            "Browser URL could not be read and the window title does not contain the LMS domain.";
+                    }
+                    // else: titleSaysLms is true — isOnLms is already
+                    //       set by the title-based path above; do not
+                    //       override it.  This is the whitelist match.
+                }
             }
 
             // ---- CANVAS_CLOSED: anchored HWND is gone AND new foreground
@@ -729,6 +942,326 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private void ClearTemporaryExemptWindow()
         {
             _temporarilyExemptWindow = IntPtr.Zero;
+        }
+
+        // ============================================================
+        // WinEvent foreground-hook plumbing (Phase 1, Task A)
+        // ============================================================
+
+        /// <summary>
+        /// Registers an EVENT_SYSTEM_FOREGROUND hook so the SAC reacts to
+        /// foreground changes the instant they happen rather than waiting
+        /// for the next polling tick. Idempotent — safe to call twice.
+        /// MUST be invoked from a thread with a message pump (typically
+        /// the WPF UI thread); the OS delivers callbacks via that thread.
+        /// </summary>
+        private void InstallForegroundHook()
+        {
+            if (_foregroundHookHandle != IntPtr.Zero) return;
+
+            try
+            {
+                // Hold a strong reference at the instance level so the GC
+                // doesn't collect the delegate while Windows still holds
+                // the unmanaged function pointer.
+                _foregroundHookDelegate = OnForegroundWinEvent;
+
+                _foregroundHookHandle = SetWinEventHook(
+                    EVENT_SYSTEM_FOREGROUND,
+                    EVENT_SYSTEM_FOREGROUND,
+                    IntPtr.Zero,
+                    _foregroundHookDelegate,
+                    idProcess: 0,                          // all processes
+                    idThread:  0,                          // all threads
+                    dwFlags:   WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+
+                if (_foregroundHookHandle == IntPtr.Zero)
+                {
+                    // Hook registration failed (rare).  Polling continues
+                    // unchanged; we just don't get the instant signal.
+                    _foregroundHookDelegate = null;
+                }
+            }
+            catch
+            {
+                // Don't let any hook-setup failure prevent monitoring
+                // from starting; we fall back to pure polling.
+                _foregroundHookHandle = IntPtr.Zero;
+                _foregroundHookDelegate = null;
+            }
+        }
+
+        /// <summary>
+        /// Deterministically removes the foreground hook and drops the
+        /// rooted delegate so the GC can reclaim it. Idempotent.
+        /// </summary>
+        private void UninstallForegroundHook()
+        {
+            if (_foregroundHookHandle == IntPtr.Zero)
+            {
+                _foregroundHookDelegate = null;
+                return;
+            }
+
+            try
+            {
+                UnhookWinEvent(_foregroundHookHandle);
+            }
+            catch
+            {
+                // UnhookWinEvent can fail if the hook was already torn
+                // down by the OS; nothing actionable on this side.
+            }
+            finally
+            {
+                _foregroundHookHandle  = IntPtr.Zero;
+                _foregroundHookDelegate = null;
+            }
+        }
+
+        // ============================================================
+        // MULTI-MONITOR DETECTION (Phase 3, Task A)
+        // ============================================================
+
+        /// <summary>
+        /// Emits a <see cref="DetectionConstants.EventMultiMonitor"/>
+        /// finding when the OS reports more than one display attached.
+        /// Re-evaluated every Poll() so a student who plugs in a second
+        /// monitor mid-session is caught after StartMonitoring.  The
+        /// AddEvent cooldown (60 s) prevents the event from spamming
+        /// when the multi-monitor state is sustained.
+        /// </summary>
+        private void DetectMultiMonitor(ICollection<MonitoringDetectionEvent> findings)
+        {
+            int monitorCount;
+            try
+            {
+                monitorCount = GetSystemMetrics(SM_CMONITORS);
+            }
+            catch
+            {
+                // GetSystemMetrics should never throw, but defend against
+                // hostile shims that might intercept user32 calls.
+                return;
+            }
+
+            if (monitorCount <= 1) return;
+
+            AddEvent(findings, DetectionConstants.EventMultiMonitor, 3,
+                $"Multiple displays attached ({monitorCount}). External monitors must be disconnected before the exam.",
+                cooldownSeconds: 60);
+        }
+
+        // ============================================================
+        // WMI PROCESS-CREATION WATCHER (Phase 3, Task B)
+        // ============================================================
+
+        /// <summary>
+        /// Subscribes to Win32 process-creation events via WMI so that
+        /// blacklisted applications are caught the instant they spawn,
+        /// rather than waiting up to 5 seconds for the next polling
+        /// scan in <see cref="ScanAndHandleBlacklistedProcesses"/>.
+        ///
+        /// The WMI query polls every 1 second internally — fast enough
+        /// to feel instant, slow enough not to burn CPU.  The polling
+        /// scan remains as a safety net for processes that started
+        /// before this watcher was registered.
+        ///
+        /// Idempotent — safe to call multiple times.
+        /// </summary>
+        private void InstallProcessCreationWatcher()
+        {
+            if (!_settings.EnableProcessDetection) return;
+            if (_processCreationWatcher != null) return;
+
+            try
+            {
+                // WITHIN 1 = poll the Win32_Process table once per second.
+                // TargetInstance is the freshly-created process record.
+                var query = new WqlEventQuery(
+                    "SELECT TargetInstance FROM __InstanceCreationEvent " +
+                    "WITHIN 1 " +
+                    "WHERE TargetInstance ISA 'Win32_Process'");
+
+                _processCreationWatcher = new ManagementEventWatcher(query);
+                _processCreationWatcher.EventArrived += OnProcessCreated;
+                _processCreationWatcher.Start();
+            }
+            catch
+            {
+                // WMI may be disabled / unreachable in hardened SOEs.
+                // Polling scan continues unchanged; we just lose the
+                // sub-second response.
+                try { _processCreationWatcher?.Dispose(); } catch { /* ignore */ }
+                _processCreationWatcher = null;
+            }
+        }
+
+        /// <summary>
+        /// Deterministically tears down the WMI watcher.  Critical for
+        /// resource hygiene: ManagementEventWatcher holds a COM proxy and
+        /// a background thread; leaking it across monitoring cycles
+        /// would accumulate handles over the lifetime of the process.
+        /// </summary>
+        private void UninstallProcessCreationWatcher()
+        {
+            var watcher = _processCreationWatcher;
+            if (watcher == null) return;
+
+            try
+            {
+                watcher.EventArrived -= OnProcessCreated;
+                watcher.Stop();
+            }
+            catch
+            {
+                // Stop() can throw if the watcher already faulted.
+            }
+
+            try
+            {
+                watcher.Dispose();
+            }
+            catch
+            {
+                // ignore — best-effort disposal
+            }
+            finally
+            {
+                _processCreationWatcher = null;
+            }
+        }
+
+        /// <summary>
+        /// WMI EventArrived callback.  Extracts the process name from
+        /// TargetInstance, validates it against the blacklists (with the
+        /// protected-process guard so browsers / OS utilities can't be
+        /// flagged by an instructor's per-room blacklist), and emits
+        /// PROCESS_DETECTED via the thread-safe
+        /// <see cref="EmitFromBackgroundThread"/> helper.
+        ///
+        /// CRITICAL: must never let an exception escape — WMI callbacks
+        /// run on a worker thread owned by System.Management, and an
+        /// unhandled exception there terminates the process.
+        /// </summary>
+        private void OnProcessCreated(object sender, EventArrivedEventArgs e)
+        {
+            if (!_isMonitoring) return;
+
+            try
+            {
+                var target = e.NewEvent?["TargetInstance"] as ManagementBaseObject;
+                if (target == null) return;
+
+                string rawName = Convert.ToString(target["Name"]) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(rawName)) return;
+
+                // Strip the ".exe" so the value matches the conventions
+                // already used by _blacklistedApps / _blacklistedProcessNames
+                // / _protectedProcesses (all stored without extensions).
+                string nameNoExt = rawName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                    ? rawName.Substring(0, rawName.Length - 4)
+                    : rawName;
+
+                // Protected-process guard FIRST — same precedence rule as
+                // ScanAndHandleBlacklistedProcesses, so an instructor's
+                // per-room blacklist still can't sneak past a global
+                // protection (browsers, OS utilities, core Windows).
+                if (_protectedProcesses.Contains(nameNoExt)) return;
+
+                bool isBlacklisted =
+                    _blacklistedApps.Any(b =>
+                        string.Equals(b, nameNoExt, StringComparison.OrdinalIgnoreCase))
+                    || _blacklistedProcessNames.Contains(nameNoExt);
+
+                if (!isBlacklisted) return;
+
+                EmitFromBackgroundThread(
+                    DetectionConstants.EventProcessDetected,
+                    severity: 3,
+                    description: $"Unauthorized process started: {nameNoExt}",
+                    cooldownSeconds: 5);
+            }
+            catch
+            {
+                // Swallowing intentionally — see XML doc above.
+            }
+        }
+
+        /// <summary>
+        /// Thread-safe AddEvent for callers that run on a non-Poll
+        /// thread (the WinEvent hook in Phase 1 and the WMI watcher
+        /// here).  Acquires <see cref="_focusDetectionLock"/> just for
+        /// the dictionary read/write inside AddEvent, then enqueues any
+        /// resulting events to <see cref="_hookEventQueue"/> so the
+        /// next Poll() can drain them into its findings list.
+        ///
+        /// Crucially this does NOT touch ObservableCollections — the
+        /// public Poll() return path is the only place where
+        /// MonitoringDetectionEvent instances leave this class, and
+        /// the consumer of Poll() is responsible for any UI-thread
+        /// marshalling.
+        /// </summary>
+        private void EmitFromBackgroundThread(string eventType, int severity, string description, int cooldownSeconds)
+        {
+            var localFindings = new List<MonitoringDetectionEvent>();
+            lock (_focusDetectionLock)
+            {
+                if (!_isMonitoring) return;          // re-check under the lock
+                AddEvent(localFindings, eventType, severity, description, cooldownSeconds);
+            }
+            foreach (var f in localFindings)
+                _hookEventQueue.Enqueue(f);
+        }
+
+        /// <summary>
+        /// SetWinEventHook callback.  Triggers immediate focus
+        /// re-evaluation via DetectFocus (the dispatcher routes to the
+        /// anchored or legacy path based on configuration).  Any findings
+        /// are pushed to <see cref="_hookEventQueue"/> and drained by the
+        /// next <see cref="Poll"/> call so the existing emission pipeline
+        /// stays intact — MonitoringDetectionEvent severities and event
+        /// types are unchanged.
+        ///
+        /// CRITICAL: this method must NEVER let an exception escape.
+        /// An unhandled exception in a SetWinEventHook callback
+        /// fast-fails the process.
+        /// </summary>
+        private void OnForegroundWinEvent(
+            IntPtr hWinEventHook,
+            uint   eventType,
+            IntPtr hwnd,
+            int    idObject,
+            int    idChild,
+            uint   dwEventThread,
+            uint   dwmsEventTime)
+        {
+            if (!_isMonitoring)                  return;
+            if (eventType != EVENT_SYSTEM_FOREGROUND) return;
+            if (idObject  != OBJID_WINDOW)       return;
+            if (hwnd      == IntPtr.Zero)        return;
+
+            try
+            {
+                var hookFindings = new List<MonitoringDetectionEvent>();
+
+                // Serialise against any concurrent Poll() that might be
+                // running on the timer thread — same lock as Poll uses.
+                lock (_focusDetectionLock)
+                {
+                    if (!_isMonitoring) return;     // re-check after lock
+                    DetectFocus(_latestKnownSacActive, hookFindings);
+                }
+
+                // Hand findings to Poll() via the cross-thread queue so
+                // the public IReadOnlyList contract isn't broken.
+                foreach (var f in hookFindings)
+                    _hookEventQueue.Enqueue(f);
+            }
+            catch
+            {
+                // Swallowing intentionally — see XML doc above.
+            }
         }
 
         private void DetectClipboardAndScreenshot(ICollection<MonitoringDetectionEvent> findings)

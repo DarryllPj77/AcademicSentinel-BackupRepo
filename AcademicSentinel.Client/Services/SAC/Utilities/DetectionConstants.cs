@@ -15,6 +15,8 @@ namespace AcademicSentinel.Client.Services.SAC.Utilities
         public const string EventIdle = "IDLE";              // S1 — warning tier
         public const string EventInactivity = "INACTIVITY";  // S2 / S4 — violation / critical tiers
         public const string EventProcessDetected = "PROCESS_DETECTED";
+        // Phase 3 — Environment integrity
+        public const string EventMultiMonitor = "MULTI_MONITOR";   // S3 — student has > 1 display attached
         // HAS sub-events
         public const string EventHasDebugger = "HAS_DEBUGGER";
         public const string EventHasTimeTamper = "HAS_TIME_TAMPER";
