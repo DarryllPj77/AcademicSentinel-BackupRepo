@@ -97,13 +97,19 @@ namespace AcademicSentinel.Client.Views.IMC
         // state every 4 seconds.
         private readonly HashSet<int> _doneRequestedStudentIds = new();
 
-        // Participant-panel cohort filter. Default "Taking" so the
-        // instructor's primary attention is on active students. The
-        // two radio-buttons in XAML (RbFilterTaking / RbFilterDone)
-        // flip this and call _studentsView.Refresh(). The previous
-        // "All" tab was removed as redundant — Taking and Done
-        // already cover every participant exactly once.
-        private enum ParticipantFilterMode { Taking, Done }
+        // Participant-panel cohort filter. Three mutually-exclusive
+        // tabs in XAML (RbFilterTaking / RbFilterDone / RbFilterFinished)
+        // flip this and call _studentsView.Refresh(). Default is Taking
+        // so the instructor's primary attention is on active students.
+        //
+        // Cohort semantics (mirrored in ParticipantFilterPredicate
+        // and UpdateParticipantCount so every surface agrees):
+        //   Taking    → !IsDoneRequested && !IsDone
+        //   Done      →  IsDoneRequested && !IsDone   (pending approval)
+        //   Finished  →  IsDone                       (teacher-approved)
+        // The three predicates partition the participant set exactly
+        // once — every row matches exactly one tab.
+        private enum ParticipantFilterMode { Taking, Done, Finished }
         private ParticipantFilterMode _participantFilter = ParticipantFilterMode.Taking;
 
         // The search box's lowercased current text. Kept as a field so
@@ -115,23 +121,22 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (obj is not LiveStudentStatus s) return false;
 
-            // Done tab = pending-Done OR approved-Done. The student
-            // moves there the moment they click Done; the Approve /
-            // Deny buttons rendered on the row (visibility bound to
-            // IsLeaveRequested, which the SessionCompletionRequested
-            // handler sets alongside IsDoneRequested) let the teacher
-            // resolve the pending request from inside the Done tab.
-            // Deny clears IsDoneRequested so the student naturally
-            // returns to Taking on the next Refresh().
-            bool isInDoneCohort = s.IsDone || s.IsDoneRequested;
+            // Three disjoint cohorts. Done tab is now ONLY the pending
+            // sub-state (where Approve/Deny live); Finished tab is the
+            // teacher-approved completed sub-state. A student moves
+            // Done → Finished on approval; Done → Taking on denial.
+            bool isPendingDone = s.IsDoneRequested && !s.IsDone;
+            bool isFinished    = s.IsDone;
+            bool isTaking      = !isPendingDone && !isFinished;
 
             bool cohortMatch = _participantFilter switch
             {
-                ParticipantFilterMode.Done => isInDoneCohort,
+                ParticipantFilterMode.Done     => isPendingDone,
+                ParticipantFilterMode.Finished => isFinished,
                 // Default arm is Taking — covers ParticipantFilterMode.Taking
                 // and any future addition that hasn't been wired yet,
                 // erring on the safer "show active" side.
-                _                          => !isInDoneCohort,
+                _                              => isTaking,
             };
             if (!cohortMatch) return false;
 
@@ -448,6 +453,9 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void RbFilterDone_Checked(object sender, RoutedEventArgs e)
             => SetParticipantFilter(ParticipantFilterMode.Done);
+
+        private void RbFilterFinished_Checked(object sender, RoutedEventArgs e)
+            => SetParticipantFilter(ParticipantFilterMode.Finished);
 
         private void SetParticipantFilter(ParticipantFilterMode mode)
         {
@@ -1565,27 +1573,29 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void UpdateParticipantCount()
         {
-            // Done cohort = pending-Done OR approved-Done. Mirrors the
-            // ParticipantFilterPredicate so the tab labels and the
-            // visible row counts always agree.
-            int takingCount = ActiveStudents.Count(s => !s.IsDone && !s.IsDoneRequested);
-            int doneCount   = ActiveStudents.Count(s =>  s.IsDone ||  s.IsDoneRequested);
+            // Three disjoint buckets — exactly mirrors
+            // ParticipantFilterPredicate so the tab labels, the header
+            // pill, the missing line, and the visible row counts never
+            // disagree.
+            int takingCount   = ActiveStudents.Count(s => !s.IsDoneRequested && !s.IsDone);
+            int doneCount     = ActiveStudents.Count(s =>  s.IsDoneRequested && !s.IsDone);
+            int finishedCount = ActiveStudents.Count(s =>  s.IsDone);
 
             if (EmptyParticipantsState != null && ActiveStudents.Count > 0)
                 EmptyParticipantsState.Visibility = Visibility.Collapsed;
 
-            // Header pill shows Taking out of total enrolled — that's
-            // the "still being monitored" headline number the
-            // instructor cares about most regardless of which filter
-            // tab is currently active.
+            // Header pill shows Taking out of total enrolled — the
+            // "still being monitored" headline number the instructor
+            // cares about most regardless of which tab is active.
             TxtParticipantCount.Text = $"{takingCount}/{_enrolledCount}";
 
             // Missing = enrolled minus everyone we currently have on
-            // screen (Taking AND Done). Done is spelled out so the
-            // teacher can see at a glance how many have finished.
-            var missing = Math.Max(0, _enrolledCount - takingCount - doneCount);
+            // screen across all three buckets. Finished and Done are
+            // spelled out so the teacher can see at a glance how many
+            // students are at each stage.
+            var missing = Math.Max(0, _enrolledCount - takingCount - doneCount - finishedCount);
             if (FindName("TxtMissingCount") is TextBlock txtMissing)
-                txtMissing.Text = $"Done: {doneCount} · Missing: {missing}";
+                txtMissing.Text = $"Finished: {finishedCount} · Done: {doneCount} · Missing: {missing}";
 
             // Refresh the filter-tab labels so each carries its own
             // running count without needing a binding converter.
@@ -1593,6 +1603,8 @@ namespace AcademicSentinel.Client.Views.IMC
                 rbTaking.Content = $"Taking ({takingCount})";
             if (FindName("RbFilterDone") is RadioButton rbDone)
                 rbDone.Content = $"Done ({doneCount})";
+            if (FindName("RbFilterFinished") is RadioButton rbFinished)
+                rbFinished.Content = $"Finished ({finishedCount})";
         }
 
         // Tracks the last known ParticipationStatus per student between
@@ -2478,15 +2490,18 @@ namespace AcademicSentinel.Client.Views.IMC
                 OnPropertyChanged(nameof(SectionSortOrder));
             }
         }
-        // Section / SectionSortOrder both treat "Done" as the union of
-        // pending-Done and approved-Done. The filter predicate uses the
-        // same union for the Done tab so a student who clicked Done
-        // disappears from Taking and shows up in Done immediately,
-        // with their Approve/Deny buttons (driven by IsLeaveRequested,
-        // set alongside IsDoneRequested) still visible in their new
-        // tab.
-        public string Section => (_isDone || _isDoneRequested) ? "Done" : "Taking";
-        public int SectionSortOrder => (_isDone || _isDoneRequested) ? 1 : 0;
+        // Section / SectionSortOrder now split into three: Taking
+        // (active), Done (pending approval), Finished (approved). The
+        // sort order is used as a secondary key inside _studentsView
+        // so rows within a tab stay stable across refreshes.
+        public string Section =>
+            _isDone           ? "Finished"
+          : _isDoneRequested  ? "Done"
+          :                     "Taking";
+        public int SectionSortOrder =>
+            _isDone           ? 2
+          : _isDoneRequested  ? 1
+          :                     0;
         public bool HasViolation { get => _hasViolation; set { _hasViolation = value; OnPropertyChanged(); } }
         public bool HasHardwareViolation { get => _hasHardwareViolation; set { _hasHardwareViolation = value; OnPropertyChanged(); } }
         public bool IsUsingVM { get => _isUsingVm; set { _isUsingVm = value; OnPropertyChanged(); } }
