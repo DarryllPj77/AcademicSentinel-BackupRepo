@@ -13,14 +13,32 @@ namespace AcademicSentinel.Client.Views.IMC.Converters
 
             try
             {
-                // 1. Find the last colon-space combination.
-                int lastColonIndex = s.LastIndexOf(": ", StringComparison.Ordinal);
-                if (lastColonIndex < 0) return s;
+                // 1. STRICT SAFETY GUARD: Only process specific window/tab switch events.
+                string[] targetPrefixes = {
+                    "Active Window changed to: ",
+                    "Active Tab changed to: ",
+                    "Switched to window: ",
+                    "Switched to tab: "
+                };
 
-                int payloadStartIndex = lastColonIndex + 2;
+                string matchedPrefix = null;
+                foreach (var prefix in targetPrefixes)
+                {
+                    if (s.Contains(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchedPrefix = prefix;
+                        break;
+                    }
+                }
+
+                // If it's a regular log (like a cheat detection or error), RETURN IT UNTOUCHED.
+                if (matchedPrefix == null) return s;
+
+                // 2. Extract payload after the specific prefix
+                int payloadStartIndex = s.IndexOf(matchedPrefix, StringComparison.OrdinalIgnoreCase) + matchedPrefix.Length;
                 string payload = s.Substring(payloadStartIndex).Trim();
 
-                // 2. Notification Badge Stripping (e.g., "(4) YouTube" -> "YouTube")
+                // 3. Notification Badge Stripping (e.g., "(4) YouTube" -> "YouTube")
                 if (payload.StartsWith("("))
                 {
                     int closeParenIndex = payload.IndexOf(") ");
@@ -30,7 +48,7 @@ namespace AcademicSentinel.Client.Views.IMC.Converters
                     }
                 }
 
-                // 3. URL Check (Tabs) - Return just the Host
+                // 4. URL Check (Tabs) - Return just the Host
                 if (!payload.Contains(" ") && payload.Contains("."))
                 {
                     string urlString = payload.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? payload : "https://" + payload;
@@ -40,7 +58,7 @@ namespace AcademicSentinel.Client.Views.IMC.Converters
                     }
                 }
 
-                // 4. Browser Suffix Stripping (Windows)
+                // 5. Browser Suffix Stripping (Windows)
                 string[] suffixes = { " - Google Chrome", " - Microsoft Edge", " - Mozilla Firefox", " - Brave", " - Opera", " - Personal - Microsoft Edge" };
                 foreach (var suffix in suffixes)
                 {
@@ -50,7 +68,7 @@ namespace AcademicSentinel.Client.Views.IMC.Converters
                     }
                 }
 
-                // 5. Aggressive Title Separator Splitting
+                // 6. Aggressive Title Separator Splitting
                 string[] separators = { " - ", " | ", " — ", " – ", " : ", " > ", " • " };
                 int bestIdx = -1;
                 int bestSepLen = 0;
@@ -70,10 +88,11 @@ namespace AcademicSentinel.Client.Views.IMC.Converters
                     return payload.Substring(bestIdx + bestSepLen).Trim(); // e.g., "YouTube"
                 }
 
-                return payload; // Return just the cleaned app name, NO prefix.
+                return payload;
             }
             catch
             {
+                // Fallback: If any string manipulation fails, return the raw log safely.
                 return s;
             }
         }
