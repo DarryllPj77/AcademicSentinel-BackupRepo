@@ -139,11 +139,21 @@
         </Border>
 
         <!-- ======================== MAIN CONTENT ======================== -->
-        <Grid x:Name="SessionContentGrid" Grid.Row="1" Margin="30,24,30,24">
-            <Border x:Name="FullSessionPanel" Background="#B3FFFFFF" CornerRadius="16" Padding="32">
-                <Border.Effect>
-                    <DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.06" Color="Black"/>
-                </Border.Effect>
+        <!-- Vertical margin zeroed (was "30,24,30,24") so the middle
+             content sits flush against the header strip and the
+             bottom countdown bar. The 24 px on top and bottom
+             previously rendered as visible transparent bands above
+             and below the FullSessionPanel card; horizontal 30 px
+             is kept as intentional breathing room from the window
+             edges. -->
+        <Grid x:Name="SessionContentGrid" Grid.Row="1" Margin="30,0,30,0">
+            <!-- CornerRadius and DropShadow stripped so FullSessionPanel
+                 no longer reads as a floating card with separate
+                 elevation — it now visually continues the frosted
+                 strip flowing down from the header to the bottom
+                 countdown bar. Background and internal Padding are
+                 unchanged. -->
+            <Border x:Name="FullSessionPanel" Background="#B3FFFFFF" CornerRadius="0" Padding="32">
 
                 <Grid>
                     <Grid.RowDefinitions>

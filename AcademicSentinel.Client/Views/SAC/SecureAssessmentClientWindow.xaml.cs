@@ -2060,8 +2060,13 @@ namespace AcademicSentinel.Client.Views.SAC
             Topmost = false;
             if (FindName("BtnHeaderExpand") is System.Windows.Controls.Button headerExpand)
                 headerExpand.Visibility = Visibility.Collapsed;
+            // Vertical margin kept at 0 even in full mode so the
+            // FullSessionPanel flows directly into the header above
+            // and the bottom countdown bar below — the previous
+            // (30, 24, 30, 24) re-introduced the two transparent
+            // bands every time the user expanded back from compact.
             if (FindName("SessionContentGrid") is FrameworkElement contentGrid)
-                contentGrid.Margin = new Thickness(30, 24, 30, 24);
+                contentGrid.Margin = new Thickness(30, 0, 30, 0);
 
             // R3 fix: never set BtnDone.Visibility from a resize handler.
             // Visibility is the EXCLUSIVE responsibility of UpdateUIForPhase.
