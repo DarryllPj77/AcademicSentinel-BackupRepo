@@ -4,7 +4,6 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
-        xmlns:imcConverters="clr-namespace:AcademicSentinel.Client.Views.IMC.Converters"
         mc:Ignorable="d"
         Title="Live Session Monitoring"
         Height="820" Width="1400"
@@ -17,12 +16,6 @@
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-
-        <!-- Presentation-layer shortener: collapses long URLs to their
-             host and Windows titles to their app name inside live log
-             feed messages.  Server still receives and stores the
-             complete, unedited strings — this only affects rendering. -->
-        <imcConverters:LogDescriptionTrimmerConverter x:Key="LogTrim"/>
         <Color x:Key="FEUGreen">#1B5E20</Color>
         <Color x:Key="FEUGreenLight">#2E7D32</Color>
         <Color x:Key="FEUGreenDark">#0D3B12</Color>
@@ -633,7 +626,7 @@
                                                             <TextBlock Text="{Binding BadgeText}" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
                                                         </Border>
                                                     </StackPanel>
-                                                    <TextBlock Text="{Binding Message, Converter={StaticResource LogTrim}}" FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource FEUSubTextBrush}"/>
+                                                    <TextBlock Text="{Binding Message}" FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource FEUSubTextBrush}"/>
                                                 </StackPanel>
                                             </Grid>
                                         </Border>

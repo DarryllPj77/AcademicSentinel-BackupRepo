@@ -151,7 +151,7 @@ namespace AcademicSentinel.Client.Services.SAC
                 return;
 
             var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
-            var description = $"{rawEvent.Description} | CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}";
+            var description = rawEvent.Description ?? string.Empty;
             var finding = new DetectorFinding(rawEvent.EventType, rawEvent.SeverityScore, description);
 
             // Dispatch onto the WPF UI thread before invoking the consumer
@@ -357,9 +357,7 @@ namespace AcademicSentinel.Client.Services.SAC
 
                 var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
                 var severityScore = rawEvent.SeverityScore;
-                var description = string.IsNullOrWhiteSpace(rawEvent.Description)
-                    ? $"CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}"
-                    : $"{rawEvent.Description} | CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}";
+                var description = rawEvent.Description ?? string.Empty;
 
                 mapped.Add(new DetectorFinding(rawEvent.EventType, severityScore, description));
             }

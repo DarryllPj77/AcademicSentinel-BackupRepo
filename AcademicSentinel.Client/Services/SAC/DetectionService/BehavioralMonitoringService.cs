@@ -903,31 +903,21 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // semantically meaningful.
             _wasPreviouslyOutOfExamFocus = !isSacWindowActive && !isOnLms;
 
-            // ---- Violation: not SAC, not approved as LMS.
             if (!isSacWindowActive && !isOnLms)
             {
-                // Sanitize the foreground label so non-browser switches log
-                // only the clean app name (no document paths / chat channels
-                // / etc.) and browser tab switches still surface "[Tab] -
-                // [Browser]". For an in-browser tab switch (sameAnchoredHwnd
-                // + non-LMS keyword) the sanitized label already conveys the
-                // new tab; we phrase it as a tab switch.
-                string sanitizedForeground = GetSanitizedWindowLabel(foreground);
                 string description;
                 if (urlViolationReason != null)
                 {
-                    // Deep-path URL gate rejected — use the structured
-                    // reason from the validator, which is more specific than
-                    // any title-based phrasing.
-                    description = $"Browser navigated to a non-exam URL. {urlViolationReason} Now viewing '{sanitizedForeground}'.";
+                    // Deep-path URL gate rejected
+                    description = $"Browser navigated to a non-exam URL. {urlViolationReason}";
                 }
                 else if (sameAnchoredHwnd && titleHasNonLmsKeyword)
                 {
-                    description = $"Focus left the LMS tab in the same browser window. Now viewing '{sanitizedForeground}'.";
+                    description = "Focus left the LMS tab in the same browser window.";
                 }
                 else
                 {
-                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{sanitizedForeground}'.";
+                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}).";
                 }
 
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
