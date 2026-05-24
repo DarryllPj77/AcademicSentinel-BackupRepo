@@ -99,9 +99,11 @@ namespace AcademicSentinel.Client.Views.IMC
 
         // Participant-panel cohort filter. Default "Taking" so the
         // instructor's primary attention is on active students. The
-        // three radio-buttons in XAML (RbFilterTaking / RbFilterDone /
-        // RbFilterAll) flip this and call _studentsView.Refresh().
-        private enum ParticipantFilterMode { Taking, Done, All }
+        // two radio-buttons in XAML (RbFilterTaking / RbFilterDone)
+        // flip this and call _studentsView.Refresh(). The previous
+        // "All" tab was removed as redundant — Taking and Done
+        // already cover every participant exactly once.
+        private enum ParticipantFilterMode { Taking, Done }
         private ParticipantFilterMode _participantFilter = ParticipantFilterMode.Taking;
 
         // The search box's lowercased current text. Kept as a field so
@@ -125,9 +127,11 @@ namespace AcademicSentinel.Client.Views.IMC
 
             bool cohortMatch = _participantFilter switch
             {
-                ParticipantFilterMode.Taking => !isInDoneCohort,
-                ParticipantFilterMode.Done   =>  isInDoneCohort,
-                _                            =>  true,
+                ParticipantFilterMode.Done => isInDoneCohort,
+                // Default arm is Taking — covers ParticipantFilterMode.Taking
+                // and any future addition that hasn't been wired yet,
+                // erring on the safer "show active" side.
+                _                          => !isInDoneCohort,
             };
             if (!cohortMatch) return false;
 
@@ -444,9 +448,6 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void RbFilterDone_Checked(object sender, RoutedEventArgs e)
             => SetParticipantFilter(ParticipantFilterMode.Done);
-
-        private void RbFilterAll_Checked(object sender, RoutedEventArgs e)
-            => SetParticipantFilter(ParticipantFilterMode.All);
 
         private void SetParticipantFilter(ParticipantFilterMode mode)
         {
@@ -1569,9 +1570,8 @@ namespace AcademicSentinel.Client.Views.IMC
             // visible row counts always agree.
             int takingCount = ActiveStudents.Count(s => !s.IsDone && !s.IsDoneRequested);
             int doneCount   = ActiveStudents.Count(s =>  s.IsDone ||  s.IsDoneRequested);
-            int totalCount  = ActiveStudents.Count;
 
-            if (EmptyParticipantsState != null && totalCount > 0)
+            if (EmptyParticipantsState != null && ActiveStudents.Count > 0)
                 EmptyParticipantsState.Visibility = Visibility.Collapsed;
 
             // Header pill shows Taking out of total enrolled — that's
@@ -1593,8 +1593,6 @@ namespace AcademicSentinel.Client.Views.IMC
                 rbTaking.Content = $"Taking ({takingCount})";
             if (FindName("RbFilterDone") is RadioButton rbDone)
                 rbDone.Content = $"Done ({doneCount})";
-            if (FindName("RbFilterAll") is RadioButton rbAll)
-                rbAll.Content = $"All ({totalCount})";
         }
 
         // Tracks the last known ParticipationStatus per student between

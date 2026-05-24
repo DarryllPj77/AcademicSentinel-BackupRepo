@@ -337,18 +337,9 @@
                                              GroupName="ParticipantFilter"
                                              FontSize="11"
                                              FontWeight="SemiBold"
-                                             Margin="0,0,6,0"
                                              Padding="10,4"
                                              Foreground="#616161"
                                              Checked="RbFilterDone_Checked"/>
-                                <RadioButton x:Name="RbFilterAll"
-                                             Content="All (0)"
-                                             GroupName="ParticipantFilter"
-                                             FontSize="11"
-                                             FontWeight="SemiBold"
-                                             Padding="10,4"
-                                             Foreground="#616161"
-                                             Checked="RbFilterAll_Checked"/>
                             </StackPanel>
                         </Border>
 
