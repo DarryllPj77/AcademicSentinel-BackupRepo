@@ -903,31 +903,23 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // semantically meaningful.
             _wasPreviouslyOutOfExamFocus = !isSacWindowActive && !isOnLms;
 
-            // ---- Violation: not SAC, not approved as LMS.
             if (!isSacWindowActive && !isOnLms)
             {
-                // Sanitize the foreground label so non-browser switches log
-                // only the clean app name (no document paths / chat channels
-                // / etc.) and browser tab switches still surface "[Tab] -
-                // [Browser]". For an in-browser tab switch (sameAnchoredHwnd
-                // + non-LMS keyword) the sanitized label already conveys the
-                // new tab; we phrase it as a tab switch.
-                string sanitizedForeground = GetSanitizedWindowLabel(foreground);
                 string description;
                 if (urlViolationReason != null)
                 {
-                    // Deep-path URL gate rejected — use the structured
-                    // reason from the validator, which is more specific than
-                    // any title-based phrasing.
-                    description = $"Browser navigated to a non-exam URL. {urlViolationReason} Now viewing '{sanitizedForeground}'.";
+                    // Deep-path URL gate rejected
+                    description = $"Browser navigated to a non-exam URL. {urlViolationReason}";
                 }
                 else if (sameAnchoredHwnd && titleHasNonLmsKeyword)
                 {
-                    description = $"Focus left the LMS tab in the same browser window. Now viewing '{sanitizedForeground}'.";
+                    description = "Focus left the LMS tab in the same browser window.";
                 }
                 else
                 {
-                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}). Switched to '{sanitizedForeground}'.";
+                    // Use the existing sanitizer to get the clean app name the student switched to
+                    string targetApp = GetSanitizedWindowLabel(foreground);
+                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}) to '{targetApp}'.";
                 }
 
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
@@ -1300,8 +1292,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             bool pastePressed = ctrlPressed && IsKeyDown(VK_V);
             if (pastePressed && !_pasteDown)
             {
+                // Cooldown set to 0 — report EVERY Ctrl+V press individually,
+                // regardless of how rapidly the student is pasting.  The
+                // !_pasteDown rising-edge guard above remains intact so a
+                // single physical key-down still emits exactly one event
+                // (without it, holding the key would flood the log at the
+                // OS key-repeat rate).
                 AddEvent(findings, DetectionConstants.EventClipboardPaste, 2,
-                    "Paste command (Ctrl+V) detected while monitoring is active.", 2);
+                    "Paste command (Ctrl+V) detected while monitoring is active.", 0);
             }
             _pasteDown = pastePressed;
         }

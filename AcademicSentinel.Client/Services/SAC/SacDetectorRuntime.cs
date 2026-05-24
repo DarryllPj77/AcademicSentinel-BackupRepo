@@ -151,7 +151,11 @@ namespace AcademicSentinel.Client.Services.SAC
                 return;
 
             var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
-            var description = $"{rawEvent.Description} | CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}";
+            // Run every description — even from out-of-band sources like the
+            // hardware-artifact watcher and the keyboard hook — through the
+            // sanitizer so no "Now viewing" payload or stale "| CumulativeScore="
+            // trailer can ever leave this class.
+            var description = SanitizeDescription(rawEvent.Description ?? string.Empty);
             var finding = new DetectorFinding(rawEvent.EventType, rawEvent.SeverityScore, description);
 
             // Dispatch onto the WPF UI thread before invoking the consumer
@@ -166,6 +170,47 @@ namespace AcademicSentinel.Client.Services.SAC
             // Reuse the preflight callback as a generic "out-of-band finding"
             // channel — the SAC window already routes that to ReportViolationAsync.
             InvokeOnDispatcherSafe(() => _options.OnPreFlightViolationDetected?.Invoke(finding));
+        }
+
+        /// <summary>
+        /// Defensive log-description scrubber.  Runs on EVERY description
+        /// that leaves this class (both the polled <see cref="EvaluateAndMapFindings"/>
+        /// path and the out-of-band <see cref="EmitSyntheticFinding"/> path),
+        /// so the server / DB never receives a private payload — even if a
+        /// future detector accidentally re-introduces a noisy format, or
+        /// an event from before this patch is replayed from a queue.
+        ///
+        /// Two rules, applied in order:
+        ///   1. "Now viewing" anywhere in the text → REPLACE the entire
+        ///      description with a generic, privacy-safe message.  This
+        ///      catches legacy WINDOW_SWITCH violations whose body
+        ///      included the destination tab/window title — those titles
+        ///      leak video / document / chat-channel names and must never
+        ///      reach the database.
+        ///   2. "| CumulativeScore=" anywhere → truncate at the pipe
+        ///      (TrimEnd to avoid trailing whitespace).  Catches any
+        ///      legacy event that still carries the old runtime trailer
+        ///      "<msg> | CumulativeScore=N; RiskLevel=L".
+        ///
+        /// Strict ordering: rule 1 fires first because a "Now viewing"
+        /// payload should be wholly replaced regardless of any trailing
+        /// score metadata.
+        /// </summary>
+        private static string SanitizeDescription(string description)
+        {
+            if (string.IsNullOrEmpty(description))
+                return description ?? string.Empty;
+
+            // Rule 1 — wipe descriptions that leak the destination URL/title.
+            if (description.IndexOf("Now viewing", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "Browser navigated to a non-exam URL.";
+
+            // Rule 2 — strip legacy cumulative-score trailer.
+            int pipeIdx = description.IndexOf("| CumulativeScore=", StringComparison.OrdinalIgnoreCase);
+            if (pipeIdx >= 0)
+                return description.Substring(0, pipeIdx).TrimEnd();
+
+            return description;
         }
 
         /// <summary>
@@ -357,9 +402,10 @@ namespace AcademicSentinel.Client.Services.SAC
 
                 var assessment = _decisionEngineService.EvaluateEvent(rawEvent);
                 var severityScore = rawEvent.SeverityScore;
-                var description = string.IsNullOrWhiteSpace(rawEvent.Description)
-                    ? $"CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}"
-                    : $"{rawEvent.Description} | CumulativeScore={assessment.CurrentScore}; RiskLevel={assessment.CurrentLevel}";
+                // Same sanitization gate as EmitSyntheticFinding so the
+                // polled-detector path and the hook path are guaranteed to
+                // emit identical privacy-scrubbed strings to the consumer.
+                var description = SanitizeDescription(rawEvent.Description ?? string.Empty);
 
                 mapped.Add(new DetectorFinding(rawEvent.EventType, severityScore, description));
             }
