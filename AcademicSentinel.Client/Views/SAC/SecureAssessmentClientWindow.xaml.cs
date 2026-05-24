@@ -75,8 +75,6 @@ namespace AcademicSentinel.Client.Views.SAC
         private int _pendingParticipantId;
         private bool _isDenied = false; // Bug fix: Bug1
         private readonly Queue<MonitoringEventDto> _pendingViolationQueue = new Queue<MonitoringEventDto>();
-        private readonly Dictionary<string, DateTime> _lastViolationSentByType = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-        private readonly object _violationDedupLock = new object();
         private readonly object _joinLiveExamLock = new object();
         private bool _hasJoinedLiveExam;
 
@@ -317,13 +315,6 @@ namespace AcademicSentinel.Client.Views.SAC
                              && _isMonitoringActive
                              && !_sessionEnded
                              && !_monitoringCountdownEndsAt.HasValue;
-
-            if (shouldRun && !_detectorsRunning)
-            {
-                // Clear stale per-type cooldown so the first batch of detector
-                // events after start/resume always reach the server.
-                _lastViolationSentByType.Clear();
-            }
 
             _detectorRuntime?.SetMonitoringEnabled(shouldRun);
 
@@ -595,17 +586,12 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 var now = DateTime.UtcNow;
 
-                // Atomic check-and-set so concurrent producers (PollDetectors tick +
-                // OnDeactivated flush) cannot both pass the cooldown window.
-                lock (_violationDedupLock)
-                {
-                    if (_lastViolationSentByType.TryGetValue(eventType, out var lastSentAt)
-                        && (now - lastSentAt).TotalSeconds < 2)
-                    {
-                        return;
-                    }
-                    _lastViolationSentByType[eventType] = now;
-                }
+                // 2-second per-event-type cooldown removed deliberately.
+                // The runtime + BehavioralMonitoringService.AddEvent already
+                // own dedup at the source; suppressing again here was
+                // dropping legitimate rapid pastes (Ctrl+V pressed multiple
+                // times within 2s).  Every event the detectors emit is now
+                // forwarded to the server immediately.
 
                 var payload = new MonitoringEventDto
                 {
@@ -1576,7 +1562,6 @@ namespace AcademicSentinel.Client.Views.SAC
             _detectorsRunning = false;
             _ = _detectorRuntime?.StopMonitoringAsync();
             _pendingViolationQueue.Clear();
-            _lastViolationSentByType.Clear();
 
             if (FindName("TxtCompactMonitoringStatus") is TextBlock compactStatus)
             {

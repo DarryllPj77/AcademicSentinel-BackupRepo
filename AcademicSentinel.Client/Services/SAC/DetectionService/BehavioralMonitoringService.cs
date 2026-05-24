@@ -917,7 +917,9 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 }
                 else
                 {
-                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}).";
+                    // Use the existing sanitizer to get the clean app name the student switched to
+                    string targetApp = GetSanitizedWindowLabel(foreground);
+                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}) to '{targetApp}'.";
                 }
 
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
@@ -1290,8 +1292,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             bool pastePressed = ctrlPressed && IsKeyDown(VK_V);
             if (pastePressed && !_pasteDown)
             {
+                // Cooldown set to 0 — report EVERY Ctrl+V press individually,
+                // regardless of how rapidly the student is pasting.  The
+                // !_pasteDown rising-edge guard above remains intact so a
+                // single physical key-down still emits exactly one event
+                // (without it, holding the key would flood the log at the
+                // OS key-repeat rate).
                 AddEvent(findings, DetectionConstants.EventClipboardPaste, 2,
-                    "Paste command (Ctrl+V) detected while monitoring is active.", 2);
+                    "Paste command (Ctrl+V) detected while monitoring is active.", 0);
             }
             _pasteDown = pastePressed;
         }
