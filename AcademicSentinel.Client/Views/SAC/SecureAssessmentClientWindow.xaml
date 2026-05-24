@@ -74,6 +74,28 @@
                 </Grid>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <!-- Minimize-to-compact button. Visible in full mode
+                         (default), Collapsed in compact mode — opposite
+                         of BtnHeaderExpand. SwitchToCompactMode hides
+                         it and shows BtnHeaderExpand; BtnExpandCompact_Click
+                         does the inverse. Click routes to BtnMinimize_Click
+                         which calls SwitchToCompactMode() directly — the
+                         existing OnStateChanged minimize-trap would have
+                         the same end result but a more visible flicker. -->
+                    <Button x:Name="BtnMinimize"
+                            Width="36" Height="32"
+                            Padding="0"
+                            Margin="0,0,8,0"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            ToolTip="Minimize to compact softlock"
+                            Click="BtnMinimize_Click">
+                        <materialDesign:PackIcon Kind="WindowMinimize"
+                                                 Width="18" Height="18"
+                                                 Foreground="#616161"/>
+                    </Button>
+
                     <Button x:Name="BtnHeaderExpand" Visibility="Collapsed" Margin="0,0,10,0"
                             Padding="10,6" FontSize="13" Cursor="Hand"
                             Content="□" Click="BtnExpandCompact_Click"/>
@@ -159,8 +181,13 @@
                                    FontSize="18" FontWeight="Bold" Foreground="#1B5E20"/>
                     </StackPanel>
 
-                    <!-- Student Information -->
-                    <StackPanel Grid.Row="2" Margin="0,0,0,24"/>
+                    <!-- Row 2 intentionally left empty. The former
+                         "Student Information" placeholder was deleted
+                         (it had no content but its 24 px bottom margin
+                         created a visible empty band between Course
+                         Room and Detection Reports). The Auto row
+                         collapses to 0 height with no child, so we
+                         don't have to renumber the rows below. -->
 
                     <!-- Detection Reports -->
                     <TextBlock Grid.Row="3" Text="Detection Reports :" FontSize="14" FontWeight="SemiBold"
@@ -192,13 +219,20 @@
                 </Grid>
             </Border>
 
+            <!-- Compact-mode status band. Decorations (border / corner
+                 radius) intentionally stripped so the panel reads as a
+                 continuous frosted-glass extension of the header strip
+                 above and the countdown bar below — not as a separate
+                 floating card. The background is left at #B3FFFFFF so
+                 it matches both neighbours; with the outer Margin
+                 zeroed in SwitchToCompactMode there is no longer a
+                 transparent gap between them. -->
             <Border x:Name="CompactPanel"
                     Visibility="Collapsed"
                     Background="#B3FFFFFF"
-                    BorderBrush="#E0E0E0"
-                    BorderThickness="1"
-                    CornerRadius="10"
-                    Padding="8,6"
+                    BorderThickness="0"
+                    CornerRadius="0"
+                    Padding="20,8"
                     HorizontalAlignment="Stretch"
                     VerticalAlignment="Stretch">
                 <StackPanel VerticalAlignment="Center">

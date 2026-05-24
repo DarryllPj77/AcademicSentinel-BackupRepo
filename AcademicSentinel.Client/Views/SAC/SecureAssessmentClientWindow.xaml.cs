@@ -2073,6 +2073,12 @@ namespace AcademicSentinel.Client.Views.SAC
             if (FindName("CompactPanel") is FrameworkElement compactPanel)
                 compactPanel.Visibility = Visibility.Collapsed;
 
+            // Header button-pair swap: in full mode we show Minimize
+            // (collapse back to softlock overlay) and hide Expand
+            // (which only makes sense from the compact overlay).
+            if (FindName("BtnMinimize") is FrameworkElement btnMinimize)
+                btnMinimize.Visibility = Visibility.Visible;
+
             // Flip the tracked-compact flag BEFORE the state machine runs so
             // UpdateUIForPhase observes the new layout, not the prior one.
             _isInCompactMode = false;
@@ -2081,6 +2087,15 @@ namespace AcademicSentinel.Client.Views.SAC
             UpdateUIForPhase();
 
             Activate();
+        }
+
+        // Minimize button (header top-right, visible only in full mode).
+        // Routes to SwitchToCompactMode rather than setting WindowState
+        // to Minimized so the transition is instant and avoids the
+        // double-flip the OnStateChanged minimize-trap would produce.
+        private void BtnMinimize_Click(object sender, RoutedEventArgs e)
+        {
+            SwitchToCompactMode();
         }
 
         protected override void OnStateChanged(EventArgs e)
@@ -2133,11 +2148,25 @@ namespace AcademicSentinel.Client.Views.SAC
             if (FindName("BtnHeaderExpand") is Button headerExpand)
                 headerExpand.Visibility = Visibility.Visible;
 
+            // Inverse pair: minimize-to-compact only makes sense
+            // when we're in full mode. Hide it whenever we collapse
+            // back to the softlock overlay.
+            if (FindName("BtnMinimize") is FrameworkElement btnMinimize)
+                btnMinimize.Visibility = Visibility.Collapsed;
+
             // R3 fix: do NOT touch BtnDone.Visibility here. The state machine
             // is the single source of truth. The expand button is purely a
             // resize affordance and can stay visible in either layout.
+            //
+            // Margin zeroed in compact mode so the three frosted strips
+            // (header, status band, bottom countdown) sit flush — the
+            // previous 8 px on top and bottom rendered as a visible
+            // transparent gap between the panels. The status band's
+            // border + corner radius were also stripped in XAML for
+            // the same reason; together those two edits eliminate the
+            // visual "stacked cards" effect without changing content.
             if (FindName("SessionContentGrid") is FrameworkElement contentGrid)
-                contentGrid.Margin = new Thickness(8, 8, 8, 8);
+                contentGrid.Margin = new Thickness(0);
 
             Left = SystemParameters.WorkArea.Right - Width - 16;
             Top = SystemParameters.WorkArea.Bottom - Height - 16;
