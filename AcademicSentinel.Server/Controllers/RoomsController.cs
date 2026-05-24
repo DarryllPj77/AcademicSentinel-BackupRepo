@@ -868,6 +868,7 @@ public class RoomsController : ControllerBase
             existingSettings.EnableVirtualizationCheck = setupRequest.EnableVirtualizationCheck;
             existingSettings.StrictMode = setupRequest.StrictMode;
             existingSettings.LmsExamUrl = setupRequest.LmsExamUrl.Trim();
+            existingSettings.AllowedAppsCsv = NormaliseAllowedAppsCsv(setupRequest.AllowedAppsCsv);
         }
         else
         {
@@ -882,6 +883,7 @@ public class RoomsController : ControllerBase
                 EnableVirtualizationCheck = setupRequest.EnableVirtualizationCheck,
                 StrictMode = setupRequest.StrictMode,
                 LmsExamUrl = setupRequest.LmsExamUrl.Trim(),
+                AllowedAppsCsv = NormaliseAllowedAppsCsv(setupRequest.AllowedAppsCsv),
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -901,6 +903,37 @@ public class RoomsController : ControllerBase
     ///   - scheme is "https"
     ///   - host contains a "." (rejects bare strings like "canvas" / "localhost")
     /// </summary>
+    // Canonicalises the AllowedAppsCsv input from the IMC instructor:
+    // trim each token, drop empties, lowercase, strip ".exe", dedupe,
+    // cap at a sensible length so a runaway input can't bloat the row.
+    // Tokens are preserved verbatim if they contain a "." (domain
+    // tokens like meet.google.com need to stay as-typed for the SAC
+    // to match them against browser titles). Returns null when the
+    // input is null/empty/whitespace-only.
+    private static string? NormaliseAllowedAppsCsv(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tokens = raw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t =>
+            {
+                // Strip trailing .exe for process tokens; domain tokens
+                // (containing a ".") are kept exactly as typed except
+                // for the trim+lowercase pass.
+                var lower = t.ToLowerInvariant();
+                if (!lower.Contains('.') && lower.EndsWith(".exe", StringComparison.Ordinal))
+                    lower = lower[..^4];
+                return lower;
+            })
+            .Where(t => t.Length > 0 && t.Length <= 80 && seen.Add(t))
+            .Take(40);
+
+        var csv = string.Join(",", tokens);
+        return csv.Length == 0 ? null : csv;
+    }
+
     private static string? ValidateLmsExamUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url))

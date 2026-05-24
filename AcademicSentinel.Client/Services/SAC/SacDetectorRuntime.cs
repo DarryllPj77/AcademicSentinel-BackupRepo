@@ -62,6 +62,27 @@ namespace AcademicSentinel.Client.Services.SAC
                 ? Math.Max(5, rawIdle / 2)
                 : rawIdle;
 
+            // Split AllowedAppsCsv into process-name tokens vs domain
+            // tokens. Tokens containing a "." go into the domain set
+            // (matched against browser window titles); the rest go
+            // into the process-name set.
+            var allowedProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var allowedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(_options.AllowedAppsCsv))
+            {
+                foreach (var raw in _options.AllowedAppsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    var token = raw.ToLowerInvariant();
+                    if (token.EndsWith(".exe", StringComparison.Ordinal))
+                        token = token[..^4];
+                    if (token.Length == 0) continue;
+                    if (token.Contains('.'))
+                        allowedDomains.Add(token);
+                    else
+                        allowedProcs.Add(token);
+                }
+            }
+
             var settings = new DetectionSettings
             {
                 EnableFocusDetection = _options.EnableFocusDetection,
@@ -74,7 +95,9 @@ namespace AcademicSentinel.Client.Services.SAC
                 // REQUIRED — LMS-anchored focus detection. Pass through so
                 // BehavioralMonitoringService can extract the domain on
                 // StartMonitoring and anchor a browser window to it.
-                LmsExamUrl = _options.LmsExamUrl
+                LmsExamUrl = _options.LmsExamUrl,
+                AllowedAppProcessNames = allowedProcs,
+                AllowedAppTitleKeywords = allowedDomains
             };
 
             _behavioralMonitoringService = new BehavioralMonitoringService(settings, _options.BlacklistedProcessNames);
@@ -426,6 +449,12 @@ namespace AcademicSentinel.Client.Services.SAC
         // REQUIRED — LMS exam URL for anchored focus detection (per-room).
         public string LmsExamUrl { get; set; } = string.Empty;
         public HashSet<string> BlacklistedProcessNames { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // OPTIONAL — raw "Allowed Apps During Exam" CSV from the
+        // instructor's session-setup. Split by SacDetectorRuntime into
+        // process-name tokens and browser-title domain tokens before
+        // being handed to BehavioralMonitoringService. Empty / null
+        // means the feature is disabled and behaviour is unchanged.
+        public string AllowedAppsCsv { get; set; } = string.Empty;
         public Func<bool, bool, Task> OnHardwareStateDetected { get; set; }
         public Action<DetectorFinding> OnPreFlightViolationDetected { get; set; }
     }

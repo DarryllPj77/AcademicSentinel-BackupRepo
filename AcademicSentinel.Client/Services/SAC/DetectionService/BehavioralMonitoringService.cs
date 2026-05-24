@@ -905,6 +905,22 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
             if (!isSacWindowActive && !isOnLms)
             {
+                // ALLOWED-APPS GATE — instructor-configured per-session
+                // allowlist (RoomDetectionSettings.AllowedAppsCsv).
+                // If the foreground is one of those apps, swallow the
+                // WINDOW_SWITCH silently. Do NOT update
+                // _wasPreviouslyOutOfExamFocus below because the
+                // student is still considered "inside the allowed exam
+                // context" — when they return to the LMS we don't
+                // want a spurious CANVAS_RETURNED log either.
+                if (IsAllowedExceptionApp(foreground, currentTitle))
+                {
+                    _lastForegroundWindow = foreground;
+                    _lastWindowName = currentTitle;
+                    _lastForegroundWasSac = false;
+                    return;
+                }
+
                 string description;
                 if (urlViolationReason != null)
                 {
@@ -1167,6 +1183,17 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     || _blacklistedProcessNames.Contains(nameNoExt);
 
                 if (!isBlacklisted) return;
+
+                // Allowlist supersedes blacklist. If the instructor has
+                // explicitly permitted this app for the session, never
+                // fire a PROCESS_DETECTED for it — even if it appears
+                // in the global blacklist (e.g., a meeting app the
+                // instructor wants used for Q&A).
+                if (_settings.AllowedAppProcessNames is { Count: > 0 }
+                    && _settings.AllowedAppProcessNames.Contains(nameNoExt))
+                {
+                    return;
+                }
 
                 EmitFromBackgroundThread(
                     DetectionConstants.EventProcessDetected,
@@ -1494,6 +1521,72 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         /// Returns a sanitized, privacy-safe label for the given window
         /// suitable for logging in a violation description.
         /// </summary>
+        /// <summary>
+        /// Per-session instructor allowlist (Allowed Apps During Exam).
+        /// Returns true when the foreground window belongs to an app
+        /// the teacher has explicitly permitted, so the focus / process
+        /// detectors should suppress their violation for this window.
+        ///
+        /// Two evaluation modes (combined):
+        ///   • Process-name tokens (no ".") match
+        ///     Process.ProcessName of the foreground window — catches
+        ///     standalone desktop apps like Microsoft Teams, Zoom,
+        ///     Calculator, Notepad, Acrobat Reader.
+        ///   • Domain tokens (containing ".") match a case-insensitive
+        ///     substring of the foreground BROWSER window's title —
+        ///     catches browser-based meeting tools like
+        ///     "meet.google.com" without whitelisting the entire
+        ///     browser process. Non-browser foregrounds never go
+        ///     through the domain check.
+        ///
+        /// Empty allowlist → always returns false (feature off).
+        /// </summary>
+        private bool IsAllowedExceptionApp(IntPtr hWnd, string currentTitle)
+        {
+            if (hWnd == IntPtr.Zero) return false;
+
+            bool hasProcRules  = _settings.AllowedAppProcessNames  is { Count: > 0 };
+            bool hasTitleRules = _settings.AllowedAppTitleKeywords is { Count: > 0 };
+            if (!hasProcRules && !hasTitleRules) return false;
+
+            string processName;
+            try
+            {
+                GetWindowThreadProcessId(hWnd, out uint pid);
+                if (pid == 0) return false;
+                using var process = Process.GetProcessById((int)pid);
+                processName = process?.ProcessName ?? string.Empty;
+            }
+            catch
+            {
+                // Process might have exited or be cross-bitness; if we
+                // can't even identify it we can't honour the allowlist
+                // — fall through to the strict path.
+                return false;
+            }
+
+            if (hasProcRules
+                && !string.IsNullOrEmpty(processName)
+                && _settings.AllowedAppProcessNames.Contains(processName))
+            {
+                return true;
+            }
+
+            if (hasTitleRules
+                && !string.IsNullOrEmpty(processName)
+                && _browserProcessNames.Contains(processName)
+                && !string.IsNullOrEmpty(currentTitle))
+            {
+                foreach (var keyword in _settings.AllowedAppTitleKeywords)
+                {
+                    if (currentTitle.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0)
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
         private static string GetSanitizedWindowLabel(IntPtr hWnd)
         {
             if (hWnd == IntPtr.Zero) return "Unknown application";

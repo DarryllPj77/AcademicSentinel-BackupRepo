@@ -261,6 +261,7 @@ namespace AcademicSentinel.Client.Views.SAC
                 // REQUIRED — pass the LMS exam URL through so BehavioralMonitoringService
                 // can anchor focus detection to the matching browser window.
                 LmsExamUrl = _roomDetectionSettings.LmsExamUrl ?? string.Empty,
+                AllowedAppsCsv = _roomDetectionSettings.AllowedAppsCsv ?? string.Empty,
                 BlacklistedProcessNames = new HashSet<string>(ProcessBlacklist, StringComparer.OrdinalIgnoreCase),
                 OnHardwareStateDetected = async (isVm, isRemote) =>
                 {
@@ -2230,6 +2231,11 @@ namespace AcademicSentinel.Client.Views.SAC
             public bool EnableVirtualizationCheck { get; set; }
             public bool StrictMode { get; set; }
             public string LmsExamUrl { get; set; } = string.Empty;
+            // OPTIONAL per-session allowlist (Allowed Apps During Exam).
+            // Forwarded verbatim to SacDetectorRuntime, which splits it
+            // into process-name and title-keyword sets used by
+            // BehavioralMonitoringService.IsAllowedExceptionApp.
+            public string? AllowedAppsCsv { get; set; }
         }
 
         private class MonitoringEventDto

@@ -278,6 +278,99 @@
                             <CheckBox x:Name="ChkProcess" Style="{StaticResource RuleCheck}" IsChecked="True"
                                       Content="Detect unauthorized apps (Discord, OBS, etc.)"/>
 
+                            <!-- ============================================================
+                                 ALLOWED APPS DURING EXAM
+                                 Per-session allowlist. When a foreground change matches one
+                                 of these tokens the SAC suppresses WINDOW_SWITCH /
+                                 PROCESS_DETECTED for it. Presets toggle their canonical
+                                 tokens in/out of the custom-tokens textbox; instructors
+                                 can also type freeform process names or domain keywords
+                                 (e.g. "meet.google.com") separated by commas.
+                                 ============================================================ -->
+                            <Border Background="#F1F8E9" CornerRadius="6"
+                                    Padding="12" Margin="0,12,0,0"
+                                    BorderBrush="#C5E1A5" BorderThickness="1">
+                                <StackPanel>
+                                    <CheckBox x:Name="ChkAllowedApps"
+                                              Style="{StaticResource RuleCheck}"
+                                              Margin="0,0,0,8"
+                                              IsChecked="False"
+                                              Foreground="#1B5E20"
+                                              FontWeight="SemiBold"
+                                              Content="Allowed Apps During Exam"
+                                              Checked="ChkAllowedApps_CheckedChanged"
+                                              Unchecked="ChkAllowedApps_CheckedChanged"/>
+
+                                    <TextBlock TextWrapping="Wrap"
+                                               FontSize="11"
+                                               Foreground="#33691E"
+                                               Margin="24,0,0,8"
+                                               Text="Selected apps may be alt-tabbed to without triggering focus or unauthorized-app violations. LMS anchoring still applies."/>
+
+                                    <StackPanel x:Name="AllowedAppsBody" Margin="24,0,0,0" IsEnabled="False" Opacity="0.55">
+                                        <TextBlock Text="Quick presets:"
+                                                   FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="#1B5E20" Margin="0,0,0,4"/>
+
+                                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <CheckBox x:Name="ChkAllowTeams"
+                                                      Content="Microsoft Teams"
+                                                      FontSize="11" Margin="0,0,12,4"
+                                                      Tag="teams,ms-teams,teams.microsoft.com"
+                                                      Checked="AllowedAppPreset_CheckedChanged"
+                                                      Unchecked="AllowedAppPreset_CheckedChanged"/>
+                                            <CheckBox x:Name="ChkAllowZoom"
+                                                      Content="Zoom"
+                                                      FontSize="11" Margin="0,0,12,4"
+                                                      Tag="zoom,cpthost,zoom.us"
+                                                      Checked="AllowedAppPreset_CheckedChanged"
+                                                      Unchecked="AllowedAppPreset_CheckedChanged"/>
+                                            <CheckBox x:Name="ChkAllowMeet"
+                                                      Content="Google Meet"
+                                                      FontSize="11" Margin="0,0,12,4"
+                                                      Tag="meet.google.com"
+                                                      Checked="AllowedAppPreset_CheckedChanged"
+                                                      Unchecked="AllowedAppPreset_CheckedChanged"/>
+                                            <CheckBox x:Name="ChkAllowCalc"
+                                                      Content="Calculator"
+                                                      FontSize="11" Margin="0,0,12,4"
+                                                      Tag="calc,calculatorapp"
+                                                      Checked="AllowedAppPreset_CheckedChanged"
+                                                      Unchecked="AllowedAppPreset_CheckedChanged"/>
+                                            <CheckBox x:Name="ChkAllowPdf"
+                                                      Content="PDF Viewer"
+                                                      FontSize="11" Margin="0,0,12,4"
+                                                      Tag="acrord32,acrobat,sumatrapdf,foxitreader"
+                                                      Checked="AllowedAppPreset_CheckedChanged"
+                                                      Unchecked="AllowedAppPreset_CheckedChanged"/>
+                                            <CheckBox x:Name="ChkAllowNotepad"
+                                                      Content="Notepad"
+                                                      FontSize="11" Margin="0,0,12,4"
+                                                      Tag="notepad,notepad++"
+                                                      Checked="AllowedAppPreset_CheckedChanged"
+                                                      Unchecked="AllowedAppPreset_CheckedChanged"/>
+                                        </WrapPanel>
+
+                                        <TextBlock Text="Custom (comma-separated process names or domains):"
+                                                   FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="#1B5E20" Margin="0,0,0,4"/>
+                                        <Border BorderBrush="#C5E1A5" BorderThickness="1"
+                                                CornerRadius="4" Background="White">
+                                            <TextBox x:Name="TxtAllowedAppsCustom"
+                                                     Padding="8,6"
+                                                     FontSize="12"
+                                                     BorderThickness="0"
+                                                     Background="Transparent"
+                                                     AcceptsReturn="False"/>
+                                        </Border>
+                                        <TextBlock TextWrapping="Wrap"
+                                                   FontSize="10" Foreground="#558B2F"
+                                                   Margin="0,4,0,0"
+                                                   Text="Examples: notepad, calc, teams, meet.google.com"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
                             <CheckBox x:Name="ChkIdle" Style="{StaticResource RuleCheck}" IsChecked="True"
                                       Content="Detect student inactivity (Idle Mode)"
                                       Checked="ChkIdle_CheckedChanged" Unchecked="ChkIdle_CheckedChanged"/>

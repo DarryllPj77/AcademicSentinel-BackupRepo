@@ -21,6 +21,11 @@ public class RoomSetupDto
     // REQUIRED — LMS exam URL anchored focus detection (see RoomDetectionSettings).
     // Server-side validation on save: must be a valid HTTPS absolute URL.
     public string LmsExamUrl { get; set; } = string.Empty;
+
+    // OPTIONAL — comma-separated allowed-apps list (see
+    // RoomDetectionSettings.AllowedAppsCsv for the supported token
+    // formats and runtime semantics).
+    public string? AllowedAppsCsv { get; set; }
 }
 
 public class StartSessionDto

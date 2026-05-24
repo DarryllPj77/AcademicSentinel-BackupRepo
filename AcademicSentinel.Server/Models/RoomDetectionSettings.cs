@@ -26,5 +26,27 @@ public class RoomDetectionSettings
     [MaxLength(500)]
     public string LmsExamUrl { get; set; } = string.Empty;
 
+    // OPTIONAL — comma-separated allowlist of apps the student may
+    // alt-tab to during the exam without producing WINDOW_SWITCH /
+    // PROCESS_DETECTED violations.
+    //
+    // Token formats supported (mixed freely in one CSV):
+    //   • Process tokens   — "teams", "zoom", "notepad", "calc",
+    //                        "acrord32", etc. No ".exe" suffix.
+    //                        Matched against Process.ProcessName of
+    //                        the foreground window, case-insensitive.
+    //   • Domain tokens    — anything containing a "." like
+    //                        "meet.google.com", "teams.microsoft.com".
+    //                        Matched as a case-insensitive substring
+    //                        of the foreground BROWSER window's title,
+    //                        so a Google Meet tab passes without
+    //                        whitelisting the entire browser.
+    //
+    // Empty / null disables the feature entirely. Tokens are
+    // canonicalised (trim, lowercase, strip ".exe") at parse time on
+    // the SAC side; the DB stores whatever the instructor typed.
+    [MaxLength(2000)]
+    public string? AllowedAppsCsv { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
