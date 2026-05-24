@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         xmlns:dialogs="clr-namespace:AcademicSentinel.Client.Views.IMC.Dialogs"
+        xmlns:imcConverters="clr-namespace:AcademicSentinel.Client.Views.IMC.Converters"
         Title="Student Activity Logs"
         Height="640" Width="900"
         WindowStartupLocation="CenterOwner"
@@ -17,6 +18,11 @@
              writes DateTime.UtcNow so the grid was rendering 8h behind
              Philippines local time before this converter was wired in. -->
         <dialogs:UtcToLocalTimeConverter x:Key="UtcToLocal"/>
+
+        <!-- Presentation-layer shortener: collapses long URLs to their
+             host and Windows titles to their app name inside the
+             Description column.  DB still stores the full strings. -->
+        <imcConverters:LogDescriptionTrimmerConverter x:Key="LogTrim"/>
     </Window.Resources>
 
     <Grid Margin="24">
@@ -127,7 +133,12 @@
                                         SortMemberPath="EventType" Width="160"/>
                     <DataGridTextColumn Header="Severity" Binding="{Binding SeverityScore}"
                                         SortMemberPath="SeverityScore" Width="80"/>
-                    <DataGridTextColumn Header="Description" Binding="{Binding Description}"
+                    <!-- Description rendered through LogTrim so noisy URLs
+                         / window titles are shortened for display only.
+                         SortMemberPath stays on the raw Description so
+                         the user can still sort against the full value. -->
+                    <DataGridTextColumn Header="Description"
+                                        Binding="{Binding Description, Converter={StaticResource LogTrim}}"
                                         SortMemberPath="Description" Width="*"/>
                 </DataGrid.Columns>
             </DataGrid>
