@@ -114,7 +114,7 @@
         </Style>
     </Window.Resources>
 
-    <Grid>
+    <Grid Margin="0,0,0,-16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="72"/>
@@ -220,7 +220,7 @@
                  2 = Main Global Log Feed (* — fills remaining space).
                  3 = Right Student-Details panel (Auto). -->
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280" MinWidth="250"/>
+                <ColumnDefinition Width="360" MinWidth="290"/>
                 <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="*" MinWidth="320"/>
                 <ColumnDefinition Width="Auto"/>
@@ -228,45 +228,51 @@
 
             <StackPanel Grid.Column="0">
 
-                <Border Background="White" CornerRadius="12" Padding="16" Margin="0,0,0,12" Height="148">
+                <Border Background="White" CornerRadius="12" Padding="16,20" Margin="0,0,0,12" MinHeight="148">
                     <Border.Effect>
                         <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                     </Border.Effect>
-                    <StackPanel>
-                        <Grid Margin="0,0,0,12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="1" x:Name="TxtMonitoringState" Text="Monitoring: Inactive" 
-                                       FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource FEUSubTextBrush}" 
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Grid>
 
-                        <StackPanel Margin="0,0,0,10">
+                    <StackPanel VerticalAlignment="Center">
+
+                        <TextBlock x:Name="TxtMonitoringState"
+                                   Text="NOT ACTIVE"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="#424242"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,0,0,16"/>
+
+                        <Border BorderBrush="#CFD8DC" BorderThickness="1.5" CornerRadius="16" Padding="16,6" HorizontalAlignment="Center" Margin="0,0,0,20">
                             <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-
-                                <Border Grid.Column="0" Background="#FFF3E0" CornerRadius="6" Padding="8,6" BorderBrush="#FFCC80" BorderThickness="1" Margin="0,0,6,0">
-                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                        <TextBlock Text="Time Remaining:" FontSize="10" Foreground="#E65100" HorizontalAlignment="Center"/>
-                                        <TextBlock x:Name="CountdownDisabledIndicator" Text="Timer Disabled" FontSize="10" Foreground="Gray" Visibility="Collapsed" HorizontalAlignment="Center"/>
-                                        <TextBlock x:Name="TxtCountdownDisplay" Text="--:--" FontSize="16" FontWeight="Bold" Foreground="#E65100" HorizontalAlignment="Center"/>
-                                    </StackPanel>
-                                </Border>
-
-                            </Grid>
-
-                            <Button Style="{StaticResource GhostBtn}" Click="BtnViewParticipants_Click" Margin="0,15,0,0" HorizontalAlignment="Stretch">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                    <materialDesign:PackIcon Kind="AccountMultipleOutline" Width="14" Height="14" Margin="0,0,4,0"/>
-                                    <TextBlock Text="Participants"/>
+                                <StackPanel x:Name="DisabledTimerPanel" Orientation="Horizontal" Visibility="Visible" HorizontalAlignment="Center">
+                                    <TextBlock x:Name="CountdownDisabledIndicator"
+                                               Text="No Active Countdown"
+                                               FontSize="12"
+                                               FontWeight="Medium"
+                                               Foreground="#78909C"
+                                               VerticalAlignment="Center"/>
                                 </StackPanel>
-                            </Button>
-                        </StackPanel>
+
+                                <StackPanel x:Name="ActiveTimerPanel" Orientation="Horizontal" Visibility="Collapsed" HorizontalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="TimerOutline" Width="14" Height="14" Foreground="#E65100" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="TxtCountdownDisplay"
+                                               Text="00:07"
+                                               FontSize="13"
+                                               FontWeight="Bold"
+                                               Foreground="#E65100"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Button Style="{StaticResource GhostBtn}" Click="BtnViewParticipants_Click" HorizontalAlignment="Stretch" Padding="0,10">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="AccountMultipleOutline" Width="16" Height="16" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="View Participants List" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
                     </StackPanel>
                 </Border>
 
@@ -292,19 +298,27 @@
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                    <materialDesign:PackIcon Kind="AccountMultiple" Width="16" Height="16"
+
+                                <Grid Grid.Column="0" Margin="0,0,6,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <materialDesign:PackIcon Grid.Column="0" Kind="AccountMultiple" Width="16" Height="16"
                                                              Foreground="White" Margin="0,0,6,0"
                                                              VerticalAlignment="Center"/>
-                                    <TextBlock Text="Participants" FontSize="13" FontWeight="SemiBold"
-                                               Foreground="White" VerticalAlignment="Center"/>
-                                </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="Participants" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="White" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </Grid>
+
                                 <Border Grid.Column="1" Background="{StaticResource FEUGoldBrush}"
-                                        CornerRadius="10" Padding="8,2">
+                                        CornerRadius="10" Padding="8,2" VerticalAlignment="Center">
                                     <TextBlock x:Name="TxtParticipantCount" Text="0/0"
                                                FontSize="11" FontWeight="Bold"
                                                Foreground="{StaticResource FEUGreenBrush}"/>
                                 </Border>
+
                                 <TextBlock Grid.Column="2" x:Name="TxtMissingCount" Text="Missing: 0"
                                            Margin="10,0,0,0"
                                            FontSize="11" FontWeight="SemiBold"
@@ -750,19 +764,6 @@
             </Border>
         </Grid>
 
-        <Border Grid.Row="3" Background="Transparent" Padding="24,0">
-            <Grid VerticalAlignment="Center">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="© 2026 FEU Institute of Technology - Instructor Console" FontSize="11" Foreground="#9E9E9E"/>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <TextBlock Text="Support" FontSize="11" Foreground="#9E9E9E" Margin="0,0,16,0" Cursor="Hand"/>
-                    <TextBlock Text="Documentation" FontSize="11" Foreground="#9E9E9E" Margin="0,0,16,0" Cursor="Hand"/>
-                    <TextBlock Text="Privacy Policy" FontSize="11" Foreground="#9E9E9E" Cursor="Hand"/>
-                </StackPanel>
-            </Grid>
-        </Border>
+        
     </Grid>
 </Window>

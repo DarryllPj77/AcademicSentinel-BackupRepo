@@ -178,8 +178,9 @@ namespace AcademicSentinel.Client.Views.IMC
             _startDelaySeconds = Math.Max(0, startDelaySeconds);
 
             TxtRoomHeader.Text = $"Live Session Monitoring - {roomTitle}";
-            if (FindName("TxtMonitoringState") is TextBlock monitoringState)
-                monitoringState.Text = "Monitoring: Inactive";
+            // Initial pill state — NOT ACTIVE header + DisabledTimerPanel
+            // ("No Active Countdown") visible, ActiveTimerPanel collapsed.
+            SetMonitoringPanelState(isActive: false);
 
             if (SessionManager.CurrentUser != null)
             {
@@ -415,8 +416,9 @@ namespace AcademicSentinel.Client.Views.IMC
                     // legitimately paused before disconnecting.
                     SetMonitoringControlButtonState(MonitoringControlState.Active);
 
-                    if (FindName("TxtMonitoringState") is TextBlock label)
-                        label.Text = "Monitoring: Active (Rejoined)";
+                    // Rejoined an already-active session — countdown phase
+                    // (if any) is long over, so disabled timer panel.
+                    SetMonitoringPanelState(isActive: true);
                 }
             }
             catch
@@ -507,12 +509,15 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             var isTimerDisabled = _monitoringDurationSeconds <= 0;
 
-            if (FindName("CountdownDisabledIndicator") is TextBlock countdownDisabledIndicator)
-                countdownDisabledIndicator.Visibility = isTimerDisabled ? Visibility.Visible : Visibility.Collapsed;
-
-            if (FindName("TxtCountdownDisplay") is TextBlock countdownDisplay)
-                countdownDisplay.Visibility = isTimerDisabled ? Visibility.Collapsed : Visibility.Visible;
-
+            // Note: CountdownDisabledIndicator / TxtCountdownDisplay visibility
+            // is no longer toggled here — those two are children of the new
+            // DisabledTimerPanel / ActiveTimerPanel pill, and their visibility
+            // is owned by SetMonitoringPanelState.  Toggling them directly
+            // here would fight the helper and re-introduce the
+            // "Countdown 7s / Timer Disabled" contradiction.
+            //
+            // Only TxtMonitoringTimerDisplay (the separate auto-stop timer
+            // display elsewhere on the window) is initialised here.
             if (FindName("TxtMonitoringTimerDisplay") is TextBlock timerDisplay)
                 timerDisplay.Text = isTimerDisabled ? "N/A" : "--:--:--";
         }
@@ -606,8 +611,6 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (EnsureSessionNotEnded()) return;
 
-            var monitoringState = FindName("TxtMonitoringState") as TextBlock;
-
             if (_monitoringControlState == MonitoringControlState.Active)
             {
                 await PauseMonitoringAsync();
@@ -640,7 +643,8 @@ namespace AcademicSentinel.Client.Views.IMC
 
                     var result = await response.Content.ReadFromJsonAsync<StartSessionResponse>();
                     _currentSessionId = result?.SessionId ?? 0;
-                    if (monitoringState != null) monitoringState.Text = $"Monitoring: Ready (Session #{_currentSessionId})";
+                    // Session created but monitoring not yet running — still NOT ACTIVE.
+                    SetMonitoringPanelState(isActive: false);
                 }
 
                 await InitializeSignalR();
@@ -650,7 +654,6 @@ namespace AcademicSentinel.Client.Views.IMC
                     await _hubConnection.InvokeAsync("BeginMonitoringCountdown", _roomId, _startDelaySeconds, _monitoringDurationSeconds > 0 ? _monitoringDurationSeconds : 0);
                     _monitoringEffectiveStartTime = DateTime.Now.AddSeconds(_startDelaySeconds);
                     _countdownSecondsRemaining = _startDelaySeconds;
-                    if (monitoringState != null) monitoringState.Text = $"Monitoring: Starting in {_startDelaySeconds}s";
                     LogActivity("SYSTEM", "COUNTDOWN", $"Monitoring starts in {_startDelaySeconds} seconds.", "#FF9800");
                 }
                 else
@@ -660,10 +663,18 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
 
                 _isMonitoringStarted = true;
-                if (monitoringState != null)
-                    monitoringState.Text = _startDelaySeconds > 0
-                        ? $"Monitoring: Countdown (Session #{_currentSessionId})"
-                        : $"Monitoring: Active (Session #{_currentSessionId})";
+                // Pill goes ACTIVE immediately.  If a start-delay countdown is
+                // in progress, show it in the ActiveTimerPanel; otherwise the
+                // disabled panel reads "No Active Countdown".
+                if (_startDelaySeconds > 0)
+                {
+                    var countdownLabel = TimeSpan.FromSeconds(_startDelaySeconds).ToString(@"mm\:ss");
+                    SetMonitoringPanelState(isActive: true, countdownText: countdownLabel);
+                }
+                else
+                {
+                    SetMonitoringPanelState(isActive: true);
+                }
                 SetMonitoringControlButtonState(MonitoringControlState.Active);
                 BtnStartMonitoring.IsEnabled = true;
                 TimerPanel.Visibility = Visibility.Visible; // Show the timer
@@ -692,8 +703,8 @@ namespace AcademicSentinel.Client.Views.IMC
             }
 
             _isMonitoringStarted = false;
-            if (FindName("TxtMonitoringState") is TextBlock monitoringState)
-                monitoringState.Text = $"Monitoring: Paused (Session #{_currentSessionId})";
+            // Paused → pill flips to NOT ACTIVE.
+            SetMonitoringPanelState(isActive: false);
             SetMonitoringControlButtonState(MonitoringControlState.Paused);
             LogActivity("SYSTEM", "PAUSED", "Monitoring paused. Session remains active and soft lock is enforced.", "#FF9800");
         }
@@ -708,10 +719,52 @@ namespace AcademicSentinel.Client.Views.IMC
             }
 
             _isMonitoringStarted = true;
-            if (FindName("TxtMonitoringState") is TextBlock monitoringState)
-                monitoringState.Text = $"Monitoring: Active (Session #{_currentSessionId})";
+            // Resumed → MONITORING ACTIVE.  No countdown context here.
+            SetMonitoringPanelState(isActive: true);
             SetMonitoringControlButtonState(MonitoringControlState.Active);
             LogActivity("SYSTEM", "RESUMED", "Monitoring resumed.", "#1B5E20");
+        }
+
+        /// <summary>
+        /// Centralised toggle for the monitoring-state pill in the left
+        /// sidebar.  Mutually exclusive visual states keep the header and
+        /// the countdown badge in lockstep so the UI can never display
+        /// the old "Monitoring: Countdown 7s" / "Timer Disabled"
+        /// contradiction again.
+        ///
+        /// • <paramref name="isActive"/> = true  → header reads
+        ///   "MONITORING ACTIVE" in FEU-green.
+        /// • <paramref name="isActive"/> = false → header reads
+        ///   "NOT ACTIVE" in neutral grey.
+        ///
+        /// The countdown pill below the header is independent of the
+        /// header colour: pass <paramref name="countdownText"/> to show
+        /// the orange ActiveTimerPanel (clock icon + mm:ss), or leave it
+        /// null to show the grey DisabledTimerPanel ("No Active Countdown").
+        ///
+        /// All TxtMonitoringState / DisabledTimerPanel / ActiveTimerPanel
+        /// mutations in the codebase go through this method so the
+        /// invariant is enforced at a single point.
+        /// </summary>
+        private void SetMonitoringPanelState(bool isActive, string countdownText = null)
+        {
+            if (FindName("TxtMonitoringState") is TextBlock header)
+            {
+                header.Text = isActive ? "MONITORING ACTIVE" : "NOT ACTIVE";
+                header.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(
+                    isActive ? "#1B5E20"   // FEU green
+                             : "#424242")); // neutral grey
+            }
+
+            bool showCountdown = countdownText != null;
+
+            if (FindName("ActiveTimerPanel") is StackPanel active)
+                active.Visibility = showCountdown ? Visibility.Visible : Visibility.Collapsed;
+            if (FindName("DisabledTimerPanel") is StackPanel disabled)
+                disabled.Visibility = showCountdown ? Visibility.Collapsed : Visibility.Visible;
+
+            if (showCountdown && FindName("TxtCountdownDisplay") is TextBlock countdown)
+                countdown.Text = countdownText;
         }
 
         // NEW: Timer Method
@@ -739,10 +792,10 @@ namespace AcademicSentinel.Client.Views.IMC
                     _monitoringEffectiveStartTime = null;
                     _countdownSecondsRemaining = 0;
 
-                    if (FindName("TxtMonitoringState") is TextBlock monitoringState)
-                        monitoringState.Text = $"Monitoring: Active (Session #{_currentSessionId})";
-                    if (FindName("TxtCountdownDisplay") is TextBlock countdownDisplay)
-                        countdownDisplay.Text = "00:00";
+                    // Countdown finished → still MONITORING ACTIVE, but the
+                    // countdown pill flips back to the grey "No Active
+                    // Countdown" panel because there's nothing to count.
+                    SetMonitoringPanelState(isActive: true);
 
                     // ==============================================================
                     // THE FIX: Tell the Database that monitoring is officially ON!
@@ -759,16 +812,14 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
                 else if (_monitoringEffectiveStartTime.HasValue)
                 {
+                    // Countdown still ticking → keep the pill green-ACTIVE and
+                    // update the orange ActiveTimerPanel with mm:ss.
                     _countdownSecondsRemaining = Math.Max(0, (int)Math.Ceiling((_monitoringEffectiveStartTime.Value - DateTime.Now).TotalSeconds));
-                    if (FindName("TxtMonitoringState") is TextBlock monitoringState)
-                        monitoringState.Text = $"Monitoring: Countdown {_countdownSecondsRemaining}s";
-                    if (FindName("TxtCountdownDisplay") is TextBlock countdownDisplay)
-                        countdownDisplay.Text = TimeSpan.FromSeconds(_countdownSecondsRemaining).ToString(@"mm\:ss");
+                    var countdownLabel = TimeSpan.FromSeconds(_countdownSecondsRemaining).ToString(@"mm\:ss");
+                    SetMonitoringPanelState(isActive: true, countdownText: countdownLabel);
                 }
-                else if (FindName("TxtCountdownDisplay") is TextBlock noCountdownDisplay)
-                {
-                    noCountdownDisplay.Text = "00:00";
-                }
+                // else: monitoring fully active without a countdown — pill state
+                //       is already correct from the branch above; nothing to do.
 
                 if (FindName("TxtMonitoringTimerDisplay") is TextBlock timerDisplay)
                 {
@@ -805,8 +856,8 @@ namespace AcademicSentinel.Client.Views.IMC
             }
 
             _isMonitoringStarted = false;
-            if (FindName("TxtMonitoringState") is TextBlock monitoringState)
-                monitoringState.Text = $"Monitoring: Paused (Session #{_currentSessionId})";
+            // Auto-paused by timer expiry → pill flips to NOT ACTIVE.
+            SetMonitoringPanelState(isActive: false);
             SetMonitoringControlButtonState(MonitoringControlState.Paused);
             LogActivity("SYSTEM", "PAUSED", "Monitoring paused by timer. Session remains active and soft lock is enforced.", "#FF9800");
         }
@@ -2342,14 +2393,14 @@ namespace AcademicSentinel.Client.Views.IMC
             _isSessionEnded = true;
             _sessionTimer?.Stop(); // Stop timer
             SetMonitoringControlButtonState(MonitoringControlState.NotStarted);
-            if (FindName("TxtMonitoringState") is TextBlock monitoringState) monitoringState.Text = "Monitoring: Session Ended";
+            // Session ended → pill reverts to NOT ACTIVE + DisabledTimerPanel.
+            SetMonitoringPanelState(isActive: false);
             if (FindName("TxtStartStopLabel") is TextBlock startStopLabel)
             {
                 startStopLabel.Text = "Session Ended";
                 BtnStartMonitoring.IsEnabled = false;
             }
             if (FindName("StartStopIcon") is PackIcon startStopIcon) startStopIcon.Kind = PackIconKind.CheckCircle;
-            if (FindName("TxtCountdownDisplay") is TextBlock countdownDisplay) countdownDisplay.Text = "00:00";
             if (FindName("TxtMonitoringTimerDisplay") is TextBlock timerDisplay) timerDisplay.Text = "00:00:00";
 
             if (_hubConnection != null)
@@ -2423,6 +2474,11 @@ namespace AcademicSentinel.Client.Views.IMC
         }
 
         public class StartSessionResponse { public int SessionId { get; set; } }
+
+        private void GridSplitter_DragDelta(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+        {
+
+        }
     }
 
     public class LiveStudentStatus : INotifyPropertyChanged
