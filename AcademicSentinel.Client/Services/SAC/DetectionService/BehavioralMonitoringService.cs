@@ -1195,8 +1195,20 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     description = $"Focus lost from LMS exam ({_anchoredLmsDomain}) to '{targetApp}'.";
                 }
 
+                // 1-second source-level cooldown: browsers (Facebook,
+                // Twitter, loading pages, etc.) mutate window titles
+                // multiple times per second during page load, and each
+                // mutation re-enters DetectFocusAnchored with the
+                // title diff branch open. Without this cooldown each
+                // mutation produced its own WINDOW_SWITCH and overwhelmed
+                // the SAC's 2-second per-type ReportViolationAsync dedup
+                // when both calls fell within the same dispatcher tick.
+                // 1 s is short enough that genuinely separate user
+                // switches (typically several seconds apart) each still
+                // pass, but long enough to coalesce same-target title
+                // shake into a single emission.
                 AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
-                    description, cooldownSeconds: 0);
+                    description, cooldownSeconds: 1);
             }
 
             _lastForegroundWindow = foreground;

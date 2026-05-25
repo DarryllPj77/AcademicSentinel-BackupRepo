@@ -87,6 +87,31 @@ public class MonitoringHub : Hub
             "PROCESS_DETECTED"
         };
 
+    // ============================================================
+    // MONITORING-EVENT COALESCING (server intake dedup).
+    // ============================================================
+    // Final cross-path safety net: any duplicate emission that
+    // reaches the hub for the same (studentId, eventType,
+    // description) inside a short window is dropped silently —
+    // neither persisted nor broadcast. This catches:
+    //   • Title-mutation storms inside a browser (e.g., Facebook
+    //     updating its tab title several times per second while
+    //     content loads) that the SAC's per-type 2-second client
+    //     dedup can race past.
+    //   • Multiple foreground-hook callbacks for what is logically
+    //     a single user switch.
+    //   • Any future channel (REST violations endpoint, a queued
+    //     replay, a retried InvokeAsync) that emits the same payload.
+    //
+    // Window is intentionally short (1 s) so genuinely separate
+    // user actions — e.g., the student switching to Facebook
+    // three times across 10 seconds — each pass through and each
+    // produce their own entry. The key includes Description so
+    // switches to DIFFERENT targets (Facebook then Twitter then
+    // Facebook again) are never collapsed together.
+    private const int MonitoringEventCoalesceWindowSeconds = 1;
+    private static readonly ConcurrentDictionary<string, DateTime> _recentMonitoringEvents = new();
+
     private readonly DisconnectService _disconnectService;
 
     public MonitoringHub(
@@ -874,6 +899,42 @@ public class MonitoringHub : Hub
             return;
         }
 
+        // Server-intake coalescing — see _recentMonitoringEvents docs
+        // above. Composite key includes studentId, event type and
+        // description so identical re-emits within the window are
+        // dropped while switches to genuinely different targets
+        // remain distinct entries.
+        var coalesceKey = string.Concat(
+            studentId.ToString(),
+            "|",
+            eventData.EventType ?? string.Empty,
+            "|",
+            eventData.Description ?? string.Empty);
+        var nowUtc = DateTime.UtcNow;
+        if (_recentMonitoringEvents.TryGetValue(coalesceKey, out var lastSeen)
+            && (nowUtc - lastSeen).TotalSeconds < MonitoringEventCoalesceWindowSeconds)
+        {
+            // Refresh the timestamp so a rapid burst keeps the gate
+            // closed for the entire duration of the burst rather than
+            // letting a stale entry expire mid-storm.
+            _recentMonitoringEvents[coalesceKey] = nowUtc;
+            return;
+        }
+        _recentMonitoringEvents[coalesceKey] = nowUtc;
+
+        // Opportunistic cleanup so the dictionary doesn't grow without
+        // bound across a long session. Removes any entry older than a
+        // generous multiple of the window.
+        if (_recentMonitoringEvents.Count > 256)
+        {
+            var staleCutoff = nowUtc.AddSeconds(-MonitoringEventCoalesceWindowSeconds * 30);
+            foreach (var kv in _recentMonitoringEvents)
+            {
+                if (kv.Value < staleCutoff)
+                    _recentMonitoringEvents.TryRemove(kv.Key, out _);
+            }
+        }
+
         // Create the monitoring event record
         var monitoringEvent = new MonitoringEvent
         {
@@ -882,7 +943,7 @@ public class MonitoringHub : Hub
             EventType = eventData.EventType,
             Description = eventData.Description,
             SeverityScore = eventData.SeverityScore,
-            Timestamp = DateTime.UtcNow
+            Timestamp = nowUtc
         };
 
         _context.MonitoringEvents.Add(monitoringEvent);
@@ -896,7 +957,7 @@ public class MonitoringHub : Hub
             eventType = eventData.EventType,
             severityScore = eventData.SeverityScore,
             description = eventData.Description,
-            timestamp = DateTime.UtcNow
+            timestamp = nowUtc
         });
     }
 
