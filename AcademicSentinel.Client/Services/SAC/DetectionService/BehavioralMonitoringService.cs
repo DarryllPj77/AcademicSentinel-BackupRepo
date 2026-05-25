@@ -89,6 +89,91 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // restrictions don't apply to inspecting our own process).
         private static readonly uint _selfProcessId = (uint)Process.GetCurrentProcess().Id;
 
+        // SAC's own process name (lowercased, no extension). Used as a
+        // belt-and-suspenders check alongside _selfProcessId so quirks
+        // where a child/helper window briefly reports a different PID
+        // — or where GetWindowThreadProcessId fails — still get
+        // recognised as one of our own windows by name.
+        private static readonly string _selfProcessName =
+            (Process.GetCurrentProcess().ProcessName ?? string.Empty).ToLowerInvariant();
+
+        // OS-shell and packaged-host process names whose foreground
+        // appearance is never a genuine student action — they're
+        // transient window-manager artefacts that surface for a few
+        // milliseconds when SAC toggles Topmost / resizes / restores
+        // from the softlock overlay. Treat them as benign so they
+        // never produce WINDOW_SWITCH or "Unknown application" entries.
+        private static readonly HashSet<string> _systemShellProcessNames =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "explorer",                     // Windows shell (taskbar, file picker, Start)
+                "dwm",                          // Desktop Window Manager
+                "shellexperiencehost",          // shell components
+                "applicationframehost",         // UWP / packaged-app host
+                "searchhost",                   // Windows 11 search
+                "searchui",                     // Windows 10 search
+                "searchapp",                    //  ”      ”
+                "startmenuexperiencehost",      // Windows 11 Start menu
+                "lockapp",                      // lock-screen host
+                "textinputhost",                // touch keyboard / IME host
+                "sihost",                       // shell infrastructure host
+                "ctfmon",                       // text services framework
+                "runtimebroker",                // packaged-app broker
+            };
+
+        /// <summary>
+        /// Final pre-emit gate for the focus violation path. Returns
+        /// true when the resolved foreground belongs to a process the
+        /// SAC must never treat as a student-initiated app switch:
+        ///   • the SAC itself (PID match or process-name match), or
+        ///   • a known Windows shell / packaged-app host process, or
+        ///   • a foreground we genuinely cannot identify.
+        ///
+        /// Skipping the emit here means the event never reaches the
+        /// findings list — so it appears nowhere: not in the SAC's
+        /// Detection Reports, not in the server's audit table, not
+        /// in the IMC Global Log Feed.
+        /// </summary>
+        private bool ShouldSuppressForegroundViolation(IntPtr foreground, out string resolvedProcName)
+        {
+            resolvedProcName = string.Empty;
+
+            // Genuinely no foreground window — Windows briefly reports
+            // this during desktop locks, switcher transitions, and a
+            // few system events. Suppress entirely; we have no truth.
+            if (foreground == IntPtr.Zero) return true;
+
+            // PID-based self check. Strongest signal because it works
+            // even when the foreground belongs to a packaged child
+            // window of the SAC that doesn't share our usual chrome.
+            if (IsSelfForeground(foreground)) return true;
+
+            string proc = TryGetForegroundProcessName(foreground);
+            resolvedProcName = proc ?? string.Empty;
+
+            // Process name-based cross-check — defensive against any
+            // case where GetWindowThreadProcessId returns 0 but we
+            // can still resolve the image name through QueryFullProcessImageName.
+            if (!string.IsNullOrEmpty(proc)
+                && string.Equals(proc, _selfProcessName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // Transient OS shell / packaged-app host foregrounds.
+            if (!string.IsNullOrEmpty(proc) && _systemShellProcessNames.Contains(proc))
+            {
+                return true;
+            }
+
+            // Unidentifiable foreground — would otherwise render as
+            // "Unknown application". Conservative choice: skip rather
+            // than blame the student for something we can't name.
+            if (string.IsNullOrEmpty(proc)) return true;
+
+            return false;
+        }
+
         /// <summary>
         /// True when the foreground window belongs to this very same
         /// process — i.e., the SAC itself (header bar, compact softlock
@@ -775,12 +860,15 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // ============================================================
             var foreground = GetForegroundWindow();
 
-            // Same self-foreground override as the anchored path so
-            // the legacy detector also never misclassifies one of our
-            // own windows as a foreign foreground.
-            if (!isSacWindowActive && IsSelfForeground(foreground))
+            // Same hard-suppression rule as the anchored path so the
+            // legacy detector also never misclassifies one of our own
+            // windows, a Windows shell foreground, or an unidentifiable
+            // foreground as a foreign app switch.
+            if (ShouldSuppressForegroundViolation(foreground, out _))
             {
-                isSacWindowActive = true;
+                _lastForegroundWindow = foreground;
+                _lastForegroundWasSac = true;
+                return;
             }
 
             if (foreground != _lastForegroundWindow)
@@ -852,20 +940,42 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             var foreground = GetForegroundWindow();
             string currentTitle = GetWindowName(foreground);
 
-            // SELF-FOREGROUND OVERRIDE.
-            //   The caller passes a cached `isSacWindowActive` value that
-            //   the timer poll refreshes, but the WinEvent foreground hook
-            //   can fire BEFORE the next poll updates that cache. In that
-            //   window the hook would see the SAC's own window appear in
-            //   foreground, evaluate `isSacWindowActive=false`, fail to
-            //   match the allowlist (we don't allowlist ourselves), and
-            //   emit a spurious WINDOW_SWITCH to "Unknown application".
-            //   Resolving foreground PID == this process's PID short-
-            //   circuits all of that — any window from our own process
-            //   is treated as SAC-active regardless of cache freshness.
-            if (!isSacWindowActive && IsSelfForeground(foreground))
+            // SELF-FOREGROUND / SHELL-FOREGROUND HARD SUPPRESS.
+            //   Any foreground that belongs to:
+            //     • the SAC itself (PID or process-name match),
+            //     • a Windows shell / packaged-app host process
+            //       (explorer, dwm, ApplicationFrameHost, etc.),
+            //     • or a window we genuinely cannot identify
+            //   is dropped entirely. This catches two distinct paths:
+            //
+            //     1) The cached `isSacWindowActive` flag is stale when
+            //        the WinEvent foreground hook fires before the
+            //        next polling tick — the hook would otherwise see
+            //        the SAC's own window appear in foreground with
+            //        the stale `false` flag and emit a spurious
+            //        WINDOW_SWITCH to "Unknown application".
+            //
+            //     2) When `BtnExpandCompact_Click` toggles `Topmost=false`
+            //        and resizes the softlock window, the OS briefly
+            //        promotes a shell window (taskbar, DWM, etc.) into
+            //        the foreground slot while z-order resettles. That
+            //        is never a student action; it should not be a
+            //        violation OR a log line anywhere.
+            //
+            //   Skipping outright (rather than relabelling) guarantees
+            //   the event never reaches the findings list, so it
+            //   appears in neither the SAC Detection Reports nor the
+            //   IMC Global Log Feed — exactly what the spec calls for.
+            if (ShouldSuppressForegroundViolation(foreground, out _))
             {
-                isSacWindowActive = true;
+                _lastForegroundWindow = foreground;
+                _lastWindowName = currentTitle;
+                _lastForegroundWasSac = true;
+                // Don't touch _wasPreviouslyOutOfExamFocus — the
+                // student didn't actually leave the exam, so no
+                // CANVAS_RETURNED should fire when they next focus
+                // the LMS.
+                return;
             }
 
             // Skip only if BOTH the HWND and the title are unchanged.
