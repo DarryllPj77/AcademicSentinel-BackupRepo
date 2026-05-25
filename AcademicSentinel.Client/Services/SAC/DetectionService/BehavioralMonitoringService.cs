@@ -524,6 +524,35 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // back on the LMS browser.
         private bool _wasPreviouslyOutOfExamFocus;
 
+        // ====================================================================
+        // EDGE-BASED EMIT GATE for WINDOW_SWITCH / ALLOWED_APP.
+        // ====================================================================
+        // Symptom this fixes: opening / maximizing / restoring / focusing
+        // the SAC softlock UI after a real switch was already logged
+        // caused the same external target to be re-logged on every
+        // round trip back to it. The detector was level-based —
+        // "current foreground is non-SAC non-LMS" — which mistakes a
+        // "look at the softlock and return" round trip for a fresh
+        // exit from the LMS anchor.
+        //
+        // Fix: track the LAST EMITTED external-target key and a flag
+        // for whether the student has been back on the LMS since that
+        // emit. A repeat emission to the same key without an
+        // intervening LMS visit is dropped as a non-transition. SAC
+        // self-foreground transitions (handled by
+        // ShouldSuppressForegroundViolation earlier) never touch
+        // either field — opening the softlock contributes nothing.
+        //
+        // Re-arm semantics (a new emission for the same target is
+        // allowed in any of these cases):
+        //   • The student goes back to the LMS, then leaves again.
+        //   • The student switches to a DIFFERENT external target —
+        //     the key changes, so the duplicate check misses.
+        //   • A WINDOW_SWITCH after an ALLOWED_APP (or vice versa) —
+        //     the key includes the event type as well as the target.
+        private string _lastEmittedExternalKey;
+        private bool _hasBeenOnLmsSinceLastEmit = true;
+
         // ---- WinEvent foreground-hook state (Phase 1, Task A) ----
         // Handle returned by SetWinEventHook; IntPtr.Zero when not installed.
         private IntPtr _foregroundHookHandle = IntPtr.Zero;
@@ -612,6 +641,12 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // student hasn't "returned" from anything yet.
             _wasPreviouslyOnLms = false;
             _wasPreviouslyOutOfExamFocus = false;
+
+            // Edge-emit gate — fresh session begins with no prior
+            // external emission and "has been on LMS" = true so the
+            // very first real external switch passes through.
+            _lastEmittedExternalKey = null;
+            _hasBeenOnLmsSinceLastEmit = true;
 
             // Drain any stale findings left in the queue from a previous
             // monitoring cycle that wasn't shut down cleanly.
@@ -1148,6 +1183,15 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // semantically meaningful.
             _wasPreviouslyOutOfExamFocus = !isSacWindowActive && !isOnLms;
 
+            // Re-arm the edge-emit gate whenever the student is actually
+            // on the LMS. After this point the next real external switch
+            // is allowed to emit again even if it's to the same target
+            // we previously logged.
+            if (isOnLms)
+            {
+                _hasBeenOnLmsSinceLastEmit = true;
+            }
+
             if (!isSacWindowActive && !isOnLms)
             {
                 // ALLOWED-APPS GATE — instructor-configured per-session
@@ -1168,9 +1212,25 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     // | <AppName>") around it so the rendered wording
                     // stays consistent across both surfaces.
                     string allowedAppLabel = GetFriendlyAllowedAppName(foreground);
-                    AddEvent(findings, DetectionConstants.EventAllowedApp, 0,
-                        allowedAppLabel,
-                        cooldownSeconds: 3);
+
+                    // Edge-emit gate. Re-entering the same allowed app
+                    // after a quick SAC-softlock peek is NOT a new
+                    // transition — only the very first arrival at this
+                    // target (or arrival after an intervening LMS
+                    // visit, or arrival at a DIFFERENT target) counts.
+                    string emitKey = "ALLOWED_APP:" + allowedAppLabel;
+                    bool isRepeatOfSameTarget =
+                        !_hasBeenOnLmsSinceLastEmit
+                        && string.Equals(emitKey, _lastEmittedExternalKey, StringComparison.OrdinalIgnoreCase);
+
+                    if (!isRepeatOfSameTarget)
+                    {
+                        AddEvent(findings, DetectionConstants.EventAllowedApp, 0,
+                            allowedAppLabel,
+                            cooldownSeconds: 3);
+                        _lastEmittedExternalKey = emitKey;
+                        _hasBeenOnLmsSinceLastEmit = false;
+                    }
 
                     _lastForegroundWindow = foreground;
                     _lastWindowName = currentTitle;
@@ -1195,20 +1255,36 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     description = $"Focus lost from LMS exam ({_anchoredLmsDomain}) to '{targetApp}'.";
                 }
 
-                // 1-second source-level cooldown: browsers (Facebook,
-                // Twitter, loading pages, etc.) mutate window titles
-                // multiple times per second during page load, and each
-                // mutation re-enters DetectFocusAnchored with the
-                // title diff branch open. Without this cooldown each
-                // mutation produced its own WINDOW_SWITCH and overwhelmed
-                // the SAC's 2-second per-type ReportViolationAsync dedup
-                // when both calls fell within the same dispatcher tick.
-                // 1 s is short enough that genuinely separate user
-                // switches (typically several seconds apart) each still
-                // pass, but long enough to coalesce same-target title
-                // shake into a single emission.
-                AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
-                    description, cooldownSeconds: 1);
+                // Edge-emit gate (same shape as the ALLOWED_APP branch
+                // above). Bouncing back to the same unauthorized
+                // target after a SAC-softlock peek is not a fresh
+                // transition — only re-arms when the student returns
+                // to the LMS OR switches to a different external
+                // target.
+                string windowSwitchEmitKey = "WINDOW_SWITCH:" + description;
+                bool isWindowSwitchRepeat =
+                    !_hasBeenOnLmsSinceLastEmit
+                    && string.Equals(windowSwitchEmitKey, _lastEmittedExternalKey, StringComparison.OrdinalIgnoreCase);
+
+                if (!isWindowSwitchRepeat)
+                {
+                    // 1-second source-level cooldown: browsers (Facebook,
+                    // Twitter, loading pages, etc.) mutate window titles
+                    // multiple times per second during page load, and each
+                    // mutation re-enters DetectFocusAnchored with the
+                    // title diff branch open. Without this cooldown each
+                    // mutation produced its own WINDOW_SWITCH and overwhelmed
+                    // the SAC's 2-second per-type ReportViolationAsync dedup
+                    // when both calls fell within the same dispatcher tick.
+                    // 1 s is short enough that genuinely separate user
+                    // switches (typically several seconds apart) each still
+                    // pass, but long enough to coalesce same-target title
+                    // shake into a single emission.
+                    AddEvent(findings, DetectionConstants.EventWindowSwitch, 1,
+                        description, cooldownSeconds: 1);
+                    _lastEmittedExternalKey = windowSwitchEmitKey;
+                    _hasBeenOnLmsSinceLastEmit = false;
+                }
             }
 
             _lastForegroundWindow = foreground;
