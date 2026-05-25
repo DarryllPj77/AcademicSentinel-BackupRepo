@@ -634,6 +634,16 @@ namespace AcademicSentinel.Client.Views.SAC
                             ? $"Return detected: focus returned to the LMS exam ({DateTime.Now:h:mm:ss tt})"
                             : $"Return detected: {description} ({DateTime.Now:h:mm:ss tt})";
                     }
+                    else if (string.Equals(eventType, "ALLOWED_APP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Allowed-app emit. The description already carries
+                        // the friendly label ("Allowed app: Microsoft Teams")
+                        // so we drop the bare prefix and surface the line
+                        // verbatim — keeps the log readable.
+                        logText = string.IsNullOrWhiteSpace(description)
+                            ? $"Allowed app: switched to an instructor-allowed app ({DateTime.Now:h:mm:ss tt})"
+                            : $"{description} ({DateTime.Now:h:mm:ss tt})";
+                    }
                     else
                     {
                         // Fallback for any other zero-severity event so

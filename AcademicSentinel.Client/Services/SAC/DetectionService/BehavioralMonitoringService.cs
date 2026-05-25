@@ -3,6 +3,7 @@ using AcademicSentinel.Client.Services.SAC.Utilities;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Management;
 using System.Runtime.InteropServices;
@@ -57,6 +58,92 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // a chance to anchor to the LMS by title.
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        // OpenProcess + QueryFullProcessImageNameW form the resilient
+        // fallback for process-name lookup. System.Diagnostics.Process
+        // denies introspection for packaged / sandboxed apps — most
+        // notably the new Microsoft Teams (post-2022), several Store
+        // apps, and some UWP shells — so the legacy
+        // Process.GetProcessById path returns "Unknown application"
+        // and the allowlist match silently misses. Asking the kernel
+        // for the image name via PROCESS_QUERY_LIMITED_INFORMATION
+        // works for those cases because it's the minimum-rights
+        // access introduced precisely for this scenario (Windows 8.1+).
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint processAccess, bool bInheritHandle, uint processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "QueryFullProcessImageNameW")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+        private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+        /// <summary>
+        /// Returns the foreground window's process name (no extension,
+        /// case as Windows reports it) or null when both
+        /// System.Diagnostics.Process and the Win32 fallback fail.
+        ///
+        /// Used by both <see cref="IsAllowedExceptionApp"/> and
+        /// <see cref="GetSanitizedWindowLabel"/> so a packaged app
+        /// like Microsoft Teams is identified consistently across the
+        /// allowlist gate and the violation-description renderer —
+        /// previously the two diverged silently (allowlist missed,
+        /// description showed "Unknown application").
+        /// </summary>
+        private static string TryGetForegroundProcessName(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return null;
+            GetWindowThreadProcessId(hWnd, out uint pid);
+            if (pid == 0) return null;
+
+            // Fast path: works for the overwhelming majority of
+            // desktop apps. Cheap, fully managed.
+            try
+            {
+                using var p = Process.GetProcessById((int)pid);
+                if (!string.IsNullOrWhiteSpace(p.ProcessName))
+                    return p.ProcessName;
+            }
+            catch
+            {
+                // Fall through to the Win32 fallback below.
+            }
+
+            // Fallback: ask the kernel directly via
+            // PROCESS_QUERY_LIMITED_INFORMATION — the access right
+            // explicitly designed to inspect protected / packaged
+            // processes that deny the broader rights Process.GetProcessById
+            // tries to acquire.
+            IntPtr handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (handle == IntPtr.Zero) return null;
+            try
+            {
+                var sb = new StringBuilder(512);
+                uint size = (uint)sb.Capacity;
+                if (QueryFullProcessImageName(handle, 0, sb, ref size) && sb.Length > 0)
+                {
+                    try
+                    {
+                        return Path.GetFileNameWithoutExtension(sb.ToString());
+                    }
+                    catch
+                    {
+                        // Defensive — Path methods only throw on
+                        // pathological inputs but we don't want one
+                        // bad foreground sample to crash the poll loop.
+                    }
+                }
+            }
+            finally
+            {
+                CloseHandle(handle);
+            }
+            return null;
+        }
 
         // ============================================================
         // EVENT-DRIVEN FOREGROUND TRACKING (Phase 1, Task A)
@@ -907,14 +994,21 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             {
                 // ALLOWED-APPS GATE — instructor-configured per-session
                 // allowlist (RoomDetectionSettings.AllowedAppsCsv).
-                // If the foreground is one of those apps, swallow the
-                // WINDOW_SWITCH silently. Do NOT update
-                // _wasPreviouslyOutOfExamFocus below because the
-                // student is still considered "inside the allowed exam
-                // context" — when they return to the LMS we don't
-                // want a spurious CANVAS_RETURNED log either.
+                // If the foreground is one of those apps, emit an
+                // ALLOWED_APP informational event (severity 0) instead
+                // of WINDOW_SWITCH. Both the SAC log and the IMC log
+                // surface it as a non-violation entry. We do NOT
+                // update _wasPreviouslyOutOfExamFocus because the
+                // student is still considered "inside the allowed
+                // exam context" — when they return to the LMS we
+                // don't want a spurious CANVAS_RETURNED log either.
                 if (IsAllowedExceptionApp(foreground, currentTitle))
                 {
+                    string allowedAppLabel = GetFriendlyAllowedAppName(foreground);
+                    AddEvent(findings, DetectionConstants.EventAllowedApp, 0,
+                        $"Allowed app: {allowedAppLabel}",
+                        cooldownSeconds: 3);
+
                     _lastForegroundWindow = foreground;
                     _lastWindowName = currentTitle;
                     _lastForegroundWasSac = false;
@@ -1549,21 +1643,12 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             bool hasTitleRules = _settings.AllowedAppTitleKeywords is { Count: > 0 };
             if (!hasProcRules && !hasTitleRules) return false;
 
-            string processName;
-            try
-            {
-                GetWindowThreadProcessId(hWnd, out uint pid);
-                if (pid == 0) return false;
-                using var process = Process.GetProcessById((int)pid);
-                processName = process?.ProcessName ?? string.Empty;
-            }
-            catch
-            {
-                // Process might have exited or be cross-bitness; if we
-                // can't even identify it we can't honour the allowlist
-                // — fall through to the strict path.
-                return false;
-            }
+            // Resilient process-name lookup that survives packaged /
+            // sandboxed apps (e.g. new Microsoft Teams). Returning null
+            // here used to silently route Teams into the strict "not
+            // allowed → violation" branch even when the allowlist
+            // explicitly named it.
+            string processName = TryGetForegroundProcessName(hWnd);
 
             if (hasProcRules
                 && !string.IsNullOrEmpty(processName)
@@ -1587,27 +1672,81 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             return false;
         }
 
+        /// <summary>
+        /// Best-effort human-friendly name for an allowlisted process.
+        /// Some well-known process tokens map to a properly-cased
+        /// display name (so the SAC log reads "Allowed app: Microsoft
+        /// Teams" instead of "Allowed app: ms-teams"); the rest fall
+        /// through to <see cref="GetSanitizedWindowLabel"/> which uses
+        /// the FileDescription when available.
+        /// </summary>
+        private static string GetFriendlyAllowedAppName(IntPtr hWnd)
+        {
+            string proc = TryGetForegroundProcessName(hWnd);
+            if (!string.IsNullOrEmpty(proc))
+            {
+                switch (proc.ToLowerInvariant())
+                {
+                    case "teams":
+                    case "ms-teams":
+                    case "msteams":
+                        return "Microsoft Teams";
+                    case "zoom":
+                    case "cpthost":
+                        return "Zoom";
+                    case "notepad":
+                        return "Notepad";
+                    case "notepad++":
+                        return "Notepad++";
+                    case "calc":
+                    case "calculatorapp":
+                    case "win32calc":
+                        return "Calculator";
+                    case "acrord32":
+                    case "acrobat":
+                        return "Adobe Acrobat Reader";
+                    case "sumatrapdf":
+                        return "Sumatra PDF";
+                    case "foxitreader":
+                        return "Foxit Reader";
+                }
+            }
+
+            // Fall through to the existing label sanitizer — which now
+            // also benefits from TryGetForegroundProcessName so the
+            // worst-case is the process name (not "Unknown application").
+            return GetSanitizedWindowLabel(hWnd);
+        }
+
         private static string GetSanitizedWindowLabel(IntPtr hWnd)
         {
             if (hWnd == IntPtr.Zero) return "Unknown application";
 
             string rawTitle = GetWindowName(hWnd);
 
+            // Resolve the process name through the resilient helper
+            // first. This survives packaged apps (Teams, UWP) where
+            // Process.GetProcessById denies access and would otherwise
+            // funnel us into "Unknown application".
+            string processName = TryGetForegroundProcessName(hWnd) ?? string.Empty;
+            if (string.IsNullOrEmpty(processName))
+            {
+                return "Unknown application";
+            }
+
             try
             {
                 GetWindowThreadProcessId(hWnd, out uint pid);
-                if (pid == 0) return "Unknown application";
+                if (pid == 0) return processName;
 
                 using var process = Process.GetProcessById((int)pid);
-                if (process == null) return "Unknown application";
+                if (process == null) return processName;
 
-                string processName = process.ProcessName ?? string.Empty;
                 string appDisplayName = TryGetFileDescription(process) ?? processName;
                 if (string.IsNullOrWhiteSpace(appDisplayName))
-                    appDisplayName = "Unknown application";
+                    appDisplayName = processName;
 
-                bool isBrowser = !string.IsNullOrEmpty(processName)
-                                 && _browserProcessNames.Contains(processName);
+                bool isBrowser = _browserProcessNames.Contains(processName);
 
                 if (!isBrowser)
                 {
@@ -1627,9 +1766,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             {
                 // Process may have exited between PID lookup and inspection,
                 // or MainModule access may have been denied (UAC / bitness
-                // mismatch). Return a generic placeholder rather than
-                // crashing the polling loop.
-                return "Unknown application";
+                // mismatch). Fall back to the resilient process-name
+                // result so packaged apps still produce a meaningful
+                // label instead of the generic placeholder.
+                return processName.Length > 0 ? processName : "Unknown application";
             }
         }
 

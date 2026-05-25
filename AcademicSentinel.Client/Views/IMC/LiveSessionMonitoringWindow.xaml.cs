@@ -976,20 +976,44 @@ namespace AcademicSentinel.Client.Views.IMC
                             ?? _allParticipants.FirstOrDefault(p => p.StudentId == payload.StudentId)?.StudentEmail
                             ?? $"Student #{payload.StudentId}";
 
-                // Informational events (e.g. CANVAS_RETURNED) carry zero
-                // severity score and should NOT inflate the student's
-                // violation count, mark them as "ALERT", or render the
-                // red VIOLATION badge. Render a green RETURN entry instead.
-                bool isInformational =
-                    string.Equals(payload.EventType, "CANVAS_RETURNED",
-                        StringComparison.OrdinalIgnoreCase);
+                // Informational events carry zero severity score and
+                // must NOT inflate the student's violation count, mark
+                // them as "ALERT", or render the red VIOLATION badge.
+                // Two known informational types right now:
+                //   • CANVAS_RETURNED — student returned to the LMS.
+                //   • ALLOWED_APP    — student switched to an
+                //     instructor-allowed app (per-session allowlist).
+                // Both render with a green badge and a non-alert
+                // status; ALLOWED_APP just uses a different badge
+                // label and message so the teacher can tell at a
+                // glance which informational event fired.
+                bool isCanvasReturn = string.Equals(payload.EventType, "CANVAS_RETURNED",
+                                          StringComparison.OrdinalIgnoreCase);
+                bool isAllowedApp  = string.Equals(payload.EventType, "ALLOWED_APP",
+                                          StringComparison.OrdinalIgnoreCase);
+                bool isInformational = isCanvasReturn || isAllowedApp;
 
                 if (isInformational)
                 {
-                    var message = string.IsNullOrWhiteSpace(payload.Description)
-                        ? "Student returned to the LMS exam."
-                        : payload.Description;
-                    LogActivity(email, "RETURN", message, "#1B5E20");
+                    string badge;
+                    string message;
+                    string color = "#1B5E20";
+                    if (isCanvasReturn)
+                    {
+                        badge = "RETURN";
+                        message = string.IsNullOrWhiteSpace(payload.Description)
+                            ? "Student returned to the LMS exam."
+                            : payload.Description;
+                    }
+                    else
+                    {
+                        badge = "ALLOWED";
+                        message = string.IsNullOrWhiteSpace(payload.Description)
+                            ? "Student switched to an instructor-allowed app."
+                            : payload.Description;
+                    }
+
+                    LogActivity(email, badge, message, color);
 
                     // Restore the connected status text so the row doesn't
                     // stay stuck on a previous "ALERT: WINDOW_SWITCH" caption.

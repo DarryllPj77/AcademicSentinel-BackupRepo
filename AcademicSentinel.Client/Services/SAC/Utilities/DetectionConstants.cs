@@ -26,5 +26,12 @@ namespace AcademicSentinel.Client.Services.SAC.Utilities
         public const string EventCanvasFocusLost = "CANVAS_FOCUS_LOST";  // S2 = 20 — focus moved away from LMS browser window
         public const string EventCanvasClosed    = "CANVAS_CLOSED";      // S4 = 40 — LMS browser window closed mid-session
         public const string EventCanvasReturned  = "CANVAS_RETURNED";    // 0  pts — informational: student returned focus to LMS
+
+        // Allowed-apps allowlist (per-session, teacher-configured).
+        // Fires INSTEAD of WINDOW_SWITCH when the student tabs to an
+        // app the instructor explicitly permitted. 0 points so it
+        // never inflates the cumulative risk score; both the SAC log
+        // and the IMC log render it as an informational entry.
+        public const string EventAllowedApp      = "ALLOWED_APP";        // 0  pts — informational: student switched to an instructor-allowed app
     }
 }
