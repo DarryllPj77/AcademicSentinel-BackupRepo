@@ -82,6 +82,29 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
         private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
+        // Cached at construction time so we can short-circuit "is the
+        // foreground window one of OUR own windows?" cheaply. Using
+        // Process.GetCurrentProcess().Id is reliable even when
+        // GetProcessById for arbitrary PIDs is flaky (packaged-app
+        // restrictions don't apply to inspecting our own process).
+        private static readonly uint _selfProcessId = (uint)Process.GetCurrentProcess().Id;
+
+        /// <summary>
+        /// True when the foreground window belongs to this very same
+        /// process — i.e., the SAC itself (header bar, compact softlock
+        /// overlay, modal dialog, anything we ship). Used as an
+        /// override on top of the cached `_latestKnownSacActive` flag
+        /// so the WinEvent hook (which fires asynchronously and reads
+        /// stale cache) cannot misclassify the SAC's own foreground
+        /// transition as a WINDOW_SWITCH violation.
+        /// </summary>
+        private static bool IsSelfForeground(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return false;
+            GetWindowThreadProcessId(hWnd, out uint pid);
+            return pid != 0 && pid == _selfProcessId;
+        }
+
         /// <summary>
         /// Returns the foreground window's process name (no extension,
         /// case as Windows reports it) or null when both
@@ -751,6 +774,15 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // run on legacy seed data.
             // ============================================================
             var foreground = GetForegroundWindow();
+
+            // Same self-foreground override as the anchored path so
+            // the legacy detector also never misclassifies one of our
+            // own windows as a foreign foreground.
+            if (!isSacWindowActive && IsSelfForeground(foreground))
+            {
+                isSacWindowActive = true;
+            }
+
             if (foreground != _lastForegroundWindow)
             {
                 IntPtr previousForeground = _lastForegroundWindow;
@@ -819,6 +851,22 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         {
             var foreground = GetForegroundWindow();
             string currentTitle = GetWindowName(foreground);
+
+            // SELF-FOREGROUND OVERRIDE.
+            //   The caller passes a cached `isSacWindowActive` value that
+            //   the timer poll refreshes, but the WinEvent foreground hook
+            //   can fire BEFORE the next poll updates that cache. In that
+            //   window the hook would see the SAC's own window appear in
+            //   foreground, evaluate `isSacWindowActive=false`, fail to
+            //   match the allowlist (we don't allowlist ourselves), and
+            //   emit a spurious WINDOW_SWITCH to "Unknown application".
+            //   Resolving foreground PID == this process's PID short-
+            //   circuits all of that — any window from our own process
+            //   is treated as SAC-active regardless of cache freshness.
+            if (!isSacWindowActive && IsSelfForeground(foreground))
+            {
+                isSacWindowActive = true;
+            }
 
             // Skip only if BOTH the HWND and the title are unchanged.
             // Browser tab switches keep the same HWND but mutate the title,
@@ -1004,9 +1052,14 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 // don't want a spurious CANVAS_RETURNED log either.
                 if (IsAllowedExceptionApp(foreground, currentTitle))
                 {
+                    // Description is just the friendly app name. Both
+                    // the SAC and the IMC compose the final display
+                    // string ("Allowed app switch detected: ALLOWED_APP
+                    // | <AppName>") around it so the rendered wording
+                    // stays consistent across both surfaces.
                     string allowedAppLabel = GetFriendlyAllowedAppName(foreground);
                     AddEvent(findings, DetectionConstants.EventAllowedApp, 0,
-                        $"Allowed app: {allowedAppLabel}",
+                        allowedAppLabel,
                         cooldownSeconds: 3);
 
                     _lastForegroundWindow = foreground;

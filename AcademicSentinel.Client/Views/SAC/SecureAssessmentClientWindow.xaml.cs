@@ -636,13 +636,15 @@ namespace AcademicSentinel.Client.Views.SAC
                     }
                     else if (string.Equals(eventType, "ALLOWED_APP", StringComparison.OrdinalIgnoreCase))
                     {
-                        // Allowed-app emit. The description already carries
-                        // the friendly label ("Allowed app: Microsoft Teams")
-                        // so we drop the bare prefix and surface the line
-                        // verbatim — keeps the log readable.
-                        logText = string.IsNullOrWhiteSpace(description)
-                            ? $"Allowed app: switched to an instructor-allowed app ({DateTime.Now:h:mm:ss tt})"
-                            : $"{description} ({DateTime.Now:h:mm:ss tt})";
+                        // Description carries just the friendly app
+                        // name (e.g. "Microsoft Teams"). Surface it
+                        // with the canonical non-violation prefix so
+                        // both the student log and the IMC global
+                        // feed use identical wording.
+                        string appLabel = string.IsNullOrWhiteSpace(description)
+                            ? "instructor-allowed app"
+                            : description;
+                        logText = $"Allowed app switch detected: ALLOWED_APP | {appLabel} ({DateTime.Now:h:mm:ss tt})";
                     }
                     else
                     {

@@ -1008,9 +1008,15 @@ namespace AcademicSentinel.Client.Views.IMC
                     else
                     {
                         badge = "ALLOWED";
-                        message = string.IsNullOrWhiteSpace(payload.Description)
-                            ? "Student switched to an instructor-allowed app."
+                        // payload.Description carries just the friendly
+                        // app name from the SAC (e.g., "Microsoft Teams").
+                        // Wrap it in the canonical wording so the IMC
+                        // log line matches what the student sees on
+                        // their softlock log.
+                        string appLabel = string.IsNullOrWhiteSpace(payload.Description)
+                            ? "instructor-allowed app"
                             : payload.Description;
+                        message = $"Allowed app switch detected: ALLOWED_APP | {appLabel}";
                     }
 
                     LogActivity(email, badge, message, color);
