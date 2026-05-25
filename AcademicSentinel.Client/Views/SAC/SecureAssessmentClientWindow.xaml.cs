@@ -617,9 +617,40 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 await _hubConnection.InvokeAsync("SendMonitoringEvent", _roomId, studentId, payload);
 
-                var logText = string.IsNullOrWhiteSpace(description)
-                    ? $"Violation sent: {eventType} ({DateTime.Now:h:mm:ss tt})"
-                    : $"Violation sent: {eventType} | {description} ({DateTime.Now:h:mm:ss tt})";
+                // Detection-report wording is driven by SeverityScore so
+                // informational events (zero-severity) — most notably
+                // CANVAS_RETURNED, which fires when the student tabs
+                // back to the LMS — are not surfaced as "Violation
+                // sent". The IMC already classifies these zero-severity
+                // events as the green RETURN badge; this branch keeps
+                // the student-facing log honest about the same data.
+                string logText;
+                bool isInformational = severityScore == 0;
+                if (isInformational)
+                {
+                    if (string.Equals(eventType, "CANVAS_RETURNED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        logText = string.IsNullOrWhiteSpace(description)
+                            ? $"Return detected: focus returned to the LMS exam ({DateTime.Now:h:mm:ss tt})"
+                            : $"Return detected: {description} ({DateTime.Now:h:mm:ss tt})";
+                    }
+                    else
+                    {
+                        // Fallback for any other zero-severity event so
+                        // a future informational type added on the
+                        // server side does not regress to "Violation
+                        // sent" prefix until this method is revisited.
+                        logText = string.IsNullOrWhiteSpace(description)
+                            ? $"Info: {eventType} ({DateTime.Now:h:mm:ss tt})"
+                            : $"Info: {eventType} | {description} ({DateTime.Now:h:mm:ss tt})";
+                    }
+                }
+                else
+                {
+                    logText = string.IsNullOrWhiteSpace(description)
+                        ? $"Violation sent: {eventType} ({DateTime.Now:h:mm:ss tt})"
+                        : $"Violation sent: {eventType} | {description} ({DateTime.Now:h:mm:ss tt})";
+                }
 
                 DetectionReports.Insert(0, logText);
             }
