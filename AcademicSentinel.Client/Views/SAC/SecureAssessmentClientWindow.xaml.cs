@@ -637,14 +637,18 @@ namespace AcademicSentinel.Client.Views.SAC
                     else if (string.Equals(eventType, "ALLOWED_APP", StringComparison.OrdinalIgnoreCase))
                     {
                         // Description carries just the friendly app
-                        // name (e.g. "Microsoft Teams"). Surface it
-                        // with the canonical non-violation prefix so
-                        // both the student log and the IMC global
-                        // feed use identical wording.
+                        // name (e.g. "Microsoft Teams"). The student
+                        // softlock log uses an informational format
+                        // — no "Violation sent:" prefix — and the
+                        // event type token is rendered as
+                        // "Allowed_App" (mixed case) to match the
+                        // requested wording. The IMC global feed has
+                        // its own formatter and is intentionally NOT
+                        // changed by this branch.
                         string appLabel = string.IsNullOrWhiteSpace(description)
                             ? "instructor-allowed app"
                             : description;
-                        logText = $"Allowed app switch detected: ALLOWED_APP | {appLabel} ({DateTime.Now:h:mm:ss tt})";
+                        logText = $"Allowed App detected switch : Allowed_App | {appLabel} ({DateTime.Now:h:mm:ss tt})";
                     }
                     else
                     {
