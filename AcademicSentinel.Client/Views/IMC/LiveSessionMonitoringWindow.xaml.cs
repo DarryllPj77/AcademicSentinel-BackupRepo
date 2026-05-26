@@ -1649,7 +1649,59 @@ namespace AcademicSentinel.Client.Views.IMC
         private void LogActivity(string email, string badge, string msg, string color)
         {
             if (EmptyLogFeedState != null) EmptyLogFeedState.Visibility = Visibility.Collapsed;
-            LogFeed.Insert(0, new LogEntry { Timestamp = DateTime.Now.ToString("T"), StudentEmail = email, BadgeText = badge, BadgeColor = color, Message = msg });
+            string label = ResolveLogDisplayLabel(email);
+            LogFeed.Insert(0, new LogEntry
+            {
+                Timestamp    = DateTime.Now.ToString("T"),
+                StudentLabel = label,
+                StudentEmail = email,            // kept as hidden metadata
+                BadgeText    = badge,
+                BadgeColor   = color,
+                Message      = msg
+            });
+        }
+
+        /// <summary>
+        /// Resolves the visible "who" label for a Global Log Feed entry.
+        ///
+        /// Most existing call sites pass an email address (student.Email,
+        /// targetStudent.Email, ParticipantDto.StudentEmail, etc.). The
+        /// feed UI must show the student's FullName instead — so look the
+        /// email up against the in-memory student state and swap to the
+        /// stored name. Resolution order:
+        ///
+        ///   1. ActiveStudents — freshest live state, refreshed every 4 s
+        ///      by LoadParticipantsFromServerAsync and mutated on hub
+        ///      events. Best source for "right now".
+        ///   2. _allParticipants — the last /participants snapshot from
+        ///      the server. Used when ActiveStudents is mid-rebuild or
+        ///      the student isn't currently rendered.
+        ///   3. The passed string verbatim — last-resort fallback so a
+        ///      log entry is never blank.
+        ///
+        /// "SYSTEM" passes through unchanged. A passed value that
+        /// doesn't look like an email (no "@") is assumed to already
+        /// be a friendly label (e.g., a caller that pre-resolved the
+        /// name) and is also passed through.
+        /// </summary>
+        private string ResolveLogDisplayLabel(string passed)
+        {
+            if (string.IsNullOrWhiteSpace(passed)) return "SYSTEM";
+            if (string.Equals(passed, "SYSTEM", StringComparison.OrdinalIgnoreCase))
+                return passed;
+            if (!passed.Contains('@')) return passed;
+
+            var liveMatch = ActiveStudents.FirstOrDefault(s =>
+                string.Equals(s.Email, passed, StringComparison.OrdinalIgnoreCase));
+            if (liveMatch != null && !string.IsNullOrWhiteSpace(liveMatch.Name))
+                return liveMatch.Name;
+
+            var snapMatch = _allParticipants?.FirstOrDefault(p =>
+                string.Equals(p.StudentEmail, passed, StringComparison.OrdinalIgnoreCase));
+            if (snapMatch != null && !string.IsNullOrWhiteSpace(snapMatch.StudentName))
+                return snapMatch.StudentName;
+
+            return passed;
         }
 
         private void UpdateParticipantCount()
@@ -2652,7 +2704,23 @@ namespace AcademicSentinel.Client.Views.IMC
         public string Decision { get; set; } = string.Empty;
     }
 
-    public class LogEntry { public string Timestamp { get; set; } public string StudentEmail { get; set; } public string BadgeText { get; set; } public string BadgeColor { get; set; } public string Message { get; set; } }
+    public class LogEntry
+    {
+        public string Timestamp { get; set; }
+        // The visible identity label rendered in the Global Log Feed.
+        // For student-attributed entries this is the student's
+        // FullName resolved from ActiveStudents / _allParticipants;
+        // for SYSTEM entries it's the literal "SYSTEM". Email is no
+        // longer exposed in the feed by design — see
+        // LiveSessionMonitoringWindow.ResolveLogDisplayLabel.
+        public string StudentLabel { get; set; }
+        // Retained as a hidden field so future detail panels / hover
+        // tooltips can still read the canonical email if needed.
+        public string StudentEmail { get; set; }
+        public string BadgeText { get; set; }
+        public string BadgeColor { get; set; }
+        public string Message { get; set; }
+    }
 
     public class StudentMonitoringEvent
     {

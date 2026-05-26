@@ -635,7 +635,11 @@
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="1">
                                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
-                                                        <TextBlock Text="{Binding StudentEmail}" FontSize="13" FontWeight="SemiBold" Margin="0,0,8,0"/>
+                                                        <!-- StudentLabel resolves to the student's FullName for
+                                                             student-attributed rows (or "SYSTEM" for system rows).
+                                                             Email is no longer shown here — see
+                                                             LiveSessionMonitoringWindow.ResolveLogDisplayLabel. -->
+                                                        <TextBlock Text="{Binding StudentLabel}" FontSize="13" FontWeight="SemiBold" Margin="0,0,8,0"/>
                                                         <Border Background="{Binding BadgeColor}" CornerRadius="10" Padding="7,2">
                                                             <TextBlock Text="{Binding BadgeText}" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
                                                         </Border>
