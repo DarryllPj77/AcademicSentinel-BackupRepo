@@ -66,6 +66,18 @@ namespace AcademicSentinel.Client.Views.IMC
             if (SessionManager.IsLoggedIn && SessionManager.CurrentUser != null)
             {
                 TxtEmail.Text = SessionManager.CurrentUser.Email;
+
+                // Recover FullName from /profile if the login response
+                // didn't carry it (older session, transient gap, etc.).
+                // The user-typed registration name is the only string
+                // we ever want to render in the Full Name field; the
+                // email-prefix fallback below is the safety net of
+                // last resort.
+                if (string.IsNullOrWhiteSpace(SessionManager.CurrentUser.FullName))
+                {
+                    await TryRefreshFullNameFromProfileAsync();
+                }
+
                 string defaultName = !string.IsNullOrWhiteSpace(SessionManager.CurrentUser.FullName)
                     ? SessionManager.CurrentUser.FullName
                     : SessionManager.CurrentUser.Email.Split('@')[0];
@@ -78,6 +90,30 @@ namespace AcademicSentinel.Client.Views.IMC
                 // NEW: Fetch our saved rooms!
                 await LoadCoursesFromServer();
             }
+        }
+
+        private async System.Threading.Tasks.Task TryRefreshFullNameFromProfileAsync()
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                var response = await client.GetAsync(ApiEndpoints.AuthProfile);
+                if (!response.IsSuccessStatusCode) return;
+                var profile = await response.Content.ReadFromJsonAsync<ProfileLookupDto>();
+                if (profile == null || string.IsNullOrWhiteSpace(profile.FullName)) return;
+                SessionManager.CurrentUser.FullName = profile.FullName;
+            }
+            catch
+            {
+                // Silent — caller still has the email-prefix fallback.
+            }
+        }
+
+        private class ProfileLookupDto
+        {
+            public string FullName { get; set; } = string.Empty;
         }
 
         private async System.Threading.Tasks.Task LoadCoursesFromServer()

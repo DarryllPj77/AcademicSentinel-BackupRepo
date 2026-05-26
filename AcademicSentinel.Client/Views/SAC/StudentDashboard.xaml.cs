@@ -62,6 +62,18 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             if (SessionManager.CurrentUser != null)
             {
+                // If FullName came back empty for any reason (older
+                // session, transient network read of the login
+                // response), fetch /api/auth/profile to recover the
+                // canonical value from the User row before falling
+                // back to the email prefix. This makes the dashboard
+                // resilient to gaps in the login payload without
+                // ever displaying a derived/truncated label.
+                if (string.IsNullOrWhiteSpace(SessionManager.CurrentUser.FullName))
+                {
+                    await TryRefreshFullNameFromProfileAsync();
+                }
+
                 var displayName = !string.IsNullOrWhiteSpace(SessionManager.CurrentUser.FullName)
                     ? SessionManager.CurrentUser.FullName
                     : SessionManager.CurrentUser.Email.Split('@')[0];
@@ -77,6 +89,33 @@ namespace AcademicSentinel.Client.Views.SAC
                     await LoadProfileImageFromServer(SessionManager.CurrentUser.ProfileImageUrl);
                 }
             }
+        }
+
+        // One-shot recovery for empty CurrentUser.FullName. Best-effort:
+        // a failure just leaves the field as-is and the email-prefix
+        // fallback below takes over for this render.
+        private async Task TryRefreshFullNameFromProfileAsync()
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                var response = await client.GetAsync(ApiEndpoints.AuthProfile);
+                if (!response.IsSuccessStatusCode) return;
+                var profile = await response.Content.ReadFromJsonAsync<ProfileLookupDto>();
+                if (profile == null || string.IsNullOrWhiteSpace(profile.FullName)) return;
+                SessionManager.CurrentUser.FullName = profile.FullName;
+            }
+            catch
+            {
+                // Silent — the caller still has the email-prefix fallback.
+            }
+        }
+
+        private class ProfileLookupDto
+        {
+            public string FullName { get; set; } = string.Empty;
         }
 
         private async Task LoadProfileImageFromServer(string url)

@@ -71,6 +71,16 @@ public class AuthController : ControllerBase
             Token = new JwtSecurityTokenHandler().WriteToken(token),
             Id = user.Id,
             Email = user.Email,
+            // FullName must be returned verbatim from the User row.
+            // Previously this field was missing from the Login response
+            // — the client's UserResponseDto then deserialized FullName
+            // as "" and both dashboards (Student + Teacher) fell back
+            // to Email.Split('@')[0], which produced names like
+            // "student" or "test" instead of the actual registered
+            // "student test" / "teacher test". Storage and the
+            // /profile endpoint were always correct; only this
+            // response shape was incomplete.
+            FullName = user.FullName,
             Role = user.Role,
             // Clean assignment without citation tags
             ProfileImageUrl = user.ProfileImageUrl
