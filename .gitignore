@@ -375,3 +375,11 @@ FodyWeavers.xsd
 # Ignore Claude temporary worktrees
 .claude/worktrees/
 /.github/copilot-instructions.md
+
+# Environment files — never commit real secrets.
+# `.env.example` is allowed; everything else matching .env is not.
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
