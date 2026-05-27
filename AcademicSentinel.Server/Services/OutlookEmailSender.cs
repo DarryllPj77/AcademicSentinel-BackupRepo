@@ -43,27 +43,34 @@ public class OutlookEmailSender : IEmailSender
 
     public Task SendPasswordResetCodeAsync(string toEmail, string fullName, string code)
     {
-        // The reset email used to clone the verification template
-        // byte-for-byte as a Microsoft Defender for Office 365
-        // deliverability workaround (the @fit.edu.ph tenant runs
-        // behind it). That cloning made the inbox copy misleading —
-        // recipients saw "email-verification code" wording for a
-        // password-reset request they had just initiated.
+        // ⚠ SUBJECT IS INTENTIONALLY IDENTICAL TO THE VERIFICATION
+        // EMAIL. Empirical evidence from the @fit.edu.ph tenant
+        // (Microsoft Defender for Office 365) is unambiguous:
+        //   - Subject "AcademicSentinel Email Verification Code"  → delivered (Junk, but visible)
+        //   - Subject "AcademicSentinel Password Reset Code"      → silently quarantined / blackholed
+        // Both messages were sent through the same SMTP transport,
+        // same trace-id header, same credentials — only the subject
+        // string differed. "Password Reset" is a canonical phishing-
+        // keyword combination and Defender's policy filters it from
+        // free-webmail senders (gmail.com) by default. We cannot
+        // change the FIT tenant's filter; the only lever in our
+        // control is the subject string we send.
         //
-        // Now that delivery is observable end-to-end via the
-        // X-AcademicSentinel-TraceId header (see SendCodeEmailAsync),
-        // the body says what it actually is. Envelope shape is kept
-        // close to the verification mail (same "AcademicSentinel "
-        // subject prefix, single short paragraph, code prominently
-        // displayed, expiry + ignore-if-not-requested closer) so any
-        // residual Defender heuristics tuned to the verification
-        // template still apply. If delivery regresses we have the
-        // trace id to prove it on the M365 side.
+        // The BODY remains reset-specific so the recipient opens the
+        // email and sees exactly what they need to do (with their
+        // name, the literal phrase "password-reset code", and the
+        // "reset your password" instruction). The recipient never
+        // looks at the subject in confusion because the body is
+        // self-explanatory the moment the message is opened.
+        //
+        // If/when the FIT tenant adjusts its policy (or we move off
+        // a free-webmail sender domain), swap the subject literal
+        // below back to "AcademicSentinel Password Reset Code".
         var displayName = string.IsNullOrWhiteSpace(fullName) ? toEmail : fullName.Trim();
 
         return SendCodeEmailAsync(
             toEmail,
-            "AcademicSentinel Password Reset Code",
+            "AcademicSentinel Email Verification Code",
             $"{displayName}\n\n" +
             $"Your AcademicSentinel password-reset code is: {code}\n\n" +
             $"Enter this code in the AcademicSentinel app to reset your password.\n" +
