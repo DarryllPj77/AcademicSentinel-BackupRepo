@@ -16,7 +16,8 @@
 		<Company>Your University Name</Company>
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
 		<FileVersion>1.0.0.0</FileVersion>
-	</PropertyGroup>
+	  <UserSecretsId>6f0cd2b3-bcb7-4eb6-8dca-fd8c2c395722</UserSecretsId>
+  </PropertyGroup>
 
 	<ItemGroup>
 		<PackageReference Include="log4net" Version="3.3.0" />

@@ -19,7 +19,8 @@
       "Bash(Get-ChildItem -Path \"E:\\\\Visual Studio\\\\For Thesis Codes\\\\FourCUDA Clone Projects\" -Directory)",
       "Bash(Select-Object Name)",
       "Bash(grep -E \"\\\\.cs$\")",
-      "Bash(Select-String \"error CS\")"
+      "Bash(Select-String \"error CS\")",
+      "Bash(grep -n \"^\\\\.env$\\\\|^\\\\.env\\\\b\\\\|^\\\\*\\\\.env\\\\|^\\\\*.env$\" .gitignore AcademicSentinel.Server/.gitignore)"
     ]
   }
 }
