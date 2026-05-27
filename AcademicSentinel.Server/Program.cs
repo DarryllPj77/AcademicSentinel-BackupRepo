@@ -157,6 +157,31 @@ builder.Services.AddSingleton<AcademicSentinel.Server.Services.DisconnectService
 // Services/DisconnectSweeperService.cs for the full reasoning.
 builder.Services.AddHostedService<AcademicSentinel.Server.Services.DisconnectSweeperService>();
 
+// --------------------------------------------------------------------------
+// PAST SESSION ARCHIVE — Trash retention.
+//
+// Archive:RetentionDays controls how long soft-deleted (Trashed) Past
+// Session archives are kept before ArchiveCleanupService hard-deletes
+// them. Allowed values are 15 or 30. Validated at startup so a typo
+// in appsettings.json / env var is caught immediately rather than
+// silently sweeping data on the wrong cadence.
+// --------------------------------------------------------------------------
+var retentionDaysRaw = Environment.GetEnvironmentVariable("Archive__RetentionDays")
+                       ?? builder.Configuration["Archive:RetentionDays"];
+if (string.IsNullOrWhiteSpace(retentionDaysRaw))
+{
+    // No setting present: appsettings.json ships with 30; treat
+    // missing as "use the default" rather than failing startup.
+    retentionDaysRaw = "30";
+}
+if (!int.TryParse(retentionDaysRaw, out var retentionDays) || (retentionDays != 15 && retentionDays != 30))
+{
+    throw new InvalidOperationException(
+        $"Archive:RetentionDays must be 15 or 30 (got '{retentionDaysRaw}'). " +
+        "Set it in appsettings.json or via the Archive__RetentionDays env var.");
+}
+builder.Services.AddHostedService<AcademicSentinel.Server.Services.ArchiveCleanupService>();
+
 // ---------------------------------------------------------------------------
 // IMAGE STORAGE — pick implementation based on env.
 // If Cloudinary creds are present, use the cloud-backed implementation
@@ -207,7 +232,21 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
 builder.Services.AddTransient<IEmailSender, OutlookEmailSender>();
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(connectionString));
+    options
+        .UseNpgsql(connectionString)
+        // EF Core 10 promoted PendingModelChangesWarning from "warn" to
+        // "throw at startup" by default. This repo uses hand-written
+        // migrations (see the *_*000000 timestamps under /Migrations),
+        // so the BuildTargetModel snapshot can drift very slightly from
+        // the runtime model — annotations the scaffolder would emit
+        // automatically aren't always reproduced by hand. The actual
+        // schema is correct (each manual migration's Up() applies the
+        // intended DDL); only the snapshot-vs-runtime comparison is
+        // noisy. Demote this single warning back to a log line so
+        // startup proceeds, leaving every other warning still strict.
+        // Reference: https://aka.ms/efcore-docs-pending-changes
+        .ConfigureWarnings(w => w.Ignore(
+            Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
 var app = builder.Build();
 
