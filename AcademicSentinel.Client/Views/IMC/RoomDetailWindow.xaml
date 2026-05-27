@@ -363,14 +363,26 @@
                                    FontSize="17" FontWeight="Bold"
                                    Foreground="{StaticResource FEUGreenBrush}"
                                    VerticalAlignment="Center"/>
-                        <Button Grid.Column="1" Style="{StaticResource PrimaryBtn}"
-                                Click="BtnStudentList_Click" Padding="16,8">
-                            <StackPanel Orientation="Horizontal">
-                                <materialDesign:PackIcon Kind="AccountMultipleOutline" Width="18" Height="18"
-                                                         VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                <TextBlock Text="Student List" VerticalAlignment="Center" FontSize="13"/>
-                            </StackPanel>
-                        </Button>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <!-- Opens SessionTrashWindow scoped to this room. -->
+                            <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                                    Click="BtnViewTrash_Click" Padding="14,6" Margin="0,0,8,0"
+                                    BorderBrush="#9E9E9E" Foreground="#424242">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="TrashCanOutline" Width="18" Height="18"
+                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="View Trash" VerticalAlignment="Center" FontSize="13"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource PrimaryBtn}"
+                                    Click="BtnStudentList_Click" Padding="16,8">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="AccountMultipleOutline" Width="18" Height="18"
+                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="Student List" VerticalAlignment="Center" FontSize="13"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
                     </Grid>
 
                     <!-- Search + Filter Bar -->
@@ -380,33 +392,50 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <Border Grid.Column="0" Background="#FFFFFF"
-                                BorderBrush="#1B5E20" BorderThickness="1.5"
-                                CornerRadius="6" Padding="12,8"
-                                Width="360" Height="38"
-                                HorizontalAlignment="Left"
-                                SnapsToDevicePixels="True">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <materialDesign:PackIcon Grid.Column="0" Kind="Magnify"
-                                                         Width="18" Height="18"
-                                                         Foreground="#1B5E20" Margin="0,0,8,0"
-                                                         VerticalAlignment="Center"/>
-                                <TextBox Grid.Column="1" x:Name="TxtSearch"
-                                         BorderThickness="0" Background="Transparent"
-                                         Foreground="#212121"
-                                         CaretBrush="#1B5E20"
-                                         FontSize="13" MinWidth="280"
-                                         VerticalAlignment="Center"
-                                         VerticalContentAlignment="Center"
-                                         materialDesign:HintAssist.Hint="Search session Id or Date"
-                                         materialDesign:HintAssist.Foreground="#9E9E9E"
-                                         TextChanged="TxtSearch_TextChanged"/>
-                            </Grid>
-                        </Border>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
+                            <Border Background="#FFFFFF"
+                                    BorderBrush="#1B5E20" BorderThickness="1.5"
+                                    CornerRadius="6" Padding="12,8"
+                                    Width="360" Height="38"
+                                    SnapsToDevicePixels="True">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <materialDesign:PackIcon Grid.Column="0" Kind="Magnify"
+                                                             Width="18" Height="18"
+                                                             Foreground="#1B5E20" Margin="0,0,8,0"
+                                                             VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="1" x:Name="TxtSearch"
+                                             BorderThickness="0" Background="Transparent"
+                                             Foreground="#212121"
+                                             CaretBrush="#1B5E20"
+                                             FontSize="13" MinWidth="280"
+                                             VerticalAlignment="Center"
+                                             VerticalContentAlignment="Center"
+                                             materialDesign:HintAssist.Hint="Search session Id or Date"
+                                             materialDesign:HintAssist.Foreground="#9E9E9E"
+                                             TextChanged="TxtSearch_TextChanged"/>
+                                </Grid>
+                            </Border>
+
+                            <!-- Bulk soft-delete for the rows ticked in the
+                                 leftmost checkbox column. Always enabled;
+                                 click validates "at least one selected"
+                                 before issuing the request. -->
+                            <Button x:Name="BtnDeleteSelected"
+                                    Style="{StaticResource MaterialDesignOutlinedButton}"
+                                    Click="BtnDeleteSelected_Click"
+                                    Margin="12,0,0,0" Height="38" Padding="14,0"
+                                    BorderBrush="#C62828" Foreground="#C62828">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="TrashCanOutline" Width="18" Height="18"
+                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="Delete Selected" VerticalAlignment="Center" FontSize="13"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
 
                         <StackPanel Grid.Column="1" Orientation="Horizontal">
                             <TextBlock Text="Filter by Status:" FontSize="12"
@@ -467,6 +496,19 @@
                                 </Style>
                             </DataGrid.CellStyle>
                             <DataGrid.Columns>
+                                <!-- Selection checkbox for bulk delete. Template column
+                                     (not DataGridCheckBoxColumn) so it works even when
+                                     the grid has IsReadOnly="True". Click is contained
+                                     inside the CheckBox so it does not select the row. -->
+                                <DataGridTemplateColumn Header="" Width="42">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                      Foreground="White"/>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="Session ID" Binding="{Binding SessionId}" Width="110" />
                                 <DataGridTextColumn Header="Date" Binding="{Binding DateDuration}" Width="170" />
                                 <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="100" />

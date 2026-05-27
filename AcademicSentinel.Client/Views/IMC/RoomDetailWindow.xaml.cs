@@ -500,12 +500,112 @@ namespace AcademicSentinel.Client.Views.IMC
                 btn.IsEnabled = true;
             }
         }
+
+        // Bulk soft-delete: collects rows ticked in the leftmost
+        // checkbox column and POSTs them in one round-trip. Server
+        // returns the IDs it actually trashed plus a skipped list
+        // (e.g., live sessions refused with SESSION_NOT_TERMINAL);
+        // we remove only the successes from the in-memory grid and
+        // surface a short summary if anything was skipped.
+        private async void BtnDeleteSelected_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = Sessions.Where(s => s.IsSelected).ToList();
+            if (selected.Count == 0)
+            {
+                System.Windows.MessageBox.Show(
+                    "Tick the rows you want to move to Trash, then click Delete Selected again.",
+                    "Nothing Selected",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
+                return;
+            }
+
+            var confirm = System.Windows.MessageBox.Show(
+                $"Move {selected.Count} session(s) to Trash?\n\nThey will be permanently deleted after the retention period.",
+                "Delete Session Archives",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning,
+                System.Windows.MessageBoxResult.No);
+            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+
+            BtnDeleteSelected.IsEnabled = false;
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+
+                var body = new BulkSessionIdsDto { Ids = selected.Select(s => s.RealSessionId).ToList() };
+                var response = await client.PostAsJsonAsync(ApiEndpoints.RoomsSessionsBulkDelete, body);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errText = await response.Content.ReadAsStringAsync();
+                    System.Windows.MessageBox.Show(
+                        $"Bulk delete failed.\n\nServer responded: {(int)response.StatusCode} {response.ReasonPhrase}\n{errText}",
+                        "Delete Session Archives",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
+                var result = await response.Content.ReadFromJsonAsync<BulkSessionsDeleteResponse>() ?? new BulkSessionsDeleteResponse();
+                var deletedSet = result.SoftDeleted.ToHashSet();
+
+                // Remove only the IDs the server confirmed; iterate
+                // over a snapshot so we can mutate the collection.
+                foreach (var item in selected.Where(s => deletedSet.Contains(s.RealSessionId)).ToList())
+                {
+                    Sessions.Remove(item);
+                }
+                UpdatePaginationUI();
+
+                if (result.Skipped.Count > 0)
+                {
+                    var summary = string.Join("\n", result.Skipped.Select(s =>
+                        $"  • Session {s.Id}: {s.Reason}{(string.IsNullOrEmpty(s.Status) ? "" : $" ({s.Status})")}"));
+                    System.Windows.MessageBox.Show(
+                        $"Deleted {result.SoftDeleted.Count} session(s).\n\n{result.Skipped.Count} skipped:\n{summary}",
+                        "Delete Session Archives",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show(
+                    $"Bulk delete failed: {ex.Message}",
+                    "Delete Session Archives",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Error);
+            }
+            finally
+            {
+                BtnDeleteSelected.IsEnabled = true;
+            }
+        }
+
+        // Opens the per-room Trash window. After it closes we
+        // reload Past Sessions so any items the user Restored
+        // reappear in the grid without requiring a full window
+        // close + reopen.
+        private async void BtnViewTrash_Click(object sender, RoutedEventArgs e)
+        {
+            var trashWindow = new SessionTrashWindow(CurrentRoomId) { Owner = this };
+            trashWindow.ShowDialog();
+            await LoadPastSessionsAsync();
+        }
     }
 
     public class SessionItem
     {
         public string SessionId { get; set; } = string.Empty;
         public int RealSessionId { get; set; } // DB primary key (ExamSessions.Id) for SessionArchiveDetailWindow lookups
+
+        // Two-way bound to the leftmost CheckBox column in the
+        // Past Session grid. Plain auto-prop is enough — each
+        // checkbox writes back to ITS OWN row via the default
+        // TwoWay binding; we never set it programmatically from
+        // outside the grid, so no INotifyPropertyChanged needed.
+        public bool IsSelected { get; set; }
         public string DateDuration { get; set; } = string.Empty; // formatted "MMM dd, yyyy - hh:mm tt"
         public string Duration { get; set; } = string.Empty;     // formatted "N mins" or "—" if not ended
         // Session end timestamp, formatted in local time. Falls back to

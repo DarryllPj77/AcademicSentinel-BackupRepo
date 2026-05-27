@@ -851,6 +851,136 @@ public class RoomsController : ControllerBase
         return NoContent();
     }
 
+    // POST: api/rooms/sessions/bulk-delete
+    // Soft-deletes multiple Past Session archives in a single
+    // round-trip. Per-item terminal-status guard mirrors the
+    // single-row endpoint: live sessions (Active / Pending /
+    // Countdown) are skipped, not failed, so a mixed selection
+    // partially succeeds rather than aborting the whole batch.
+    // Response separates softDeleted from skipped so the client
+    // can remove exactly the rows that actually got trashed.
+    [HttpPost("sessions/bulk-delete")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> BulkSoftDeleteSessions([FromBody] BulkSessionIdsDto body)
+    {
+        if (body?.Ids == null || body.Ids.Count == 0)
+            return BadRequest(new { message = "No session IDs provided." });
+
+        var ids = body.Ids.Distinct().ToList();
+        var sessions = await _context.ExamSessions
+            .Where(s => ids.Contains(s.Id))
+            .ToListAsync();
+
+        var softDeleted = new List<int>();
+        var skipped     = new List<object>();
+        var now         = DateTime.UtcNow;
+
+        foreach (var session in sessions)
+        {
+            if (session.DeletedAt != null)
+            {
+                // Already trashed — treat as success so the client
+                // can still remove it from its in-memory grid.
+                softDeleted.Add(session.Id);
+                continue;
+            }
+
+            bool isTerminal = string.Equals(session.Status, "Completed",   StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(session.Status, "Interrupted", StringComparison.OrdinalIgnoreCase);
+            if (!isTerminal)
+            {
+                skipped.Add(new { id = session.Id, reason = "SESSION_NOT_TERMINAL", status = session.Status });
+                continue;
+            }
+
+            session.DeletedAt = now;
+            softDeleted.Add(session.Id);
+        }
+
+        var foundIds = sessions.Select(s => s.Id).ToHashSet();
+        foreach (var id in ids.Where(i => !foundIds.Contains(i)))
+            skipped.Add(new { id, reason = "NOT_FOUND" });
+
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "BulkSoftDeleteSessions: requested={Requested} softDeleted={Deleted} skipped={Skipped}",
+            ids.Count, softDeleted.Count, skipped.Count);
+
+        return Ok(new { softDeleted, skipped });
+    }
+
+    // POST: api/rooms/sessions/{sessionId}/restore
+    // Pulls a soft-deleted Past Session archive back out of Trash
+    // by clearing DeletedAt. Idempotent — restoring a session
+    // that's not in trash returns 200 with an explanatory message
+    // rather than failing.
+    [HttpPost("sessions/{sessionId}/restore")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> RestoreSession(int sessionId)
+    {
+        var session = await _context.ExamSessions.FirstOrDefaultAsync(s => s.Id == sessionId);
+        if (session == null)
+            return NotFound(new { message = "Session not found." });
+
+        if (session.DeletedAt == null)
+            return Ok(new { message = "Session is not in trash; nothing to restore." });
+
+        session.DeletedAt = null;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "RestoreSession: sessionId={SessionId} roomId={RoomId} restored from trash.",
+            session.Id, session.RoomId);
+
+        return Ok(new { message = "Session restored." });
+    }
+
+    // GET: api/rooms/{roomId}/trash
+    // Lists soft-deleted Past Session archives for a room. Mirrors
+    // the shape of GetRoomHistory but adds DeletedAt and is the
+    // ONLY history endpoint that includes trashed rows (the others
+    // explicitly filter `DeletedAt == null`).
+    [HttpGet("{roomId}/trash")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> GetRoomTrash(int roomId)
+    {
+        var trashed = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.DeletedAt != null)
+            .OrderByDescending(s => s.DeletedAt)
+            .ToListAsync();
+
+        var enrolledCount = await _context.RoomEnrollments
+            .Where(e => e.RoomId == roomId)
+            .CountAsync();
+
+        var result = trashed.Select(session =>
+        {
+            var endTime = session.EndTime ?? DateTime.UtcNow;
+            var participantCount = _context.SessionParticipants
+                .Where(p => p.RoomId == roomId && p.JoinedAt >= session.StartTime && p.JoinedAt <= endTime)
+                .Select(p => p.StudentId)
+                .Distinct()
+                .Count();
+
+            return new
+            {
+                session.Id,
+                session.SessionNumber,
+                session.RoomId,
+                session.StartTime,
+                session.EndTime,
+                session.Status,
+                session.ExamType,
+                session.DeletedAt,
+                ParticipantCount = participantCount,
+                EnrolledCount = enrolledCount
+            };
+        }).ToList();
+
+        return Ok(result);
+    }
+
     // ==========================================
     // SETTINGS, ENROLLMENT, & STUDENT LISTS
     // ==========================================

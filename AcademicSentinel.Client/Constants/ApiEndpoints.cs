@@ -43,5 +43,17 @@
         // it after the configured retention window (15 or 30 days).
         // Format: append the sessionId to this prefix.
         public const string RoomsSessionDeletePrefix = $"{BaseUrl}/api/rooms/sessions";
+
+        // Bulk soft-delete. POST a {ids: int[]} body; server replies
+        // with {softDeleted: int[], skipped: [{id, reason}]} so the
+        // client can remove exactly the rows that actually trashed.
+        public const string RoomsSessionsBulkDelete = $"{BaseUrl}/api/rooms/sessions/bulk-delete";
+
+        // Restore a trashed session (clears DeletedAt). Append the
+        // sessionId to this prefix and POST with no body.
+        public const string RoomsSessionRestorePrefix = $"{BaseUrl}/api/rooms/sessions";  // + /{sessionId}/restore
+
+        // Lists trashed sessions for a room. Append "/{roomId}/trash".
+        public const string RoomsTrashPrefix = $"{BaseUrl}/api/rooms";  // + /{roomId}/trash
     }
 }

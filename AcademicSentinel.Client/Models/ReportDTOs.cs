@@ -39,4 +39,42 @@ namespace AcademicSentinel.Client.Models
         public int SeverityScore { get; set; }
         public DateTime Timestamp { get; set; }
     }
+
+    // Row shape returned by GET /api/rooms/{roomId}/trash. Mirrors
+    // the past-sessions history payload but adds DeletedAt so the
+    // Trash window can show when each session was trashed and how
+    // many days it's been there.
+    public class TrashedSessionDto
+    {
+        public int Id { get; set; }
+        public int SessionNumber { get; set; }
+        public int RoomId { get; set; }
+        public DateTime StartTime { get; set; }
+        public DateTime? EndTime { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public string ExamType { get; set; } = string.Empty;
+        public DateTime DeletedAt { get; set; }
+        public int ParticipantCount { get; set; }
+        public int EnrolledCount { get; set; }
+    }
+
+    // Body for POST /api/rooms/sessions/bulk-delete.
+    public class BulkSessionIdsDto
+    {
+        public List<int> Ids { get; set; } = new();
+    }
+
+    // Response shape of POST /api/rooms/sessions/bulk-delete.
+    public class BulkSessionsDeleteResponse
+    {
+        public List<int> SoftDeleted { get; set; } = new();
+        public List<BulkSessionsSkippedItem> Skipped { get; set; } = new();
+    }
+
+    public class BulkSessionsSkippedItem
+    {
+        public int Id { get; set; }
+        public string Reason { get; set; } = string.Empty;
+        public string? Status { get; set; }
+    }
 }

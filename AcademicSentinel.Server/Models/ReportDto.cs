@@ -67,6 +67,13 @@ public class SessionArchiveDto
     public int TotalViolations { get; set; }
 }
 
+// Wraps a list of session IDs for the bulk soft-delete endpoint.
+// Kept here next to the other session DTOs.
+public class BulkSessionIdsDto
+{
+    public List<int> Ids { get; set; } = new();
+}
+
 public class SessionStudentDto
 {
     public int StudentId { get; set; }
