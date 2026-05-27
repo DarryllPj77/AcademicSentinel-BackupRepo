@@ -380,7 +380,7 @@ public class AuthController : ControllerBase
 
         try
         {
-            await _emailSender.SendPasswordResetCodeAsync(user.Email, code);
+            await _emailSender.SendPasswordResetCodeAsync(user.Email, user.FullName, code);
         }
         catch (Exception ex)
         {

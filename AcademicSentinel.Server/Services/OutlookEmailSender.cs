@@ -41,30 +41,34 @@ public class OutlookEmailSender : IEmailSender
         _logger        = logger;
     }
 
-    public Task SendPasswordResetCodeAsync(string toEmail, string code) =>
-        // ⚠ Subject + body intentionally mirror the verification email
-        // BYTE-FOR-BYTE in structure (same prefix words, same opener,
-        // same line breaks, same closer). Microsoft Defender for
-        // Office 365 — the filter FEU Tech's @fit.edu.ph mailboxes
-        // run behind — silently dropped every previous variant that
-        // diverged from the verification template, even after we
-        // removed the obvious "password reset" phishing keywords.
-        // The verification email reliably reaches the recipient
-        // (Junk folder, but delivered); cloning its envelope lets
-        // the reset mail ride the same Defender verdict.
+    public Task SendPasswordResetCodeAsync(string toEmail, string fullName, string code)
+    {
+        // The reset email used to clone the verification template
+        // byte-for-byte as a Microsoft Defender for Office 365
+        // deliverability workaround (the @fit.edu.ph tenant runs
+        // behind it). That cloning made the inbox copy misleading —
+        // recipients saw "email-verification code" wording for a
+        // password-reset request they had just initiated.
         //
-        // This is functionally honest: the reset flow IS a code-
-        // based verification of inbox ownership before any password
-        // change is permitted. The recipient just initiated the
-        // forgot-password action in the app, so the "Enter this
-        // code to continue" instruction maps cleanly onto what
-        // they're expecting to do next.
-        SendCodeEmailAsync(
+        // Now that delivery is observable end-to-end via the
+        // X-AcademicSentinel-TraceId header (see SendCodeEmailAsync),
+        // the body says what it actually is. Envelope shape is kept
+        // close to the verification mail (same "AcademicSentinel "
+        // subject prefix, single short paragraph, code prominently
+        // displayed, expiry + ignore-if-not-requested closer) so any
+        // residual Defender heuristics tuned to the verification
+        // template still apply. If delivery regresses we have the
+        // trace id to prove it on the M365 side.
+        var displayName = string.IsNullOrWhiteSpace(fullName) ? toEmail : fullName.Trim();
+
+        return SendCodeEmailAsync(
             toEmail,
-            "AcademicSentinel Email Verification Code",
-            $"Your AcademicSentinel email-verification code is: {code}\n\n" +
-            $"Enter this code in the AcademicSentinel app to verify your identity and continue.\n" +
-            $"This code will expire in 10 minutes. If you did not request this, you can ignore this email.");
+            "AcademicSentinel Password Reset Code",
+            $"{displayName}\n\n" +
+            $"Your AcademicSentinel password-reset code is: {code}\n\n" +
+            $"Enter this code in the AcademicSentinel app to reset your password.\n" +
+            $"This code will expire in 10 minutes. If you did not request a password reset, you can ignore this email.");
+    }
 
     public Task SendEmailVerificationCodeAsync(string toEmail, string code) =>
         SendCodeEmailAsync(
