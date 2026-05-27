@@ -473,16 +473,29 @@
                                 <DataGridTextColumn Header="Ended At" Binding="{Binding EndedAtDisplay}" Width="170" />
                                 <DataGridTextColumn Header="Attendees" Binding="{Binding AttendeesDisplay}" Width="110" />
                                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="120" />
-                                <DataGridTemplateColumn Header="Action" Width="*" MinWidth="140">
+                                <DataGridTemplateColumn Header="Action" Width="*" MinWidth="230">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <Button Content="View Archive"
-                                                    Click="BtnViewArchive_Click"
-                                                    Style="{StaticResource MaterialDesignFlatButton}"
-                                                    Foreground="#1B5E20"
-                                                    Height="28"
-                                                    Padding="12,0"
-                                                    HorizontalAlignment="Left"/>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Content="View Archive"
+                                                        Click="BtnViewArchive_Click"
+                                                        Style="{StaticResource MaterialDesignFlatButton}"
+                                                        Foreground="#1B5E20"
+                                                        Height="28"
+                                                        Padding="12,0"
+                                                        HorizontalAlignment="Left"/>
+                                                <!-- Soft-delete (Trash). Server keeps the row until
+                                                     ArchiveCleanupService purges it after the
+                                                     Archive:RetentionDays window (15 or 30 days). -->
+                                                <Button Content="Delete"
+                                                        Click="DeleteSession_Click"
+                                                        Style="{StaticResource MaterialDesignFlatButton}"
+                                                        Foreground="#C62828"
+                                                        Height="28"
+                                                        Padding="12,0"
+                                                        Margin="6,0,0,0"
+                                                        HorizontalAlignment="Left"/>
+                                            </StackPanel>
                                         </DataTemplate>
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>

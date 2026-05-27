@@ -446,7 +446,60 @@ namespace AcademicSentinel.Client.Views.IMC
         }
         // Post-merge fix: removed duplicate empty stubs of TxtSearch_TextChanged and CmbFilter_SelectionChanged (real handlers above)
         private void ViewSession_Click(object sender, RoutedEventArgs e) { }
-        private void DeleteSession_Click(object sender, RoutedEventArgs e) { }
+
+        // Soft-delete (Trash) a Past Session archive. Confirms, then
+        // calls DELETE /api/rooms/sessions/{realSessionId}. On success
+        // the row is removed from the Sessions ObservableCollection so
+        // the DataGrid updates instantly without a refetch. The server
+        // sets DeletedAt and keeps the row until ArchiveCleanupService
+        // hard-deletes it after the configured retention window.
+        // Note: uses SessionItem.RealSessionId (the DB primary key),
+        // NOT the display SessionId — same fix as Bug2 on
+        // BtnViewArchive_Click above.
+        private async void DeleteSession_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not System.Windows.Controls.Button btn || btn.DataContext is not SessionItem selectedSession) return;
+
+            var confirm = System.Windows.MessageBox.Show(
+                $"Move {selectedSession.SessionId} to Trash?\n\nIt will be permanently deleted after the retention period.",
+                "Delete Session Archive",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning,
+                System.Windows.MessageBoxResult.No);
+            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+
+            btn.IsEnabled = false;
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+
+                var response = await client.DeleteAsync($"{ApiEndpoints.RoomsSessionDeletePrefix}/{selectedSession.RealSessionId}");
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    System.Windows.MessageBox.Show(
+                        $"Could not delete {selectedSession.SessionId}.\n\nServer responded: {(int)response.StatusCode} {response.ReasonPhrase}\n{body}",
+                        "Delete Session Archive",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                    btn.IsEnabled = true;
+                    return;
+                }
+
+                Sessions.Remove(selectedSession);
+                UpdatePaginationUI();
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show(
+                    $"Failed to delete session: {ex.Message}",
+                    "Delete Session Archive",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Error);
+                btn.IsEnabled = true;
+            }
+        }
     }
 
     public class SessionItem
