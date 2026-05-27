@@ -54,6 +54,7 @@
                     FontSize="14" FontWeight="SemiBold"
                     Background="#1B5E20" Foreground="White"
                     BorderThickness="0" Cursor="Hand"
+                    IsDefault="True"
                     Margin="0,0,0,12"
                     Click="BtnVerify_Click"/>
 

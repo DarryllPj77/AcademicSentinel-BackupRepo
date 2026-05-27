@@ -288,6 +288,7 @@
 
                     <Button x:Name="BtnLogin" Content="Log In"
                             Style="{StaticResource PrimaryButton}"
+                            IsDefault="True"
                             Click="BtnLogin_Click" Margin="0,0,0,28"/>
 
                     <Grid Margin="0,0,0,24">
