@@ -33,6 +33,17 @@ public class StartSessionDto
     public string ExamType { get; set; } = "Summative";
 }
 
+public class VerifyEmailCodeRequestDto
+{
+    public string Email { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+}
+
+public class ResendVerificationCodeRequestDto
+{
+    public string Email { get; set; } = string.Empty;
+}
+
 /// <summary>
 /// DTO for getting room status
 /// </summary>

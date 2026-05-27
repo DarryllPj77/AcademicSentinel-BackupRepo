@@ -36,6 +36,7 @@ namespace AcademicSentinel.Client.Services
         // Calls POST /api/auth/login
         public async Task<bool> LoginAsync(string email, string password)
         {
+            LastErrorMessage = null;
             try
             {
                 var loginData = new UserLoginDto { Email = email, Password = password };
@@ -52,11 +53,28 @@ namespace AcademicSentinel.Client.Services
                         SessionManager.JwtToken = result.Token;
                         return true;
                     }
+                    return false;
                 }
+
+                // Surface a marker for the server's EMAIL_NOT_VERIFIED
+                // 403 so the LoginWindow can branch and route the user
+                // to the verify-email screen instead of treating it as
+                // a bad-credentials failure. The server replies with
+                // either a JSON object that carries a `code` field or
+                // a plain string for legacy paths; treat any 403 as
+                // the verification gate.
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    LastErrorMessage = "EMAIL_NOT_VERIFIED";
+                    return false;
+                }
+
+                LastErrorMessage = "INVALID_CREDENTIALS";
                 return false;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                LastErrorMessage = $"NETWORK_ERROR:{ex.Message}";
                 return false;
             }
         }

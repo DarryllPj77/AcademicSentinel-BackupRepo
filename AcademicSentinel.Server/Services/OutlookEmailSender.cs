@@ -12,7 +12,33 @@ public class OutlookEmailSender : IEmailSender
         _configuration = configuration;
     }
 
-    public async Task SendPasswordResetCodeAsync(string toEmail, string code)
+    public Task SendPasswordResetCodeAsync(string toEmail, string code) =>
+        SendCodeEmailAsync(
+            toEmail,
+            "AcademicSentinel Password Reset Code",
+            $"Your AcademicSentinel password-reset code is: {code}\n\n" +
+            $"Enter this code in the AcademicSentinel app to continue resetting your password.\n" +
+            $"This code will expire in 10 minutes. If you did not request a password reset, you can ignore this email.");
+
+    public Task SendEmailVerificationCodeAsync(string toEmail, string code) =>
+        SendCodeEmailAsync(
+            toEmail,
+            "AcademicSentinel Email Verification Code",
+            $"Your AcademicSentinel email-verification code is: {code}\n\n" +
+            $"Enter this code in the AcademicSentinel app to finish creating your account.\n" +
+            $"This code will expire in 10 minutes. If you did not start a registration, you can ignore this email.");
+
+    /// <summary>
+    /// Shared SMTP transport used by both flows. Mail credentials are
+    /// read from configuration (env vars or appsettings):
+    ///   Email:SmtpHost / Email:SmtpPort
+    ///   Email:From     — visible sender address
+    ///   Email:Username / Email:Password
+    /// On send failure, throws InvalidOperationException with the
+    /// SMTP host/port + the underlying SmtpException message so the
+    /// controller can decide whether to fail the API call.
+    /// </summary>
+    private async Task SendCodeEmailAsync(string toEmail, string subject, string body)
     {
         var configuredHost = _configuration["Email:SmtpHost"];
         var from = _configuration["Email:From"] ?? string.Empty;
@@ -37,8 +63,8 @@ public class OutlookEmailSender : IEmailSender
 
         using var message = new MailMessage(from, toEmail)
         {
-            Subject = "AcademicSentinel Password Reset Code",
-            Body = $"Your AcademicSentinel verification code is: {code}\n\nThis code will expire in 10 minutes.",
+            Subject = subject,
+            Body = body,
             IsBodyHtml = false
         };
 

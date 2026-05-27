@@ -48,6 +48,20 @@ public class AuthController : ControllerBase
             return Unauthorized("Invalid email or password.");
         }
 
+        // Block login until the registration code has been verified.
+        // 403 (distinct from the 401 above) lets the client recognise
+        // this specific state and route the user to the
+        // verify-email-code screen instead of telling them their
+        // credentials are bad.
+        if (!user.IsEmailVerified)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                code = "EMAIL_NOT_VERIFIED",
+                message = "This account hasn't been verified yet. Please enter the code we sent to your institutional email."
+            });
+        }
+
         var authClaims = new List<Claim>
     {
         new Claim(ClaimTypes.Name, user.Email),
@@ -87,6 +101,25 @@ public class AuthController : ControllerBase
         });
     }
 
+    // Institutional-only registration allowlist. Anything outside
+    // these two domains is rejected at the API boundary regardless of
+    // what the client sends.
+    //   @fit.edu.ph     → Student
+    //   @feutech.edu.ph → Teacher (Instructor in our existing Role
+    //                    vocabulary — the rest of the codebase expects
+    //                    "Student" or "Instructor" so we map here.)
+    private static readonly Dictionary<string, string> _institutionalRoleByDomain =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            { "fit.edu.ph",     "Student" },
+            { "feutech.edu.ph", "Instructor" },
+        };
+
+    private const int VerificationCodeTtlMinutes = 10;
+    private const int ResetCodeTtlMinutes        = 10;
+    private const int MaxCodeAttempts            = 5;
+    private const int ResendCooldownSeconds      = 30;
+
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] UserRegisterDto registerDto)
     {
@@ -101,34 +134,190 @@ public class AuthController : ControllerBase
             return BadRequest("Please enter a valid email address.");
         }
 
-        if (!HasResolvableDomain(normalizedEmail))
+        // ============================================================
+        // INSTITUTIONAL EMAIL ENFORCEMENT.
+        // ============================================================
+        // Only @fit.edu.ph (Student) and @feutech.edu.ph (Instructor)
+        // are accepted. The role is DERIVED from the domain server-
+        // side; the role field the client sends is ignored to prevent
+        // privilege-escalation by tampered clients.
+        var domain = normalizedEmail.Split('@').LastOrDefault() ?? string.Empty;
+        if (!_institutionalRoleByDomain.TryGetValue(domain, out var derivedRole))
         {
-            return BadRequest("Please use a legitimate email domain (e.g., Google, Outlook, or your school domain).");
+            return BadRequest(
+                "Registration is restricted to institutional emails (@fit.edu.ph or @feutech.edu.ph).");
         }
 
+        if (string.IsNullOrWhiteSpace(registerDto.Password) || registerDto.Password.Length < 6)
+        {
+            return BadRequest("Password must be at least 6 characters long.");
+        }
+
+        // Don't reveal whether the email is already registered to a
+        // verified account vs. left in a pending-verification state.
+        // If a row already exists, refuse the registration generically.
         if (await _context.Users.AnyAsync(u => u.Email == normalizedEmail))
         {
-            return BadRequest("Email is already registered.");
+            return BadRequest("This email cannot be registered. If you already started, check your inbox for a verification code.");
         }
 
-        // 2. Hash the password using BCrypt
         string passwordHash = BCrypt.Net.BCrypt.HashPassword(registerDto.Password);
 
-        // 3. Create the user object
+        var code = GenerateSixDigitCode();
         var user = new User
         {
-            FullName = registerDto.FullName.Trim(),
-            Email = normalizedEmail,
+            FullName     = registerDto.FullName.Trim(),
+            Email        = normalizedEmail,
             PasswordHash = passwordHash,
-            Role = registerDto.Role,
-            CreatedAt = DateTime.UtcNow
+            Role         = derivedRole,
+            CreatedAt    = DateTime.UtcNow,
+            // Email-verification: account starts unverified. Login is
+            // gated on IsEmailVerified == true; verify-email-code is
+            // the only path that flips it.
+            IsEmailVerified              = false,
+            EmailVerificationCodeHash    = BCrypt.Net.BCrypt.HashPassword(code),
+            EmailVerificationExpiresAt   = DateTime.UtcNow.AddMinutes(VerificationCodeTtlMinutes),
+            EmailVerificationAttempts    = 0,
+            LastVerificationCodeSentAt   = DateTime.UtcNow,
         };
 
-        // 4. Save to Database
         _context.Users.Add(user);
         await _context.SaveChangesAsync();
 
-        return Ok(new { message = "Registration successful!" });
+        // Send AFTER the row is committed so a transient SMTP failure
+        // doesn't leave an orphan user we can't roll back to. If the
+        // send fails we still keep the row — the user can request a
+        // resend via /resend-verification-code.
+        try
+        {
+            await _emailSender.SendEmailVerificationCodeAsync(user.Email, code);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send verification email to {Email}", user.Email);
+            return StatusCode(StatusCodes.Status500InternalServerError, new
+            {
+                message = "Account created but the verification email could not be sent. Use Resend Code from the verification screen."
+            });
+        }
+
+        _logger.LogInformation("User {Email} registered (pending verification, role={Role}).",
+            user.Email, derivedRole);
+
+        return Ok(new
+        {
+            message = "Verification code sent. Enter it in the AcademicSentinel app to finish registration.",
+            email   = user.Email,
+            role    = derivedRole,
+            verificationExpiresAt = user.EmailVerificationExpiresAt
+        });
+    }
+
+    [HttpPost("verify-email-code")]
+    public async Task<IActionResult> VerifyEmailCode([FromBody] VerifyEmailCodeRequestDto dto)
+    {
+        var normalizedEmail = NormalizeEmail(dto?.Email);
+        if (string.IsNullOrWhiteSpace(normalizedEmail) || string.IsNullOrWhiteSpace(dto?.Code))
+        {
+            return BadRequest("Email and verification code are required.");
+        }
+
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
+        if (user == null
+            || user.IsEmailVerified
+            || string.IsNullOrWhiteSpace(user.EmailVerificationCodeHash)
+            || user.EmailVerificationExpiresAt == null)
+        {
+            // Same generic response for "no such pending account" and
+            // "bad code" to avoid leaking which emails are registered.
+            return Unauthorized("Invalid or expired verification code.");
+        }
+
+        if (user.EmailVerificationExpiresAt < DateTime.UtcNow)
+        {
+            user.EmailVerificationCodeHash  = null;
+            user.EmailVerificationExpiresAt = null;
+            user.EmailVerificationAttempts  = 0;
+            await _context.SaveChangesAsync();
+            return Unauthorized("Invalid or expired verification code.");
+        }
+
+        if (user.EmailVerificationAttempts >= MaxCodeAttempts)
+        {
+            // Lock the current code; require a resend.
+            user.EmailVerificationCodeHash  = null;
+            user.EmailVerificationExpiresAt = null;
+            user.EmailVerificationAttempts  = 0;
+            await _context.SaveChangesAsync();
+            return Unauthorized("Too many incorrect attempts. Request a new verification code.");
+        }
+
+        if (!BCrypt.Net.BCrypt.Verify(dto.Code, user.EmailVerificationCodeHash))
+        {
+            user.EmailVerificationAttempts++;
+            await _context.SaveChangesAsync();
+            return Unauthorized("Invalid or expired verification code.");
+        }
+
+        // Code valid → flip the row to verified, scrub all code state.
+        user.IsEmailVerified             = true;
+        user.EmailVerificationCodeHash   = null;
+        user.EmailVerificationExpiresAt  = null;
+        user.EmailVerificationAttempts   = 0;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation("User {Email} verified email.", user.Email);
+
+        return Ok(new { success = true, message = "Email verified. You can now sign in." });
+    }
+
+    [HttpPost("resend-verification-code")]
+    public async Task<IActionResult> ResendVerificationCode([FromBody] ResendVerificationCodeRequestDto dto)
+    {
+        var normalizedEmail = NormalizeEmail(dto?.Email);
+        if (string.IsNullOrWhiteSpace(normalizedEmail))
+        {
+            return BadRequest("Email is required.");
+        }
+
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
+
+        // Generic response — never confirm whether the email exists or
+        // whether the account is already verified.
+        var genericResponse = Ok(new { message = "If the account exists and is pending verification, a new code has been sent." });
+
+        if (user == null || user.IsEmailVerified) return genericResponse;
+
+        // Resend cooldown — prevent code-flooding attacks and inbox abuse.
+        if (user.LastVerificationCodeSentAt.HasValue
+            && (DateTime.UtcNow - user.LastVerificationCodeSentAt.Value).TotalSeconds < ResendCooldownSeconds)
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                message = $"Please wait {ResendCooldownSeconds} seconds between resend requests."
+            });
+        }
+
+        var code = GenerateSixDigitCode();
+        user.EmailVerificationCodeHash   = BCrypt.Net.BCrypt.HashPassword(code);
+        user.EmailVerificationExpiresAt  = DateTime.UtcNow.AddMinutes(VerificationCodeTtlMinutes);
+        user.EmailVerificationAttempts   = 0; // fresh code resets the attempt counter
+        user.LastVerificationCodeSentAt  = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+
+        try
+        {
+            await _emailSender.SendEmailVerificationCodeAsync(user.Email, code);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to resend verification email to {Email}", user.Email);
+            // Still return the generic response so we don't leak email
+            // existence via a different status code.
+            return genericResponse;
+        }
+
+        return genericResponse;
     }
 
     [HttpPost("forgot-password")]
@@ -148,10 +337,22 @@ public class AuthController : ControllerBase
             return Ok(new { message = "If the account exists, a verification code has been sent." });
         }
 
+        // Resend cooldown — prevent code-flooding attacks against the
+        // reset endpoint. We DON'T branch the response on this so that
+        // a hammering attacker can't use the 429 to confirm an email
+        // exists; we just silently swallow the request.
+        if (user.LastResetCodeSentAt.HasValue
+            && (DateTime.UtcNow - user.LastResetCodeSentAt.Value).TotalSeconds < ResendCooldownSeconds)
+        {
+            return Ok(new { message = "If the account exists, a verification code has been sent." });
+        }
+
         var code = GenerateSixDigitCode();
-        user.PasswordResetCodeHash = BCrypt.Net.BCrypt.HashPassword(code);
-        user.PasswordResetCodeExpiresAt = DateTime.UtcNow.AddMinutes(10);
-        user.PasswordResetToken = null;
+        user.PasswordResetCodeHash       = BCrypt.Net.BCrypt.HashPassword(code);
+        user.PasswordResetCodeExpiresAt  = DateTime.UtcNow.AddMinutes(ResetCodeTtlMinutes);
+        user.PasswordResetAttempts       = 0;
+        user.LastResetCodeSentAt         = DateTime.UtcNow;
+        user.PasswordResetToken          = null;
         user.PasswordResetTokenExpiresAt = null;
 
         await _context.SaveChangesAsync();
@@ -192,16 +393,29 @@ public class AuthController : ControllerBase
             return Unauthorized("Invalid or expired verification code.");
         }
 
+        if (user.PasswordResetAttempts >= MaxCodeAttempts)
+        {
+            // Lock current code; require a new /forgot-password call.
+            user.PasswordResetCodeHash      = null;
+            user.PasswordResetCodeExpiresAt = null;
+            user.PasswordResetAttempts      = 0;
+            await _context.SaveChangesAsync();
+            return Unauthorized("Too many incorrect attempts. Request a new reset code.");
+        }
+
         if (!BCrypt.Net.BCrypt.Verify(dto.Code, user.PasswordResetCodeHash))
         {
+            user.PasswordResetAttempts++;
+            await _context.SaveChangesAsync();
             return Unauthorized("Invalid or expired verification code.");
         }
 
         var resetToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        user.PasswordResetToken = resetToken;
+        user.PasswordResetToken          = resetToken;
         user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddMinutes(15);
-        user.PasswordResetCodeHash = null;
-        user.PasswordResetCodeExpiresAt = null;
+        user.PasswordResetCodeHash       = null;
+        user.PasswordResetCodeExpiresAt  = null;
+        user.PasswordResetAttempts       = 0;
 
         await _context.SaveChangesAsync();
 

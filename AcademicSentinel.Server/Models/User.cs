@@ -22,4 +22,16 @@ public class User
     public DateTime? PasswordResetCodeExpiresAt { get; set; }
     public string? PasswordResetToken { get; set; }
     public DateTime? PasswordResetTokenExpiresAt { get; set; }
+    public int PasswordResetAttempts { get; set; } = 0;
+    public DateTime? LastResetCodeSentAt { get; set; }
+
+    // Email-verification flow fields (registration → enter code → verified).
+    // Login is blocked while IsEmailVerified == false. Code is stored
+    // BCrypt-hashed; attempts are counted and capped per code; cooldown
+    // between resends is enforced via LastVerificationCodeSentAt.
+    public bool IsEmailVerified { get; set; } = false;
+    public string? EmailVerificationCodeHash { get; set; }
+    public DateTime? EmailVerificationExpiresAt { get; set; }
+    public int EmailVerificationAttempts { get; set; } = 0;
+    public DateTime? LastVerificationCodeSentAt { get; set; }
 }

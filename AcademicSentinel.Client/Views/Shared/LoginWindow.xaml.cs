@@ -96,6 +96,27 @@ namespace AcademicSentinel.Client.Views.Shared
                 }
                 else
                 {
+                    // Branch on the failure mode the AuthService recorded.
+                    // EMAIL_NOT_VERIFIED routes the user to the verify
+                    // screen so they can finish onboarding instead of
+                    // staring at a misleading "wrong password" toast.
+                    if (string.Equals(_authService.LastErrorMessage, "EMAIL_NOT_VERIFIED", StringComparison.Ordinal))
+                    {
+                        var go = MessageBox.Show(
+                            "This account hasn't been verified yet. We can open the email-verification " +
+                            "screen so you can enter the code we sent to your institutional inbox. Continue?",
+                            "Email Verification Required",
+                            MessageBoxButton.YesNo, MessageBoxImage.Information);
+                        if (go == MessageBoxResult.Yes)
+                        {
+                            new EmailVerificationWindow(email).Show();
+                            this.Close();
+                            return;
+                        }
+                        ResetLoginButton();
+                        return;
+                    }
+
                     MessageBox.Show("Invalid email or password.", "Login Failed", MessageBoxButton.OK, MessageBoxImage.Error);
                     ResetLoginButton();
                 }

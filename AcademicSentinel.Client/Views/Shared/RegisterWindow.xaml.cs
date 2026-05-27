@@ -56,6 +56,26 @@ namespace AcademicSentinel.Client.Views.Shared
                 return;
             }
 
+            // Client-side hint mirroring the server-side allowlist.
+            // The server enforces the same rule authoritatively — this
+            // is just a faster feedback path so the student doesn't
+            // wait on a round trip to find out their personal Gmail
+            // won't work.
+            string domain = email.Split('@').Length > 1
+                ? email.Split('@')[1].ToLowerInvariant()
+                : string.Empty;
+            if (domain != "fit.edu.ph" && domain != "feutech.edu.ph")
+            {
+                MessageBox.Show(
+                    "Registration is restricted to institutional emails:\n\n" +
+                    "  • @fit.edu.ph (Student)\n" +
+                    "  • @feutech.edu.ph (Instructor)\n\n" +
+                    "Please use your school email to continue.",
+                    "Institutional Email Required",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             if (password != confirmPassword)
             {
                 MessageBox.Show("Passwords do not match.", "Validation Error", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -85,13 +105,19 @@ namespace AcademicSentinel.Client.Views.Shared
 
             if (isSuccess)
             {
-                MessageBox.Show("Registration successful! You can now log in.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
-                new LoginWindow(AppMode.Role).Show();
+                MessageBox.Show(
+                    "We've sent a 6-digit verification code to your institutional email. " +
+                    "Enter the code on the next screen to finish creating your account.",
+                    "Check Your Email", MessageBoxButton.OK, MessageBoxImage.Information);
+                new EmailVerificationWindow(email).Show();
                 this.Close();
             }
             else
             {
-                MessageBox.Show("Registration failed. Email might be taken.", "Registration Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(
+                    "Registration failed. The email might be taken, or it may not be an institutional address " +
+                    "(only @fit.edu.ph and @feutech.edu.ph are accepted).",
+                    "Registration Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 BtnRegister.IsEnabled = true;
                 BtnRegister.Content = "Create Account";
             }
