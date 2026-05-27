@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Mail;
+using Microsoft.Extensions.Logging;
 
 namespace AcademicSentinel.Server.Services;
 
@@ -30,10 +31,14 @@ namespace AcademicSentinel.Server.Services;
 public class OutlookEmailSender : IEmailSender
 {
     private readonly IConfiguration _configuration;
+    private readonly ILogger<OutlookEmailSender> _logger;
 
-    public OutlookEmailSender(IConfiguration configuration)
+    // ILogger<T> is auto-resolved by the framework — no Program.cs
+    // change needed beyond the existing AddTransient<IEmailSender>.
+    public OutlookEmailSender(IConfiguration configuration, ILogger<OutlookEmailSender> logger)
     {
         _configuration = configuration;
+        _logger        = logger;
     }
 
     public Task SendPasswordResetCodeAsync(string toEmail, string code) =>
@@ -132,7 +137,15 @@ public class OutlookEmailSender : IEmailSender
 
         try
         {
+            _logger.LogInformation(
+                "SMTP send attempt: subject='{Subject}' to='{To}' host='{Host}:{Port}' ssl={Ssl}",
+                subject, toEmail, hostConfig, port, enableSsl);
+
             await smtp.SendMailAsync(message);
+
+            _logger.LogInformation(
+                "SMTP send OK: subject='{Subject}' to='{To}' host='{Host}:{Port}' — Gmail relay accepted the message.",
+                subject, toEmail, hostConfig, port);
         }
         catch (SmtpException smtpEx)
         {

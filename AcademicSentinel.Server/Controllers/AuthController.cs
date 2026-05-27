@@ -332,18 +332,35 @@ public class AuthController : ControllerBase
         var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
 
         // Always return generic success to avoid account enumeration.
+        // Three internal log branches differentiate "no user" / "cooldown"
+        // / "sent" for the server operator without changing the response
+        // shape the client sees. The logs are info-level so they appear
+        // in the same `dotnet run` console where the rest of the auth
+        // diagnostics live.
         if (user == null)
         {
+            _logger.LogInformation(
+                "ForgotPassword: no user matched {Email} — generic 200 returned, no email sent.",
+                normalizedEmail);
             return Ok(new { message = "If the account exists, a verification code has been sent." });
         }
 
         // Resend cooldown — prevent code-flooding attacks against the
         // reset endpoint. We DON'T branch the response on this so that
         // a hammering attacker can't use the 429 to confirm an email
-        // exists; we just silently swallow the request.
+        // exists; we just silently swallow the request. The log line
+        // below makes the swallow VISIBLE to the operator so a tester
+        // who clicks submit five times in a row understands why only
+        // the first attempt produced an email.
         if (user.LastResetCodeSentAt.HasValue
             && (DateTime.UtcNow - user.LastResetCodeSentAt.Value).TotalSeconds < ResendCooldownSeconds)
         {
+            _logger.LogInformation(
+                "ForgotPassword: cooldown active for {Email} — silently swallowed (last sent at {LastSent:O}, {Elapsed:F1}s ago, threshold {Threshold}s).",
+                normalizedEmail,
+                user.LastResetCodeSentAt,
+                (DateTime.UtcNow - user.LastResetCodeSentAt.Value).TotalSeconds,
+                ResendCooldownSeconds);
             return Ok(new { message = "If the account exists, a verification code has been sent." });
         }
 
@@ -356,6 +373,10 @@ public class AuthController : ControllerBase
         user.PasswordResetTokenExpiresAt = null;
 
         await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "ForgotPassword: sending reset code to {Email} (expires {ExpiresAt:O}).",
+            user.Email, user.PasswordResetCodeExpiresAt);
 
         try
         {
