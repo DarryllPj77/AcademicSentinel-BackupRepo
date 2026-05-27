@@ -2344,6 +2344,18 @@ namespace AcademicSentinel.Client.Views.IMC
             return $"• {label}: {count}";
         }
 
+        // Opens the interactive tutorial window. Non-modal so the
+        // instructor can keep glancing at the live console behind it;
+        // Owner=this binds Z-order and ensures the tutorial closes
+        // automatically when the console closes. The tutorial window
+        // performs no monitoring actions — it's a static clickable
+        // replica that only updates its own info panel.
+        private void BtnHelp_Click(object sender, RoutedEventArgs e)
+        {
+            var help = new InstructorMonitoringHelpWindow { Owner = this };
+            help.Show();
+        }
+
         private async void BtnEndSession_Click(object sender, RoutedEventArgs e)
         {
             if (_isSessionEnded)

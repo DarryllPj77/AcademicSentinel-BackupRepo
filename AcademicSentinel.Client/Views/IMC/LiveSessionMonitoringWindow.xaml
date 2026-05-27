@@ -166,10 +166,51 @@
                     </StackPanel>
                 </StackPanel>
 
-                <Button Grid.Column="2" Content="End Session"
-                        Style="{StaticResource EndSessionBtn}"
-                        Click="BtnEndSession_Click"
-                        Margin="0,0,16,0"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <!-- Opens InstructorMonitoringHelpWindow (a safe,
+                         clickable replica of this console). Non-modal
+                         with Owner=this so the instructor can keep
+                         glancing at the live console while reading. -->
+                    <Button Content="Help"
+                            Click="BtnHelp_Click"
+                            Background="Transparent"
+                            Foreground="White"
+                            FontSize="13"
+                            FontWeight="SemiBold"
+                            Cursor="Hand"
+                            Margin="0,0,10,0"
+                            Padding="16,10"
+                            BorderBrush="#80FFFFFF"
+                            BorderThickness="1.5">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="hb" Background="{TemplateBinding Background}"
+                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                        CornerRadius="6"
+                                        Padding="{TemplateBinding Padding}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="HelpCircleOutline" Width="16" Height="16"
+                                                                 Foreground="White" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <ContentPresenter VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="hb" Property="Background" Value="#22FFFFFF"/>
+                                        <Setter TargetName="hb" Property="BorderBrush" Value="White"/>
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="hb" Property="Background" Value="#33FFFFFF"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                    <Button Content="End Session"
+                            Style="{StaticResource EndSessionBtn}"
+                            Click="BtnEndSession_Click"/>
+                </StackPanel>
 
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Background="Transparent" BorderThickness="0" Cursor="Hand" Padding="6" Margin="0,0,12,0">
