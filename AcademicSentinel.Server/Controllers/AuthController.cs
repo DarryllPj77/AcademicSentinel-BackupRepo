@@ -413,13 +413,38 @@ public class AuthController : ControllerBase
         }
 
         var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
+
+        // Entry-line diagnostic. Logs only non-sensitive metadata: the
+        // length of the entered code (NOT the code itself), whether a
+        // reset-code hash currently exists for this user, the stored
+        // expiry timestamp, and the attempt counter. Together with the
+        // per-branch reject logs below this is enough to identify
+        // which of the four 401 paths a real failure hits without ever
+        // writing the secret to disk.
+        _logger.LogInformation(
+            "VerifyResetCode: email={Email} codeLength={CodeLength} hashPresent={HashPresent} expiresAt={ExpiresAt:O} attempts={Attempts}",
+            normalizedEmail,
+            dto.Code?.Length ?? 0,
+            user != null && !string.IsNullOrWhiteSpace(user.PasswordResetCodeHash),
+            user?.PasswordResetCodeExpiresAt,
+            user?.PasswordResetAttempts);
+
         if (user == null || string.IsNullOrWhiteSpace(user.PasswordResetCodeHash) || user.PasswordResetCodeExpiresAt == null)
         {
+            _logger.LogInformation(
+                "VerifyResetCode: rejecting {Email} — no active reset state (userFound={UserFound}, hashPresent={HashPresent}, expiryPresent={ExpiryPresent}).",
+                normalizedEmail,
+                user != null,
+                user != null && !string.IsNullOrWhiteSpace(user.PasswordResetCodeHash),
+                user?.PasswordResetCodeExpiresAt != null);
             return Unauthorized("Invalid or expired verification code.");
         }
 
         if (user.PasswordResetCodeExpiresAt < DateTime.UtcNow)
         {
+            _logger.LogInformation(
+                "VerifyResetCode: rejecting {Email} — code expired at {ExpiresAt:O} (now {Now:O}).",
+                user.Email, user.PasswordResetCodeExpiresAt, DateTime.UtcNow);
             user.PasswordResetCodeHash = null;
             user.PasswordResetCodeExpiresAt = null;
             await _context.SaveChangesAsync();
@@ -428,6 +453,9 @@ public class AuthController : ControllerBase
 
         if (user.PasswordResetAttempts >= MaxCodeAttempts)
         {
+            _logger.LogInformation(
+                "VerifyResetCode: rejecting {Email} — attempt counter locked at {Attempts}/{Max}; code cleared, fresh /forgot-password required.",
+                user.Email, user.PasswordResetAttempts, MaxCodeAttempts);
             // Lock current code; require a new /forgot-password call.
             user.PasswordResetCodeHash      = null;
             user.PasswordResetCodeExpiresAt = null;
@@ -440,6 +468,9 @@ public class AuthController : ControllerBase
         {
             user.PasswordResetAttempts++;
             await _context.SaveChangesAsync();
+            _logger.LogInformation(
+                "VerifyResetCode: rejecting {Email} — BCrypt mismatch (attempt {Attempt}/{Max}).",
+                user.Email, user.PasswordResetAttempts, MaxCodeAttempts);
             return Unauthorized("Invalid or expired verification code.");
         }
 
@@ -451,6 +482,10 @@ public class AuthController : ControllerBase
         user.PasswordResetAttempts       = 0;
 
         await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "VerifyResetCode: accepted {Email} — reset token issued (expires {TokenExpiresAt:O}).",
+            user.Email, user.PasswordResetTokenExpiresAt);
 
         return Ok(new VerifyResetCodeResponseDto
         {
