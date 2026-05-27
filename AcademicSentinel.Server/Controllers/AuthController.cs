@@ -388,6 +388,18 @@ public class AuthController : ControllerBase
             return StatusCode(StatusCodes.Status500InternalServerError, $"Failed to send verification email: {ex.Message}");
         }
 
+        // Positive end-of-flow log. Together with the existing
+        // "sending reset code" + "SMTP send attempt" + "SMTP send OK"
+        // logs, this proves the controller reached the 200 OK return
+        // without any swallowed exception between the SMTP call and
+        // the response. After this line is reached, anything that
+        // goes wrong is outside the application boundary — Gmail's
+        // outbound delivery layer, FIT's Defender filter, the
+        // recipient's mailbox rules.
+        _logger.LogInformation(
+            "ForgotPassword: end of happy path for {Email} — controller returning 200; mail handed off to Gmail relay.",
+            user.Email);
+
         return Ok(new { message = "If the account exists, a verification code has been sent." });
     }
 
