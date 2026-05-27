@@ -37,5 +37,11 @@
         // OTHER
         // ========================================================
         public const string Rooms = $"{BaseUrl}/api/rooms";
+
+        // Past Sessions Trash — soft-deletes a session archive.
+        // Server keeps the row until ArchiveCleanupService purges
+        // it after the configured retention window (15 or 30 days).
+        // Format: append the sessionId to this prefix.
+        public const string RoomsSessionDeletePrefix = $"{BaseUrl}/api/rooms/sessions";
     }
 }

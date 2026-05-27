@@ -166,7 +166,10 @@ public class ReportsController : ControllerBase
     public async Task<ActionResult<IEnumerable<object>>> GetRoomSessions(int roomId)
     {
         var sessions = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Completed")
+            .Where(s => s.RoomId == roomId
+                        && s.Status == "Completed"
+                        // Past Sessions Trash: see RoomsController.GetRoomHistory.
+                        && s.DeletedAt == null)
             .OrderByDescending(s => s.StartTime)
             .ToListAsync();
 

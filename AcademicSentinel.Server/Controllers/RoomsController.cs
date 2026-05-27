@@ -18,6 +18,7 @@ public class RoomsController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IHubContext<MonitoringHub> _hubContext;
+    private readonly ILogger<RoomsController> _logger;
 
     // ==========================================================
     // CANONICAL SOURCE OF TRUTH for session activity.
@@ -216,10 +217,11 @@ public class RoomsController : ControllerBase
         try { await _context.SaveChangesAsync(); } catch { /* best-effort heal */ }
     }
 
-    public RoomsController(AppDbContext context, IHubContext<MonitoringHub> hubContext)
+    public RoomsController(AppDbContext context, IHubContext<MonitoringHub> hubContext, ILogger<RoomsController> logger)
     {
         _context = context;
         _hubContext = hubContext;
+        _logger = logger;
     }
 
     // ==========================================
@@ -767,7 +769,11 @@ public class RoomsController : ControllerBase
     {
         var history = await _context.ExamSessions
             .Where(s => s.RoomId == roomId
-                        && (s.Status == "Completed" || s.Status == "Interrupted"))
+                        && (s.Status == "Completed" || s.Status == "Interrupted")
+                        // Past Sessions Trash: soft-deleted rows
+                        // (DeletedAt != null) are hidden here and
+                        // hard-deleted later by ArchiveCleanupService.
+                        && s.DeletedAt == null)
             .OrderByDescending(s => s.StartTime)
             .ToListAsync();
 
@@ -802,6 +808,47 @@ public class RoomsController : ControllerBase
         }).ToList();
 
         return Ok(result);
+    }
+
+    // DELETE: api/rooms/sessions/{sessionId}
+    // Soft-deletes (Trashes) a Past Session archive. The row is
+    // hidden from history immediately but kept in the table until
+    // ArchiveCleanupService hard-deletes it after the configured
+    // retention window (Archive:RetentionDays in appsettings.json).
+    //
+    // Only terminal sessions (Completed / Interrupted) may be
+    // trashed — refusing live sessions (Active / Pending /
+    // Countdown) prevents the user from accidentally hiding a
+    // running monitoring session, which would also confuse
+    // GetLatestSessionStateAsync's "latest session" lookup.
+    [HttpDelete("sessions/{sessionId}")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> SoftDeleteSession(int sessionId)
+    {
+        var session = await _context.ExamSessions.FirstOrDefaultAsync(s => s.Id == sessionId);
+        if (session == null)
+            return NotFound(new { message = "Session not found." });
+
+        if (session.DeletedAt != null)
+            return Ok(new { message = "Session already trashed.", deletedAt = session.DeletedAt });
+
+        var isTerminal = string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(session.Status, "Interrupted", StringComparison.OrdinalIgnoreCase);
+        if (!isTerminal)
+            return Conflict(new
+            {
+                code    = "SESSION_NOT_TERMINAL",
+                message = $"Only Completed or Interrupted sessions can be deleted. Current status: {session.Status}."
+            });
+
+        session.DeletedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "SoftDeleteSession: sessionId={SessionId} roomId={RoomId} status={Status} trashed at {DeletedAt:O}; will be hard-deleted by ArchiveCleanupService after retention window.",
+            session.Id, session.RoomId, session.Status, session.DeletedAt);
+
+        return NoContent();
     }
 
     // ==========================================

@@ -50,6 +50,14 @@
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
         </Style>
+
+        <!-- Danger style for the soft-delete (Trash) action on each row.
+             Matches the visual weight of the outlined "View" button so
+             the two siblings line up in the Action column. -->
+        <Style x:Key="DangerOutlinedButton" TargetType="Button" BasedOn="{StaticResource MaterialDesignOutlinedButton}">
+            <Setter Property="Foreground" Value="#C62828"/>
+            <Setter Property="BorderBrush" Value="#C62828"/>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="22">
@@ -97,15 +105,22 @@
                         <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="1.1*"/>
                         <DataGridTextColumn Header="Attendees" Binding="{Binding AttendeeCount}" Width="1.0*"/>
                         <DataGridTextColumn Header="Violations" Binding="{Binding TotalViolations}" Width="1.0*"/>
-                        <DataGridTemplateColumn Header="Action" Width="1.1*">
+                        <DataGridTemplateColumn Header="Action" Width="1.8*">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Button Content="View"
-                                            Click="BtnView_Click"
-                                            Tag="{Binding}"
-                                            Padding="10,5"
-                                            HorizontalAlignment="Center"
-                                            Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <Button Content="View"
+                                                Click="BtnView_Click"
+                                                Tag="{Binding}"
+                                                Padding="10,5"
+                                                Margin="0,0,6,0"
+                                                Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                                        <Button Content="Delete"
+                                                Click="BtnDelete_Click"
+                                                Tag="{Binding}"
+                                                Padding="10,5"
+                                                Style="{StaticResource DangerOutlinedButton}"/>
+                                    </StackPanel>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>

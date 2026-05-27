@@ -88,6 +88,56 @@ namespace AcademicSentinel.Client.Views.IMC
             }
         }
 
+        // Soft-delete (Trash) a Past Session archive. The row goes
+        // to Trash on the server (DeletedAt timestamp set) and is
+        // hard-deleted later by ArchiveCleanupService after the
+        // configured retention window. Removed from the in-memory
+        // ObservableCollection on success so the grid updates
+        // immediately without a full reload.
+        private async void BtnDelete_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn || btn.Tag is not SessionArchiveDto session) return;
+
+            var confirm = MessageBox.Show(
+                $"Move session {session.SessionId} to Trash?\n\nIt will be permanently deleted after the retention period.",
+                "Delete Session Archive",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            btn.IsEnabled = false;
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+
+                var response = await client.DeleteAsync($"{ApiEndpoints.RoomsSessionDeletePrefix}/{session.SessionId}");
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    MessageBox.Show(
+                        $"Could not delete session {session.SessionId}.\n\nServer responded: {(int)response.StatusCode} {response.ReasonPhrase}\n{body}",
+                        "Delete Session Archive",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    btn.IsEnabled = true;
+                    return;
+                }
+
+                _sessions.Remove(session);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Failed to delete session: {ex.Message}",
+                    "Delete Session Archive",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                btn.IsEnabled = true;
+            }
+        }
+
         private void BtnBack_Click(object sender, RoutedEventArgs e)
         {
             Close();
