@@ -317,11 +317,6 @@ namespace AcademicSentinel.Client.Views.SAC
 
         // ======================== COURSE MANAGEMENT ========================
 
-        private void BtnDeleteCourse_Click(object sender, RoutedEventArgs e)
-        {
-            MessageBox.Show("To unenroll from a course, please contact your instructor.", "Course Management");
-        }
-
         private async void BtnAddCourse_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new AddCourseCodeDialog { Owner = this };
