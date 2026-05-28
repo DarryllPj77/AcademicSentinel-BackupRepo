@@ -13,6 +13,7 @@
         <SolidColorBrush x:Key="SubtleBorderBrush" Color="#E4E7EB"/>
         <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="MutedBrush" Color="#6B7280"/>
+        <SolidColorBrush x:Key="DangerBrush" Color="#C62828"/>
 
         <Style x:Key="OutlinedButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
@@ -40,6 +41,14 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <!-- Danger-coloured variant of OutlinedButton for the
+             permanent-delete bulk action. Same shape and padding so
+             the toolbar reads as one logical group. -->
+        <Style x:Key="DangerOutlinedButton" TargetType="Button" BasedOn="{StaticResource OutlinedButton}">
+            <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}"/>
         </Style>
     </Window.Resources>
 
@@ -96,12 +105,51 @@
                 BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1">
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
+                <!-- Bulk-action toolbar. Mirrors the layout of
+                     RoomDetailWindow's "Select All + Delete Selected"
+                     toolbar so the two surfaces feel consistent. -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+                    <Button x:Name="BtnSelectAllTrash"
+                            Style="{StaticResource OutlinedButton}"
+                            Click="BtnSelectAllTrash_Click"
+                            Padding="14,6">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="CheckboxMultipleMarkedOutline" Width="16" Height="16"
+                                                     VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock x:Name="TxtSelectAllTrashLabel" Text="Select All" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Button x:Name="BtnRestoreSelected"
+                            Style="{StaticResource OutlinedButton}"
+                            Click="BtnRestoreSelected_Click"
+                            Margin="8,0,0,0" Padding="14,6">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Restore" Width="16" Height="16"
+                                                     VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Restore Selected" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Button x:Name="BtnPurgeSelected"
+                            Style="{StaticResource DangerOutlinedButton}"
+                            Click="BtnPurgeSelected_Click"
+                            Margin="8,0,0,0" Padding="14,6">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="TrashCanOutline" Width="16" Height="16"
+                                                     VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Delete Permanently" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+
                 <DataGrid x:Name="TrashGrid"
-                          Grid.Row="0"
+                          Grid.Row="1"
                           AutoGenerateColumns="False"
                           IsReadOnly="True"
                           CanUserAddRows="False"
@@ -126,34 +174,34 @@
                         </Style>
                     </DataGrid.ColumnHeaderStyle>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Session ID"  Binding="{Binding SessionId}"   Width="110"/>
-                        <DataGridTextColumn Header="Date"        Binding="{Binding DateDisplay}" Width="180"/>
-                        <DataGridTextColumn Header="Duration"    Binding="{Binding Duration}"    Width="100"/>
-                        <DataGridTextColumn Header="Attendees"   Binding="{Binding AttendeesDisplay}" Width="100"/>
-                        <DataGridTextColumn Header="Trashed At"  Binding="{Binding TrashedAtDisplay}" Width="180"/>
-                        <DataGridTextColumn Header="In Trash"    Binding="{Binding InTrashDisplay}"   Width="110"/>
-                        <DataGridTemplateColumn Header="Action" Width="*" MinWidth="120">
+                        <!-- Selection checkbox column. Template column so
+                             it works while the grid is read-only.
+                             Mirrors the Past Session pattern. -->
+                        <DataGridTemplateColumn Header="" Width="42">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Button Content="Restore"
-                                            Click="BtnRestore_Click"
-                                            Style="{StaticResource OutlinedButton}"
-                                            Padding="10,4"
-                                            HorizontalAlignment="Left"/>
+                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="Session ID"  Binding="{Binding SessionId}"        Width="110"/>
+                        <DataGridTextColumn Header="Date"        Binding="{Binding DateDisplay}"      Width="180"/>
+                        <DataGridTextColumn Header="Duration"    Binding="{Binding Duration}"         Width="100"/>
+                        <DataGridTextColumn Header="Attendees"   Binding="{Binding AttendeesDisplay}" Width="100"/>
+                        <DataGridTextColumn Header="Trashed At"  Binding="{Binding TrashedAtDisplay}" Width="180"/>
+                        <DataGridTextColumn Header="In Trash"    Binding="{Binding InTrashDisplay}"   Width="*" MinWidth="100"/>
                     </DataGrid.Columns>
                 </DataGrid>
 
-                <TextBlock x:Name="TxtEmptyState" Grid.Row="0"
+                <TextBlock x:Name="TxtEmptyState" Grid.Row="1"
                            Text="Trash is empty."
                            Foreground="{StaticResource MutedBrush}"
                            FontSize="14"
                            HorizontalAlignment="Center" VerticalAlignment="Center"
                            Visibility="Collapsed"/>
 
-                <TextBlock x:Name="TxtSummary" Grid.Row="1"
+                <TextBlock x:Name="TxtSummary" Grid.Row="2"
                            Margin="2,12,0,0"
                            Foreground="{StaticResource MutedBrush}"
                            FontSize="12"/>

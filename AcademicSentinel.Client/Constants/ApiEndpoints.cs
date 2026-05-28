@@ -53,6 +53,16 @@
         // sessionId to this prefix and POST with no body.
         public const string RoomsSessionRestorePrefix = $"{BaseUrl}/api/rooms/sessions";  // + /{sessionId}/restore
 
+        // Bulk-restore a batch of trashed sessions. POST a
+        // {ids: int[]} body; server replies with
+        // {processed: int[], skipped: [{id, reason}]}.
+        public const string RoomsSessionsBulkRestore = $"{BaseUrl}/api/rooms/sessions/bulk-restore";
+
+        // Bulk-purge (permanent delete now) a batch of trashed
+        // sessions, bypassing the retention window. Only rows
+        // already in Trash are accepted server-side.
+        public const string RoomsSessionsBulkPurge = $"{BaseUrl}/api/rooms/sessions/bulk-purge";
+
         // Lists trashed sessions for a room. Append "/{roomId}/trash".
         public const string RoomsTrashPrefix = $"{BaseUrl}/api/rooms";  // + /{roomId}/trash
     }

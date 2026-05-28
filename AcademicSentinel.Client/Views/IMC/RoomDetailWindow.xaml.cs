@@ -447,57 +447,31 @@ namespace AcademicSentinel.Client.Views.IMC
         // Post-merge fix: removed duplicate empty stubs of TxtSearch_TextChanged and CmbFilter_SelectionChanged (real handlers above)
         private void ViewSession_Click(object sender, RoutedEventArgs e) { }
 
-        // Soft-delete (Trash) a Past Session archive. Confirms, then
-        // calls DELETE /api/rooms/sessions/{realSessionId}. On success
-        // the row is removed from the Sessions ObservableCollection so
-        // the DataGrid updates instantly without a refetch. The server
-        // sets DeletedAt and keeps the row until ArchiveCleanupService
-        // hard-deletes it after the configured retention window.
-        // Note: uses SessionItem.RealSessionId (the DB primary key),
-        // NOT the display SessionId — same fix as Bug2 on
-        // BtnViewArchive_Click above.
-        private async void DeleteSession_Click(object sender, RoutedEventArgs e)
+        // Select All toggle for the leftmost checkbox column.
+        // Operates only on rows currently VISIBLE in _sessionsView
+        // (respects the active search + status filter), not on the
+        // raw Sessions collection. If everything visible is already
+        // ticked the button acts as Clear Selection — one click to
+        // undo a bulk pick. The button label is updated to mirror
+        // the action the NEXT click will take.
+        private void BtnSelectAll_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is not System.Windows.Controls.Button btn || btn.DataContext is not SessionItem selectedSession) return;
+            var visible = _sessionsView != null
+                ? _sessionsView.Cast<SessionItem>().ToList()
+                : Sessions.ToList();
 
-            var confirm = System.Windows.MessageBox.Show(
-                $"Move {selectedSession.SessionId} to Trash?\n\nIt will be permanently deleted after the retention period.",
-                "Delete Session Archive",
-                System.Windows.MessageBoxButton.YesNo,
-                System.Windows.MessageBoxImage.Warning,
-                System.Windows.MessageBoxResult.No);
-            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+            if (visible.Count == 0) return;
 
-            btn.IsEnabled = false;
-            try
+            bool allSelected = visible.All(s => s.IsSelected);
+            bool newValue    = !allSelected;
+            foreach (var item in visible)
             {
-                using var client = new HttpClient();
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
-
-                var response = await client.DeleteAsync($"{ApiEndpoints.RoomsSessionDeletePrefix}/{selectedSession.RealSessionId}");
-                if (!response.IsSuccessStatusCode)
-                {
-                    var body = await response.Content.ReadAsStringAsync();
-                    System.Windows.MessageBox.Show(
-                        $"Could not delete {selectedSession.SessionId}.\n\nServer responded: {(int)response.StatusCode} {response.ReasonPhrase}\n{body}",
-                        "Delete Session Archive",
-                        System.Windows.MessageBoxButton.OK,
-                        System.Windows.MessageBoxImage.Warning);
-                    btn.IsEnabled = true;
-                    return;
-                }
-
-                Sessions.Remove(selectedSession);
-                UpdatePaginationUI();
+                item.IsSelected = newValue;
             }
-            catch (Exception ex)
+
+            if (TxtSelectAllLabel != null)
             {
-                System.Windows.MessageBox.Show(
-                    $"Failed to delete session: {ex.Message}",
-                    "Delete Session Archive",
-                    System.Windows.MessageBoxButton.OK,
-                    System.Windows.MessageBoxImage.Error);
-                btn.IsEnabled = true;
+                TxtSelectAllLabel.Text = newValue ? "Clear Selection" : "Select All";
             }
         }
 
@@ -595,17 +569,28 @@ namespace AcademicSentinel.Client.Views.IMC
         }
     }
 
-    public class SessionItem
+    public class SessionItem : INotifyPropertyChanged
     {
         public string SessionId { get; set; } = string.Empty;
         public int RealSessionId { get; set; } // DB primary key (ExamSessions.Id) for SessionArchiveDetailWindow lookups
 
         // Two-way bound to the leftmost CheckBox column in the
-        // Past Session grid. Plain auto-prop is enough — each
-        // checkbox writes back to ITS OWN row via the default
-        // TwoWay binding; we never set it programmatically from
-        // outside the grid, so no INotifyPropertyChanged needed.
-        public bool IsSelected { get; set; }
+        // Past Session grid. Now raises PropertyChanged so the
+        // "Select All" toolbar button can flip every visible row
+        // programmatically and the UI checkboxes refresh.
+        private bool _isSelected;
+        public bool IsSelected
+        {
+            get => _isSelected;
+            set
+            {
+                if (_isSelected == value) return;
+                _isSelected = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
+            }
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
         public string DateDuration { get; set; } = string.Empty; // formatted "MMM dd, yyyy - hh:mm tt"
         public string Duration { get; set; } = string.Empty;     // formatted "N mins" or "—" if not ended
         // Session end timestamp, formatted in local time. Falls back to

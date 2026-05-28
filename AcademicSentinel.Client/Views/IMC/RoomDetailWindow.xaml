@@ -420,6 +420,23 @@
                                 </Grid>
                             </Border>
 
+                            <!-- Select all VISIBLE rows (respects current
+                                 search + filter). Toggles between
+                                 "Select All" and "Clear Selection"
+                                 based on whether everything in view is
+                                 already selected. -->
+                            <Button x:Name="BtnSelectAll"
+                                    Style="{StaticResource MaterialDesignOutlinedButton}"
+                                    Click="BtnSelectAll_Click"
+                                    Margin="12,0,0,0" Height="38" Padding="14,0"
+                                    BorderBrush="#1B5E20" Foreground="#1B5E20">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="CheckboxMultipleMarkedOutline" Width="18" Height="18"
+                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock x:Name="TxtSelectAllLabel" Text="Select All" VerticalAlignment="Center" FontSize="13"/>
+                                </StackPanel>
+                            </Button>
+
                             <!-- Bulk soft-delete for the rows ticked in the
                                  leftmost checkbox column. Always enabled;
                                  click validates "at least one selected"
@@ -427,7 +444,7 @@
                             <Button x:Name="BtnDeleteSelected"
                                     Style="{StaticResource MaterialDesignOutlinedButton}"
                                     Click="BtnDeleteSelected_Click"
-                                    Margin="12,0,0,0" Height="38" Padding="14,0"
+                                    Margin="8,0,0,0" Height="38" Padding="14,0"
                                     BorderBrush="#C62828" Foreground="#C62828">
                                 <StackPanel Orientation="Horizontal">
                                     <materialDesign:PackIcon Kind="TrashCanOutline" Width="18" Height="18"
@@ -515,29 +532,20 @@
                                 <DataGridTextColumn Header="Ended At" Binding="{Binding EndedAtDisplay}" Width="170" />
                                 <DataGridTextColumn Header="Attendees" Binding="{Binding AttendeesDisplay}" Width="110" />
                                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="120" />
-                                <DataGridTemplateColumn Header="Action" Width="*" MinWidth="230">
+                                <!-- Per-row Delete removed — bulk Delete Selected
+                                     above the grid is the single source for
+                                     soft-delete. View Archive remains as the
+                                     only per-row action. -->
+                                <DataGridTemplateColumn Header="Action" Width="*" MinWidth="140">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Button Content="View Archive"
-                                                        Click="BtnViewArchive_Click"
-                                                        Style="{StaticResource MaterialDesignFlatButton}"
-                                                        Foreground="#1B5E20"
-                                                        Height="28"
-                                                        Padding="12,0"
-                                                        HorizontalAlignment="Left"/>
-                                                <!-- Soft-delete (Trash). Server keeps the row until
-                                                     ArchiveCleanupService purges it after the
-                                                     Archive:RetentionDays window (15 or 30 days). -->
-                                                <Button Content="Delete"
-                                                        Click="DeleteSession_Click"
-                                                        Style="{StaticResource MaterialDesignFlatButton}"
-                                                        Foreground="#C62828"
-                                                        Height="28"
-                                                        Padding="12,0"
-                                                        Margin="6,0,0,0"
-                                                        HorizontalAlignment="Left"/>
-                                            </StackPanel>
+                                            <Button Content="View Archive"
+                                                    Click="BtnViewArchive_Click"
+                                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                                    Foreground="#1B5E20"
+                                                    Height="28"
+                                                    Padding="12,0"
+                                                    HorizontalAlignment="Left"/>
                                         </DataTemplate>
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>

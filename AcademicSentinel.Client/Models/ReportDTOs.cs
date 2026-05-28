@@ -77,4 +77,13 @@ namespace AcademicSentinel.Client.Models
         public string Reason { get; set; } = string.Empty;
         public string? Status { get; set; }
     }
+
+    // Response shape for /bulk-restore and /bulk-purge.
+    // Same skipped-list contract as BulkSessionsDeleteResponse but
+    // the success field is named generically since the action varies.
+    public class BulkSessionsActionResponse
+    {
+        public List<int> Processed { get; set; } = new();
+        public List<BulkSessionsSkippedItem> Skipped { get; set; } = new();
+    }
 }

@@ -936,6 +936,99 @@ public class RoomsController : ControllerBase
         return Ok(new { message = "Session restored." });
     }
 
+    // POST: api/rooms/sessions/bulk-restore
+    // Clears DeletedAt on every id in the body. Per-item guard:
+    // a row that isn't currently trashed is treated as a skip
+    // (NOT_IN_TRASH) instead of failing the whole batch.
+    [HttpPost("sessions/bulk-restore")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> BulkRestoreSessions([FromBody] BulkSessionIdsDto body)
+    {
+        if (body?.Ids == null || body.Ids.Count == 0)
+            return BadRequest(new { message = "No session IDs provided." });
+
+        var ids = body.Ids.Distinct().ToList();
+        var sessions = await _context.ExamSessions
+            .Where(s => ids.Contains(s.Id))
+            .ToListAsync();
+
+        var processed = new List<int>();
+        var skipped   = new List<object>();
+
+        foreach (var session in sessions)
+        {
+            if (session.DeletedAt == null)
+            {
+                skipped.Add(new { id = session.Id, reason = "NOT_IN_TRASH" });
+                continue;
+            }
+            session.DeletedAt = null;
+            processed.Add(session.Id);
+        }
+
+        var foundIds = sessions.Select(s => s.Id).ToHashSet();
+        foreach (var id in ids.Where(i => !foundIds.Contains(i)))
+            skipped.Add(new { id, reason = "NOT_FOUND" });
+
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "BulkRestoreSessions: requested={Requested} restored={Restored} skipped={Skipped}",
+            ids.Count, processed.Count, skipped.Count);
+
+        return Ok(new { processed, skipped });
+    }
+
+    // POST: api/rooms/sessions/bulk-purge
+    // Hard-deletes a list of session archives immediately,
+    // bypassing the retention window. Defensive: ONLY accepts rows
+    // that are currently in Trash (DeletedAt != null). Live or
+    // already-clean sessions are skipped so this endpoint cannot
+    // be misused to nuke non-trashed history.
+    [HttpPost("sessions/bulk-purge")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> BulkPurgeSessions([FromBody] BulkSessionIdsDto body)
+    {
+        if (body?.Ids == null || body.Ids.Count == 0)
+            return BadRequest(new { message = "No session IDs provided." });
+
+        var ids = body.Ids.Distinct().ToList();
+        var sessions = await _context.ExamSessions
+            .Where(s => ids.Contains(s.Id))
+            .ToListAsync();
+
+        var processed = new List<int>();
+        var skipped   = new List<object>();
+        var purgeable = new List<Models.ExamSession>();
+
+        foreach (var session in sessions)
+        {
+            if (session.DeletedAt == null)
+            {
+                skipped.Add(new { id = session.Id, reason = "NOT_IN_TRASH", status = session.Status });
+                continue;
+            }
+            purgeable.Add(session);
+            processed.Add(session.Id);
+        }
+
+        var foundIds = sessions.Select(s => s.Id).ToHashSet();
+        foreach (var id in ids.Where(i => !foundIds.Contains(i)))
+            skipped.Add(new { id, reason = "NOT_FOUND" });
+
+        if (purgeable.Count > 0)
+        {
+            _context.ExamSessions.RemoveRange(purgeable);
+            await _context.SaveChangesAsync();
+        }
+
+        _logger.LogInformation(
+            "BulkPurgeSessions: requested={Requested} purged={Purged} skipped={Skipped} ids=[{Ids}]",
+            ids.Count, processed.Count, skipped.Count, string.Join(",", processed));
+
+        return Ok(new { processed, skipped });
+    }
+
     // GET: api/rooms/{roomId}/trash
     // Lists soft-deleted Past Session archives for a room. Mirrors
     // the shape of GetRoomHistory but adds DeletedAt and is the
