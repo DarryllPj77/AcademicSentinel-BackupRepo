@@ -145,8 +145,18 @@ namespace AcademicSentinel.Client.Views.Shared
 
         private void LinkForgotPassword_Click(object sender, MouseButtonEventArgs e)
         {
-            new ForgetPasswordWindow().Show();
-            this.Close();
+            // PROTOTYPE: the password-reset flow needs outbound email
+            // to deliver the reset code, and email isn't configured
+            // yet. Surface a clear message instead of opening
+            // ForgetPasswordWindow into a dead end. When SMTP is
+            // restored, replace this with:
+            //   new ForgetPasswordWindow().Show();
+            //   this.Close();
+            MessageBox.Show(
+                "Password reset is temporarily unavailable in this prototype build.\n\n" +
+                "Please contact the system administrator if you need to recover an account.",
+                "Password Reset Unavailable",
+                MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private void RoleToggle_Changed(object sender, RoutedEventArgs e) { }

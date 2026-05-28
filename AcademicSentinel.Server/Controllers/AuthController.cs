@@ -48,19 +48,19 @@ public class AuthController : ControllerBase
             return Unauthorized("Invalid email or password.");
         }
 
-        // Block login until the registration code has been verified.
-        // 403 (distinct from the 401 above) lets the client recognise
-        // this specific state and route the user to the
-        // verify-email-code screen instead of telling them their
-        // credentials are bad.
-        if (!user.IsEmailVerified)
-        {
-            return StatusCode(StatusCodes.Status403Forbidden, new
-            {
-                code = "EMAIL_NOT_VERIFIED",
-                message = "This account hasn't been verified yet. Please enter the code we sent to your institutional email."
-            });
-        }
+        // PROTOTYPE: email-verification gate disabled because outbound
+        // email delivery is not yet configured (Resend sandbox can
+        // only deliver to one inbox until a domain is verified). When
+        // SMTP delivery is restored, re-enable the block below.
+        //
+        // if (!user.IsEmailVerified)
+        // {
+        //     return StatusCode(StatusCodes.Status403Forbidden, new
+        //     {
+        //         code = "EMAIL_NOT_VERIFIED",
+        //         message = "This account hasn't been verified yet. Please enter the code we sent to your institutional email."
+        //     });
+        // }
 
         var authClaims = new List<Claim>
     {
@@ -101,13 +101,25 @@ public class AuthController : ControllerBase
         });
     }
 
-    // Institutional-only registration allowlist. Anything outside
-    // these two domains is rejected at the API boundary regardless of
-    // what the client sends.
-    //   @fit.edu.ph     → Student
-    //   @feutech.edu.ph → Teacher (Instructor in our existing Role
-    //                    vocabulary — the rest of the codebase expects
-    //                    "Student" or "Instructor" so we map here.)
+    // PROTOTYPE: domain allowlist expanded to include gmail.com so
+    // testers can register without an institutional account while
+    // outbound email is unconfigured. Tighten back to the two
+    // institutional domains when the email pipeline is restored.
+    //
+    // Institutional domains derive the role server-side (immune to
+    // client-tampered role values). For the non-institutional
+    // prototype domain (gmail.com) the role is honored from the
+    // client request after a basic Student/Instructor validation —
+    // this is safe ONLY because the gate is intentionally loose for
+    // testing.
+    private static readonly HashSet<string> _allowedRegistrationDomains =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "fit.edu.ph",
+            "feutech.edu.ph",
+            "gmail.com", // PROTOTYPE — remove when email is configured
+        };
+
     private static readonly Dictionary<string, string> _institutionalRoleByDomain =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -135,17 +147,33 @@ public class AuthController : ControllerBase
         }
 
         // ============================================================
-        // INSTITUTIONAL EMAIL ENFORCEMENT.
+        // EMAIL DOMAIN ALLOWLIST (prototype).
         // ============================================================
-        // Only @fit.edu.ph (Student) and @feutech.edu.ph (Instructor)
-        // are accepted. The role is DERIVED from the domain server-
-        // side; the role field the client sends is ignored to prevent
-        // privilege-escalation by tampered clients.
+        // Accepted domains: fit.edu.ph, feutech.edu.ph, gmail.com.
+        // - Institutional domains derive the role server-side.
+        // - gmail.com (prototype-only) honors the client-sent role
+        //   after a Student/Instructor sanity check.
         var domain = normalizedEmail.Split('@').LastOrDefault() ?? string.Empty;
-        if (!_institutionalRoleByDomain.TryGetValue(domain, out var derivedRole))
+        if (!_allowedRegistrationDomains.Contains(domain))
         {
             return BadRequest(
-                "Registration is restricted to institutional emails (@fit.edu.ph or @feutech.edu.ph).");
+                "Registration is restricted to @fit.edu.ph, @feutech.edu.ph, or @gmail.com.");
+        }
+
+        string derivedRole;
+        if (_institutionalRoleByDomain.TryGetValue(domain, out var institutionalRole))
+        {
+            derivedRole = institutionalRole;
+        }
+        else
+        {
+            // Non-institutional prototype path. Trust the client's
+            // role pick (validated to one of the two known values)
+            // so testers can exercise both Student and Instructor
+            // flows from a single @gmail.com test account pool.
+            derivedRole = string.Equals(registerDto.Role, "Instructor", StringComparison.OrdinalIgnoreCase)
+                ? "Instructor"
+                : "Student";
         }
 
         if (string.IsNullOrWhiteSpace(registerDto.Password) || registerDto.Password.Length < 6)
@@ -153,63 +181,101 @@ public class AuthController : ControllerBase
             return BadRequest("Password must be at least 6 characters long.");
         }
 
-        // Don't reveal whether the email is already registered to a
-        // verified account vs. left in a pending-verification state.
-        // If a row already exists, refuse the registration generically.
-        if (await _context.Users.AnyAsync(u => u.Email == normalizedEmail))
+        // Orphan-safe registration:
+        //   • verified row → refuse (account already exists; the
+        //     caller should sign in or use Forgot Password).
+        //   • unverified row → rotate the code on the SAME row
+        //     (overwrite name/password/code hash/expiry, reset
+        //     attempts, restart cooldown). This eliminates the
+        //     dead-end where a single transient SMTP failure used
+        //     to permanently block self-service registration —
+        //     the user just clicks Register again and the row
+        //     self-heals with a fresh code.
+        //   • no row → fall through to the normal create path.
+        // Verified accounts cannot be hijacked by this branch
+        // because rotation only triggers when IsEmailVerified
+        // is false.
+        var existing = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
+        if (existing != null && existing.IsEmailVerified)
         {
-            return BadRequest("This email cannot be registered. If you already started, check your inbox for a verification code.");
+            // PROTOTYPE: Forgot Password is disabled, so the recovery
+            // hint is intentionally absent. Restore the "or use Forgot
+            // Password" suffix when the reset flow is re-enabled.
+            return BadRequest("This email is already registered. Please sign in instead.");
         }
 
-        string passwordHash = BCrypt.Net.BCrypt.HashPassword(registerDto.Password);
-
-        var code = GenerateSixDigitCode();
-        var user = new User
+        // Cooldown protects both the create AND rotate paths from
+        // register-spam (which would otherwise let an attacker
+        // mail-bomb a victim by hitting Register in a loop).
+        if (existing != null
+            && existing.LastVerificationCodeSentAt.HasValue
+            && (DateTime.UtcNow - existing.LastVerificationCodeSentAt.Value).TotalSeconds < ResendCooldownSeconds)
         {
-            FullName     = registerDto.FullName.Trim(),
-            Email        = normalizedEmail,
-            PasswordHash = passwordHash,
-            Role         = derivedRole,
-            CreatedAt    = DateTime.UtcNow,
-            // Email-verification: account starts unverified. Login is
-            // gated on IsEmailVerified == true; verify-email-code is
-            // the only path that flips it.
-            IsEmailVerified              = false,
-            EmailVerificationCodeHash    = BCrypt.Net.BCrypt.HashPassword(code),
-            EmailVerificationExpiresAt   = DateTime.UtcNow.AddMinutes(VerificationCodeTtlMinutes),
-            EmailVerificationAttempts    = 0,
-            LastVerificationCodeSentAt   = DateTime.UtcNow,
-        };
-
-        _context.Users.Add(user);
-        await _context.SaveChangesAsync();
-
-        // Send AFTER the row is committed so a transient SMTP failure
-        // doesn't leave an orphan user we can't roll back to. If the
-        // send fails we still keep the row — the user can request a
-        // resend via /resend-verification-code.
-        try
-        {
-            await _emailSender.SendEmailVerificationCodeAsync(user.Email, code);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to send verification email to {Email}", user.Email);
-            return StatusCode(StatusCodes.Status500InternalServerError, new
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
             {
-                message = "Account created but the verification email could not be sent. Use Resend Code from the verification screen."
+                message = $"Please wait {ResendCooldownSeconds} seconds before requesting another verification code."
             });
         }
 
-        _logger.LogInformation("User {Email} registered (pending verification, role={Role}).",
+        string passwordHash = BCrypt.Net.BCrypt.HashPassword(registerDto.Password);
+        var code = GenerateSixDigitCode();
+
+        // PROTOTYPE: outbound email is not yet configured, so accounts
+        // are auto-verified at creation. The verification code fields
+        // are left null/zero — when real email delivery is restored,
+        // restore the BCrypt.HashPassword(code) + expiry assignments
+        // below, set IsEmailVerified back to false, and re-enable the
+        // SendEmailVerificationCodeAsync block.
+        User user;
+        if (existing != null)
+        {
+            existing.FullName                    = registerDto.FullName.Trim();
+            existing.PasswordHash                = passwordHash;
+            existing.Role                        = derivedRole;
+            existing.IsEmailVerified             = true;   // PROTOTYPE
+            existing.EmailVerificationCodeHash   = null;
+            existing.EmailVerificationExpiresAt  = null;
+            existing.EmailVerificationAttempts   = 0;
+            existing.LastVerificationCodeSentAt  = DateTime.UtcNow;
+            user = existing;
+            _logger.LogInformation(
+                "Register (prototype): auto-verifying existing unverified account {Email} (role={Role}).",
+                user.Email, derivedRole);
+        }
+        else
+        {
+            user = new User
+            {
+                FullName     = registerDto.FullName.Trim(),
+                Email        = normalizedEmail,
+                PasswordHash = passwordHash,
+                Role         = derivedRole,
+                CreatedAt    = DateTime.UtcNow,
+                IsEmailVerified              = true,        // PROTOTYPE
+                EmailVerificationCodeHash    = null,
+                EmailVerificationExpiresAt   = null,
+                EmailVerificationAttempts    = 0,
+                LastVerificationCodeSentAt   = DateTime.UtcNow,
+            };
+            _context.Users.Add(user);
+        }
+
+        await _context.SaveChangesAsync();
+
+        // PROTOTYPE: SMTP send intentionally skipped. The previous
+        // SendEmailVerificationCodeAsync(user.Email, code) call lived
+        // here. Restore it when outbound email is configured.
+        _ = code; // unused in prototype mode
+
+        _logger.LogInformation(
+            "User {Email} registered (PROTOTYPE auto-verified, role={Role}).",
             user.Email, derivedRole);
 
         return Ok(new
         {
-            message = "Verification code sent. Enter it in the AcademicSentinel app to finish registration.",
+            message = "Account ready. You can sign in now.",
             email   = user.Email,
             role    = derivedRole,
-            verificationExpiresAt = user.EmailVerificationExpiresAt
         });
     }
 
@@ -320,9 +386,29 @@ public class AuthController : ControllerBase
         return genericResponse;
     }
 
+    // PROTOTYPE: the reset code is delivered by email, which is
+    // unavailable in this build. Short-circuit with 503 + a stable
+    // machine-readable code so the client can render the prototype
+    // message without parsing free text. Re-enable the full body
+    // below by removing the early return when SMTP is restored.
+    private static IActionResult PrototypeForgotDisabledResponse()
+        => new ObjectResult(new
+        {
+            code    = "PROTOTYPE_FORGOT_DISABLED",
+            message = "Password reset is temporarily unavailable in this prototype build."
+        })
+        {
+            StatusCode = StatusCodes.Status503ServiceUnavailable
+        };
+
     [HttpPost("forgot-password")]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequestDto dto)
     {
+        _logger.LogInformation(
+            "ForgotPassword: rejected — PROTOTYPE_FORGOT_DISABLED (outbound email not configured).");
+        return PrototypeForgotDisabledResponse();
+
+#pragma warning disable CS0162 // Unreachable code — kept for one-line reactivation when email is configured.
         var normalizedEmail = NormalizeEmail(dto.Email);
         if (string.IsNullOrWhiteSpace(normalizedEmail))
         {
@@ -401,11 +487,20 @@ public class AuthController : ControllerBase
             user.Email);
 
         return Ok(new { message = "If the account exists, a verification code has been sent." });
+#pragma warning restore CS0162
     }
 
     [HttpPost("verify-reset-code")]
     public async Task<IActionResult> VerifyResetCode([FromBody] VerifyResetCodeRequestDto dto)
     {
+        // PROTOTYPE: forgot-password flow is disabled; this endpoint
+        // is unreachable through the UI but guarded here too so a
+        // direct API caller gets the same clear message.
+        _logger.LogInformation(
+            "VerifyResetCode: rejected — PROTOTYPE_FORGOT_DISABLED (outbound email not configured).");
+        return PrototypeForgotDisabledResponse();
+
+#pragma warning disable CS0162
         var normalizedEmail = NormalizeEmail(dto.Email);
         if (string.IsNullOrWhiteSpace(normalizedEmail) || string.IsNullOrWhiteSpace(dto.Code))
         {
@@ -492,11 +587,18 @@ public class AuthController : ControllerBase
             Success = true,
             ResetToken = resetToken
         });
+#pragma warning restore CS0162
     }
 
     [HttpPost("reset-password")]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequestDto dto)
     {
+        // PROTOTYPE: reset flow disabled (see ForgotPassword).
+        _logger.LogInformation(
+            "ResetPassword: rejected — PROTOTYPE_FORGOT_DISABLED (outbound email not configured).");
+        return PrototypeForgotDisabledResponse();
+
+#pragma warning disable CS0162
         var normalizedEmail = NormalizeEmail(dto.Email);
         if (string.IsNullOrWhiteSpace(normalizedEmail) || string.IsNullOrWhiteSpace(dto.NewPassword) || string.IsNullOrWhiteSpace(dto.ResetToken))
         {
@@ -526,6 +628,7 @@ public class AuthController : ControllerBase
         await _context.SaveChangesAsync();
 
         return Ok(new { message = "Password reset successful." });
+#pragma warning restore CS0162
     }
 
     // ----------------------------------------------------------------

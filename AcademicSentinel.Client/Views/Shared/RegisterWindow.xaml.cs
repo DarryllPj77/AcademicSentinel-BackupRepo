@@ -56,22 +56,23 @@ namespace AcademicSentinel.Client.Views.Shared
                 return;
             }
 
-            // Client-side hint mirroring the server-side allowlist.
-            // The server enforces the same rule authoritatively — this
-            // is just a faster feedback path so the student doesn't
-            // wait on a round trip to find out their personal Gmail
-            // won't work.
+            // PROTOTYPE: allowlist mirrors the server. gmail.com is
+            // included so testers can register without an
+            // institutional account while outbound email is being
+            // set up. Tighten back to @fit.edu.ph + @feutech.edu.ph
+            // when email delivery is restored.
             string domain = email.Split('@').Length > 1
                 ? email.Split('@')[1].ToLowerInvariant()
                 : string.Empty;
-            if (domain != "fit.edu.ph" && domain != "feutech.edu.ph")
+            if (domain != "fit.edu.ph" && domain != "feutech.edu.ph" && domain != "gmail.com")
             {
                 MessageBox.Show(
-                    "Registration is restricted to institutional emails:\n\n" +
+                    "Registration is restricted to:\n\n" +
                     "  • @fit.edu.ph (Student)\n" +
-                    "  • @feutech.edu.ph (Instructor)\n\n" +
-                    "Please use your school email to continue.",
-                    "Institutional Email Required",
+                    "  • @feutech.edu.ph (Instructor)\n" +
+                    "  • @gmail.com (prototype testers)\n\n" +
+                    "Please use one of these to continue.",
+                    "Email Domain Required",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -105,18 +106,22 @@ namespace AcademicSentinel.Client.Views.Shared
 
             if (isSuccess)
             {
+                // PROTOTYPE: email verification is auto-completed on
+                // the server (no SMTP available yet), so we skip the
+                // verification-code screen and go straight to login.
+                // Restore the EmailVerificationWindow flow below when
+                // SMTP delivery is configured.
                 MessageBox.Show(
-                    "We've sent a 6-digit verification code to your institutional email. " +
-                    "Enter the code on the next screen to finish creating your account.",
-                    "Check Your Email", MessageBoxButton.OK, MessageBoxImage.Information);
-                new EmailVerificationWindow(email).Show();
+                    "Account created. You can sign in now.",
+                    "Account Ready", MessageBoxButton.OK, MessageBoxImage.Information);
+                new LoginWindow(AppMode.Role).Show();
                 this.Close();
             }
             else
             {
                 MessageBox.Show(
-                    "Registration failed. The email might be taken, or it may not be an institutional address " +
-                    "(only @fit.edu.ph and @feutech.edu.ph are accepted).",
+                    "Registration failed. The email might be taken, or the domain isn't allowed " +
+                    "(only @fit.edu.ph, @feutech.edu.ph, and @gmail.com are accepted in this build).",
                     "Registration Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 BtnRegister.IsEnabled = true;
                 BtnRegister.Content = "Create Account";
