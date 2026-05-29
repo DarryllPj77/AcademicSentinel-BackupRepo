@@ -1677,6 +1677,14 @@ namespace AcademicSentinel.Client.Views.SAC
             if (_hasSentDone)
                 return;
 
+            // Mutual-exclusion guard: refuse Done while a Raise Hand
+            // request is already pending. UpdateUIForPhase greys the
+            // button out, but this is defence in depth against a fast
+            // double-click that fires before IsEnabled propagates
+            // through the WPF dispatcher.
+            if (_handRaiseState == HandRaiseState.Pending)
+                return;
+
             if (_sessionEnded || _currentPhase != ExamPhase.Active)
             {
                 MessageBox.Show(
@@ -1727,6 +1735,14 @@ namespace AcademicSentinel.Client.Views.SAC
             if (studentId <= 0) return;
             if (_sessionEnded || _currentPhase != ExamPhase.Active) return;
             if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected) return;
+
+            // Mutual-exclusion guard: refuse Raise Hand while a Done
+            // request is already pending. Lower Hand (the Active
+            // branch below) is still allowed because the student
+            // needs a way OUT of Q&A mode even mid-Done; only the
+            // Inactive→Pending raise transition is gated.
+            if (_hasSentDone && _handRaiseState == HandRaiseState.Inactive)
+                return;
 
             try
             {
@@ -1925,6 +1941,21 @@ namespace AcademicSentinel.Client.Views.SAC
                         BtnDone.Foreground = Brushes.White;
                     }
 
+                    // Mutual-exclusion overlay: if Raise Hand is in
+                    // flight (Pending), force-disable Done too. Done
+                    // re-enables automatically once raise-hand drops
+                    // back to Inactive (denied / lowered). This makes
+                    // _hasSentDone and _handRaiseState behave as a
+                    // single combined state machine for IsEnabled
+                    // without changing either flag's transition rules.
+                    if (!_hasSentDone && _handRaiseState == HandRaiseState.Pending)
+                    {
+                        BtnDone.IsEnabled  = false;
+                        BtnDone.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                        BtnDone.Foreground = new SolidColorBrush(
+                            (Color)ColorConverter.ConvertFromString("#424242"));
+                    }
+
                     // Raise / Lower Hand button — only meaningful in the
                     // softlock-overlay (compact) view, alongside Done.
                     if (BtnRaiseHand != null)
@@ -1954,6 +1985,21 @@ namespace AcademicSentinel.Client.Views.SAC
                                 BtnRaiseHand.Background = new SolidColorBrush(Color.FromRgb(21, 101, 192));
                                 BtnRaiseHand.Foreground = Brushes.White;
                                 break;
+                        }
+
+                        // Mutual-exclusion overlay: if Done is in flight,
+                        // force-disable Raise Hand too (only meaningful
+                        // when raise-hand itself is Inactive — Pending
+                        // and Active already disable / specially style
+                        // the button via the switch above). Raise Hand
+                        // re-enables automatically when _hasSentDone is
+                        // cleared (Done denied / reset).
+                        if (_hasSentDone && _handRaiseState == HandRaiseState.Inactive)
+                        {
+                            BtnRaiseHand.IsEnabled  = false;
+                            BtnRaiseHand.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                            BtnRaiseHand.Foreground = new SolidColorBrush(
+                                (Color)ColorConverter.ConvertFromString("#424242"));
                         }
                     }
                 }
