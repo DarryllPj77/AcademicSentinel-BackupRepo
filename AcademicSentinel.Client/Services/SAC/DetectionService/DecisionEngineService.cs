@@ -74,11 +74,17 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         };
 
         // Zero-score informational events — surfaced in the feed for context
-        // but never add to CumulativeScore.
+        // but never add to CumulativeScore. ALLOWED_APP belongs here because
+        // the instructor explicitly permitted the target app for the session
+        // (per-room allowlist); without this entry the soft-match fallback
+        // bumps it to passive 10 pts and the SAC softlock UI mis-renders it
+        // as "Violation sent:" instead of the informational "Switch
+        // detected:" wording.
         private static readonly HashSet<string> _informationalEventTypes =
             new(StringComparer.OrdinalIgnoreCase)
         {
-            "CANVAS_RETURNED"
+            "CANVAS_RETURNED",
+            "ALLOWED_APP"
         };
 
         public RiskAssessment EvaluateEvent(MonitoringDetectionEvent newEvent)
