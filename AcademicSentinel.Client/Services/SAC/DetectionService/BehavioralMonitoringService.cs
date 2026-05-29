@@ -590,6 +590,29 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         // _focusDetectionLock and enqueues to _hookEventQueue.
         private ManagementEventWatcher _processCreationWatcher;
 
+        // ---- High-frequency Ctrl+V edge detector (paste accuracy fix) ----
+        // The 1-second PollDetectors interval is too coarse for
+        // per-keystroke paste detection — a 3x Ctrl+V spam inside one
+        // tick collapses into a single polled event. The low-level
+        // keyboard hook is supposed to catch each press, but on this
+        // build the hook entries aren't appearing in the IMC feed
+        // (cause still TBD). To guarantee user-visible accuracy
+        // ("every Ctrl+V gets flagged"), this dedicated 50 ms timer
+        // samples VK_V's HIGH bit (currently-pressed) on a background
+        // thread and fires on the up→down EDGE while Ctrl is held —
+        // the high bit is not subject to the cross-process race that
+        // makes the low bit unreliable, and edge detection guarantees
+        // exactly one emission per physical key press.
+        //
+        // 50 ms = 20 Hz which is well above any human tap rate
+        // (physiological max ~10 Hz). Events route through the
+        // existing EmitFromBackgroundThread → _hookEventQueue path so
+        // they're drained by the next Poll() and reach the same
+        // ReportViolationAsync code path as every other detector.
+        private System.Threading.Timer _pastePollTimer;
+        private bool _vKeyWasDownLastSample;
+        private const int PastePollIntervalMs = 50;
+
         public BehavioralMonitoringService(DetectionSettings settings, IEnumerable<string> blacklistedProcessNames)
         {
             _settings = settings ?? new DetectionSettings();
@@ -657,6 +680,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // before _isMonitoring / state is fully initialised above.
             InstallForegroundHook();
             InstallProcessCreationWatcher();
+            InstallPastePollTimer();
         }
 
         /// <summary>
@@ -762,6 +786,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // hook handle.
             UninstallForegroundHook();
             UninstallProcessCreationWatcher();
+            UninstallPastePollTimer();
 
             // Drop any findings that landed between the last Poll and
             // shutdown — they're no longer relevant.
@@ -1482,6 +1507,96 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             finally
             {
                 _processCreationWatcher = null;
+            }
+        }
+
+        /// <summary>
+        /// Starts the 50 ms Ctrl+V edge-detection timer. Independent of
+        /// the 1 s Poll() cadence so per-keystroke pastes are captured
+        /// at human-tap granularity. Idempotent — safe to call twice
+        /// from the same StartMonitoring cycle.
+        /// </summary>
+        private void InstallPastePollTimer()
+        {
+            if (_pastePollTimer != null) return;
+
+            // Seed the previous-sample flag from the *current* V state so
+            // that a key already held when monitoring begins doesn't
+            // synthesize an instant false-positive edge on the first tick.
+            _vKeyWasDownLastSample = IsKeyDown(VK_V);
+
+            _pastePollTimer = new System.Threading.Timer(
+                callback: OnPastePollTick,
+                state:    null,
+                dueTime:  PastePollIntervalMs,
+                period:   PastePollIntervalMs);
+        }
+
+        /// <summary>
+        /// Stops and disposes the paste-poll timer. Idempotent — called
+        /// from StopMonitoring (which itself runs from Dispose), so it
+        /// must tolerate being invoked when the timer is already null.
+        /// </summary>
+        private void UninstallPastePollTimer()
+        {
+            var timer = _pastePollTimer;
+            if (timer == null) return;
+
+            try { timer.Dispose(); } catch { /* best-effort */ }
+            _pastePollTimer = null;
+            _vKeyWasDownLastSample = false;
+        }
+
+        /// <summary>
+        /// 50 ms timer tick. Detects the V-key up→down edge while Ctrl
+        /// is held and emits a CLIPBOARD_PASTE event through the
+        /// thread-safe <see cref="EmitFromBackgroundThread"/> helper so
+        /// the next Poll() drains it into its findings list — same
+        /// downstream path every other detector uses.
+        ///
+        /// Uses the HIGH bit of <see cref="GetAsyncKeyState"/> (currently
+        /// pressed) rather than the LOW bit (pressed since last query).
+        /// The high bit reflects the actual hardware state and is not
+        /// subject to the cross-process race that clears the low bit
+        /// when any other application polls the same key — that race
+        /// was the root cause of "one paste detected per multiple Ctrl+V
+        /// taps" on this build.
+        ///
+        /// CRITICAL: must not throw — ThreadPool timer callbacks that
+        /// propagate exceptions can fast-fail the process.
+        /// </summary>
+        private void OnPastePollTick(object state)
+        {
+            if (!_isMonitoring) return;
+
+            try
+            {
+                bool vIsDown    = IsKeyDown(VK_V);
+                bool ctrlIsDown = IsKeyDown(VK_CONTROL);
+
+                // Rising edge: V was up last sample, V is down now. With
+                // 50 ms sampling, every distinct press at human tap rate
+                // (<= ~10 Hz) produces exactly one edge.
+                bool risingEdge = vIsDown && !_vKeyWasDownLastSample;
+                _vKeyWasDownLastSample = vIsDown;
+
+                if (risingEdge && ctrlIsDown)
+                {
+                    // cooldownSeconds = 0 — every detected edge is a
+                    // distinct user keystroke and must produce its own
+                    // log entry. AddEvent's dedup gate is keyed on
+                    // eventType, so a zero cooldown disables it
+                    // entirely for paste, exactly what we want.
+                    EmitFromBackgroundThread(
+                        DetectionConstants.EventClipboardPaste,
+                        severity: 2,
+                        description: "Paste command (Ctrl+V) detected by high-frequency edge poll.",
+                        cooldownSeconds: 0);
+                }
+            }
+            catch
+            {
+                // Swallow — the timer fires again in PastePollIntervalMs.
             }
         }
 

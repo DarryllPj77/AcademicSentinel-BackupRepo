@@ -112,6 +112,29 @@ public class MonitoringHub : Hub
     private const int MonitoringEventCoalesceWindowSeconds = 1;
     private static readonly ConcurrentDictionary<string, DateTime> _recentMonitoringEvents = new();
 
+    // Discrete per-action events that MUST bypass the coalesce gate.
+    // Every occurrence is an independent, audit-worthy student action
+    // (one Ctrl+V keystroke, one PrintScreen press, one right-click).
+    // The SAC emits these via the low-level keyboard / mouse hook path
+    // with deliberately zero client-side dedup, so applying the
+    // server-side 1-second window collapses rapid taps into a single
+    // logged event — the exact symptom the user reported: "Ctrl+V is
+    // not working every time I do the keystroke". The original
+    // coalesce filter was designed for browser title-mutation storms
+    // on WINDOW_SWITCH / focus events; it must not swallow keystrokes.
+    private static readonly HashSet<string> _discreteActionEventTypes =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "CLIPBOARD_PASTE",
+            "CLIPBOARD_COPY",
+            "PASTE",
+            "COPY",
+            "PRINTSCREEN",
+            "SNIP_TOOL",
+            "SCREENSHOT",
+            "RIGHT_CLICK_CONTEXT"
+        };
+
     private readonly DisconnectService _disconnectService;
 
     public MonitoringHub(
@@ -904,34 +927,43 @@ public class MonitoringHub : Hub
         // description so identical re-emits within the window are
         // dropped while switches to genuinely different targets
         // remain distinct entries.
-        var coalesceKey = string.Concat(
-            studentId.ToString(),
-            "|",
-            eventData.EventType ?? string.Empty,
-            "|",
-            eventData.Description ?? string.Empty);
+        //
+        // BYPASS for discrete per-action events (paste / copy /
+        // screenshot keys / right-click). Each occurrence is an
+        // independent student action and must be persisted + broadcast
+        // individually — see _discreteActionEventTypes above.
         var nowUtc = DateTime.UtcNow;
-        if (_recentMonitoringEvents.TryGetValue(coalesceKey, out var lastSeen)
-            && (nowUtc - lastSeen).TotalSeconds < MonitoringEventCoalesceWindowSeconds)
+        var incomingEventType = eventData.EventType ?? string.Empty;
+        if (!_discreteActionEventTypes.Contains(incomingEventType))
         {
-            // Refresh the timestamp so a rapid burst keeps the gate
-            // closed for the entire duration of the burst rather than
-            // letting a stale entry expire mid-storm.
-            _recentMonitoringEvents[coalesceKey] = nowUtc;
-            return;
-        }
-        _recentMonitoringEvents[coalesceKey] = nowUtc;
-
-        // Opportunistic cleanup so the dictionary doesn't grow without
-        // bound across a long session. Removes any entry older than a
-        // generous multiple of the window.
-        if (_recentMonitoringEvents.Count > 256)
-        {
-            var staleCutoff = nowUtc.AddSeconds(-MonitoringEventCoalesceWindowSeconds * 30);
-            foreach (var kv in _recentMonitoringEvents)
+            var coalesceKey = string.Concat(
+                studentId.ToString(),
+                "|",
+                incomingEventType,
+                "|",
+                eventData.Description ?? string.Empty);
+            if (_recentMonitoringEvents.TryGetValue(coalesceKey, out var lastSeen)
+                && (nowUtc - lastSeen).TotalSeconds < MonitoringEventCoalesceWindowSeconds)
             {
-                if (kv.Value < staleCutoff)
-                    _recentMonitoringEvents.TryRemove(kv.Key, out _);
+                // Refresh the timestamp so a rapid burst keeps the gate
+                // closed for the entire duration of the burst rather than
+                // letting a stale entry expire mid-storm.
+                _recentMonitoringEvents[coalesceKey] = nowUtc;
+                return;
+            }
+            _recentMonitoringEvents[coalesceKey] = nowUtc;
+
+            // Opportunistic cleanup so the dictionary doesn't grow without
+            // bound across a long session. Removes any entry older than a
+            // generous multiple of the window.
+            if (_recentMonitoringEvents.Count > 256)
+            {
+                var staleCutoff = nowUtc.AddSeconds(-MonitoringEventCoalesceWindowSeconds * 30);
+                foreach (var kv in _recentMonitoringEvents)
+                {
+                    if (kv.Value < staleCutoff)
+                        _recentMonitoringEvents.TryRemove(kv.Key, out _);
+                }
             }
         }
 
