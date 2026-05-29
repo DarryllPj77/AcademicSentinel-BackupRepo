@@ -2,6 +2,7 @@ using System;
 using System.Windows;
 using System.Windows.Input;
 using System.Net.Http.Json;
+using AcademicSentinel.Client.Constants;
 using AcademicSentinel.Client.Services;
 using AcademicSentinel.Client.Models;
 using AcademicSentinel.Client.Views.IMC;
@@ -19,16 +20,27 @@ namespace AcademicSentinel.Client.Views.Shared
             InitializeComponent();
             _authService = new AuthService();
 
-            if (role == "Teacher")
+            // Fall back to the build-wide AppMode.Role when the
+            // caller didn't pass anything explicit. Logout paths
+            // (StudentDashboard, ForgetPassword*, EmailVerification,
+            // Teacherdashboard) construct `new LoginWindow()` with no
+            // arg — without this fallback they would re-show the
+            // Teacher/Student toggle on a single-role build, which
+            // is exactly the post-logout regression we hit.
+            // Explicit roles passed by callers still take precedence.
+            string effectiveRole = role ?? AppMode.Role;
+
+            if (effectiveRole == "Teacher")
             {
                 RbTeacher.IsChecked = true;
                 RbStudent.Visibility = Visibility.Collapsed; // Hide student tab
             }
-            else if (role == "Student")
+            else if (effectiveRole == "Student")
             {
                 RbStudent.IsChecked = true;
                 RbTeacher.Visibility = Visibility.Collapsed; // Hide teacher tab
             }
+            // "All" or any other value → both tabs stay visible
         }
 
         private void Window_MouseDown(object sender, MouseButtonEventArgs e)
