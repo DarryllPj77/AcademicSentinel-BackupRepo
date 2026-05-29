@@ -18,6 +18,17 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         public event Action ScreenshotKeyDetected;
         public event Action SnippingToolComboDetected;
 
+        /// <summary>
+        /// Fires on the rising edge of Ctrl+V (either L/R Ctrl + V).
+        /// Raised from the hook thread via InvokeOnDispatcherSafe —
+        /// the hook callback itself stays well under
+        /// LowLevelHooksTimeout (default 300ms in
+        /// HKCU\Control Panel\Desktop\LowLevelHooksTimeout). The
+        /// subscriber MUST treat the call as a notification only and
+        /// offload any I/O / logging to a worker thread.
+        /// </summary>
+        public event Action PasteCombinationDetected;
+
         private const int WH_KEYBOARD_LL = 13;
         private const int WM_KEYDOWN    = 0x0100;
         private const int WM_KEYUP      = 0x0101;
@@ -29,7 +40,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private const int VK_RWIN = 0x5C;
         private const int VK_LSHIFT = 0xA0;
         private const int VK_RSHIFT = 0xA1;
+        private const int VK_LCONTROL = 0xA2;
+        private const int VK_RCONTROL = 0xA3;
         private const int VK_S = 0x53;
+        private const int VK_V = 0x56;
 
         private LowLevelKeyboardProc _proc;
         private IntPtr _hookId = IntPtr.Zero;
@@ -57,6 +71,8 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private bool _isRWinDown;
         private bool _isLShiftDown;
         private bool _isRShiftDown;
+        private bool _isLCtrlDown;
+        private bool _isRCtrlDown;
 
         public void Install()
         {
@@ -75,6 +91,8 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _isRWinDown   = false;
             _isLShiftDown = false;
             _isRShiftDown = false;
+            _isLCtrlDown  = false;
+            _isRCtrlDown  = false;
 
             _proc = HookCallback;
             _hookId = SetHook(_proc);
@@ -98,6 +116,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             Uninstall();
             ScreenshotKeyDetected = null;
             SnippingToolComboDetected = null;
+            PasteCombinationDetected = null;
         }
 
         private static IntPtr SetHook(LowLevelKeyboardProc proc)
@@ -131,10 +150,12 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 {
                     switch (vkCode)
                     {
-                        case VK_LWIN:   _isLWinDown   = isDown; break;
-                        case VK_RWIN:   _isRWinDown   = isDown; break;
-                        case VK_LSHIFT: _isLShiftDown = isDown; break;
-                        case VK_RSHIFT: _isRShiftDown = isDown; break;
+                        case VK_LWIN:     _isLWinDown   = isDown; break;
+                        case VK_RWIN:     _isRWinDown   = isDown; break;
+                        case VK_LSHIFT:   _isLShiftDown = isDown; break;
+                        case VK_RSHIFT:   _isRShiftDown = isDown; break;
+                        case VK_LCONTROL: _isLCtrlDown  = isDown; break;
+                        case VK_RCONTROL: _isRCtrlDown  = isDown; break;
                     }
                 }
 
@@ -160,32 +181,66 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     {
                         InvokeOnDispatcherSafe(SnippingToolComboDetected);
                     }
+
+                    // Ctrl+V — event-driven paste detection. This
+                    // replaces the previous polling logic in
+                    // BehavioralMonitoringService that sampled
+                    // IsKeyDown(VK_V) on the monitoring tick and
+                    // missed every key tap shorter than the tick
+                    // interval. Same queue-consistent modifier
+                    // tracking pattern as Win+Shift+S above — the
+                    // Ctrl state recorded above arrived on the SAME
+                    // hook stream as this VK_V keydown, so there is
+                    // no GetAsyncKeyState race. The hook callback
+                    // returns immediately; PasteCombinationDetected
+                    // is posted asynchronously via BeginInvoke.
+                    if (vkCode == VK_V
+                        && (_isLCtrlDown || _isRCtrlDown))
+                    {
+                        InvokeOnDispatcherSafe(PasteCombinationDetected);
+                    }
                 }
             }
 
+            // PASSIVE MONITORING CONTRACT — always pass the
+            // keystroke down the hook chain. Returning a non-zero
+            // IntPtr from a WH_KEYBOARD_LL callback suppresses the
+            // key system-wide, which would (a) break the exam app's
+            // own paste / typing inside any focused control and
+            // (b) silently violate the "observe only, never block"
+            // design. If you ever need to react to a key, do it
+            // inside the InvokeOnDispatcherSafe handlers above —
+            // never here, and never by returning anything other
+            // than the result of CallNextHookEx.
             return CallNextHookEx(_hookId, nCode, wParam, lParam);
         }
 
         private static void InvokeOnDispatcherSafe(Action handler)
         {
             if (handler == null) return;
-            try
+            // Lock-free, microsecond-fast hand-off to the thread pool.
+            // We deliberately do NOT go through Dispatcher.BeginInvoke
+            // here: under UI load the dispatcher queue can take long
+            // enough to enqueue that the hook callback drifts toward
+            // the 300 ms LowLevelHooksTimeout, after which Windows
+            // silently uninstalls the hook for the rest of the
+            // session with no surfaced error. That regression was the
+            // observed "Ctrl+V detected once, then never again"
+            // symptom. The thread-pool worker downstream
+            // (SacDetectorRuntime.OnPasteCombinationDetected →
+            // EmitSyntheticFinding) does its own dispatcher marshal
+            // before touching any ObservableCollection, so the final
+            // hop into UI land still happens cleanly — just not from
+            // inside the hook itself.
+            System.Threading.ThreadPool.UnsafeQueueUserWorkItem(_ =>
             {
-                // Marshal back to the WPF UI thread — listeners typically
-                // need to touch the dispatcher (DetectionReports collection).
-                var dispatcher = System.Windows.Application.Current?.Dispatcher;
-                if (dispatcher != null && !dispatcher.CheckAccess())
+                try { handler(); }
+                catch
                 {
-                    dispatcher.BeginInvoke(DispatcherPriority.Normal, handler);
+                    // Subscribers own their own error reporting; we
+                    // just must not propagate up the thread-pool stack.
                 }
-                else
-                {
-                    handler();
-                }
-            }
-            catch
-            {
-            }
+            }, null);
         }
 
         private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);

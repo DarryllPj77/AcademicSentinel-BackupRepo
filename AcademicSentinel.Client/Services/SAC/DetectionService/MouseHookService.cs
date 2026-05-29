@@ -117,22 +117,19 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private static void InvokeOnDispatcherSafe(Action handler)
         {
             if (handler == null) return;
-            try
+            // ThreadPool hand-off — identical reasoning to the keyboard
+            // hook: hitting the dispatcher's BeginInvoke from inside a
+            // low-level hook callback risks LowLevelHooksTimeout and
+            // a silent unhook. The thread-pool path is lock-free and
+            // microseconds-fast.
+            System.Threading.ThreadPool.UnsafeQueueUserWorkItem(_ =>
             {
-                var dispatcher = System.Windows.Application.Current?.Dispatcher;
-                if (dispatcher != null && !dispatcher.CheckAccess())
+                try { handler(); }
+                catch
                 {
-                    dispatcher.BeginInvoke(DispatcherPriority.Normal, handler);
+                    // Subscribers own their own error reporting.
                 }
-                else
-                {
-                    handler();
-                }
-            }
-            catch
-            {
-                // Hook-thread errors must not crash the dispatcher.
-            }
+            }, null);
         }
 
         private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);

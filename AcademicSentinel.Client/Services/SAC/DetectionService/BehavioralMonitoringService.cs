@@ -1676,33 +1676,38 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _copyDown = copyPressed;
 
             // ----------------------------------------------------
-            // Polled Ctrl+V (rising-edge) — paste violation flow
+            // Polled Ctrl+V — "any press since last tick"
             // ----------------------------------------------------
-            // The keyboard-hook path
-            // (KeyboardHookService.PasteCombinationDetected →
-            // SacDetectorRuntime.OnPasteCombinationDetected →
-            // EmitSyntheticFinding) is the FAST path that catches
-            // quick key taps which would land entirely between two
-            // monitoring ticks. THIS polling path is the AUDITABLE
-            // path — it puts CLIPBOARD_PASTE on exactly the same
-            // pipeline as the working CLIPBOARD_COPY detection above
-            // (AddEvent → Poll → EvaluateAndMapFindings →
-            // ReportViolationAsync → server → IMC log feed). Keeping
-            // both means the global log feed sees paste violations
-            // even if the hook channel ever drops (e.g. a slow
-            // dispatcher tick that delays the BeginInvoke or a
-            // downstream exception in the hook-path consumer).
+            // Previous rising-edge approach using IsKeyDown(VK_V)
+            // (high bit of GetAsyncKeyState) only fired when the
+            // polling sample HAPPENED to land while V was still
+            // physically held — so multiple rapid Ctrl+V taps
+            // inside one tick interval collapsed into either 0 or 1
+            // detections, which is exactly the "many pastes in
+            // Notepad, only one logged" symptom.
             //
-            // Severity 2 + cooldown 0 mirrors the original
-            // behaviour; AddEvent's per-event-type dedup throttles
-            // repeated identical entries inside the same tick.
-            bool pastePressed = ctrlPressed && IsKeyDown(VK_V);
-            if (pastePressed && !_pasteDown)
+            // The low bit of GetAsyncKeyState is "was V pressed
+            // since the previous call to GetAsyncKeyState" — so
+            // even if V is no longer held at sample time, we still
+            // know a press occurred during the interval. One log
+            // entry per tick that saw at least one paste; the
+            // event-driven hook path keeps emitting per-press for
+            // per-keystroke audit granularity.
+            //
+            // Per MSDN, the low bit may be consumed by another app
+            // calling GetAsyncKeyState first; treat it as a
+            // best-effort polling fallback rather than a precise
+            // counter. The hook path is the precise counter.
+            const int LowPressedBit = 0x0001;
+            int vState = GetAsyncKeyState(VK_V);
+            bool vPressedSinceLastPoll = (vState & LowPressedBit) != 0;
+            _pasteDown = (vState & 0x8000) != 0; // preserved for any external readers
+
+            if (ctrlPressed && vPressedSinceLastPoll)
             {
                 AddEvent(findings, DetectionConstants.EventClipboardPaste, 2,
                     "Paste command (Ctrl+V) detected while monitoring is active.", 0);
             }
-            _pasteDown = pastePressed;
         }
 
         private void DetectIdle(ICollection<MonitoringDetectionEvent> findings)
