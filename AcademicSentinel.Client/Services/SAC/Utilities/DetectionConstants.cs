@@ -8,7 +8,8 @@ namespace AcademicSentinel.Client.Services.SAC.Utilities
         public const string EventFocusRate = "RTFM_RATE";           // 3+ focus losses in 60s (aggressive)
         public const string EventFocusSustained = "RTFM_SUSTAINED"; // focus loss > 10s sustained (aggressive)
         public const string EventClipboardCopy = "CLIPBOARD_COPY";
-        public const string EventClipboardPaste = "CLIPBOARD_PASTE";
+        public const string EventClipboardPaste = "CLIPBOARD_PASTE";        // Ctrl+V detected by the WH_KEYBOARD_LL hook
+        public const string EventRightClickContextMenu = "RIGHT_CLICK_CONTEXT"; // WM_RBUTTONUP — potential paste vector via context menu
         public const string EventScreenshot = "SCREENSHOT";
         public const string EventPrintScreen = "PRINTSCREEN";
         public const string EventSnipTool = "SNIP_TOOL";

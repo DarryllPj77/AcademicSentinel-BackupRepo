@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Threading;
 using AcademicSentinel.Client.Services.SAC.DetectionService;
 using AcademicSentinel.Client.Services.SAC.Models;
+using AcademicSentinel.Client.Services.SAC.Utilities;
 
 namespace AcademicSentinel.Client.Services.SAC
 {
@@ -15,6 +16,7 @@ namespace AcademicSentinel.Client.Services.SAC
         private readonly EnvironmentIntegrityService _environmentIntegrityService;
         private readonly DecisionEngineService _decisionEngineService;
         private readonly KeyboardHookService _keyboardHookService;
+        private readonly MouseHookService _mouseHookService;
         private readonly HardwareSoftwareArtifactService _hardwareSoftwareArtifactService;
         private bool _isStarted;
         private bool _isDisposed;
@@ -106,6 +108,10 @@ namespace AcademicSentinel.Client.Services.SAC
             _keyboardHookService = new KeyboardHookService();
             _keyboardHookService.ScreenshotKeyDetected += OnScreenshotKeyDetected;
             _keyboardHookService.SnippingToolComboDetected += OnSnippingToolComboDetected;
+            _keyboardHookService.PasteCombinationDetected += OnPasteCombinationDetected;
+
+            _mouseHookService = new MouseHookService();
+            _mouseHookService.RightClickContextDetected += OnRightClickContextDetected;
 
             _hardwareSoftwareArtifactService = new HardwareSoftwareArtifactService();
             _hardwareSoftwareArtifactService.ArtifactDetected += OnHasArtifactDetected;
@@ -153,6 +159,80 @@ namespace AcademicSentinel.Client.Services.SAC
                 Timestamp = DateTime.UtcNow
             };
             EmitSyntheticFinding(ev);
+        }
+
+        // Hook → dispatcher → here. Offload EmitSyntheticFinding
+        // (which runs the decision engine and ultimately triggers
+        // ReportViolationAsync's HTTP / SignalR work) onto the
+        // thread pool so the dispatcher tick is released
+        // immediately. The hook itself was already released the
+        // moment InvokeOnDispatcherSafe BeginInvoke'd this handler;
+        // the Task.Run hop is defence in depth so a slow violation
+        // dispatch can never block UI either.
+        private void OnPasteCombinationDetected()
+        {
+            if (!_isStarted || IsPaused)
+                return;
+
+            var ev = new MonitoringDetectionEvent
+            {
+                EventType = DetectionConstants.EventClipboardPaste,
+                Description = "Paste combination (Ctrl+V) detected via low-level keyboard hook.",
+                Timestamp = DateTime.UtcNow
+            };
+
+            // Fire-and-forget on the thread pool. Swallow exceptions
+            // — this is an out-of-band signal and must NEVER take the
+            // process down. EmitSyntheticFinding already marshals
+            // back to the dispatcher for the consumer callback, so
+            // ObservableCollection updates remain safe.
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    if (_isDisposed) return;
+                    EmitSyntheticFinding(ev);
+                }
+                catch
+                {
+                    // Intentional: out-of-band finding path.
+                }
+            });
+        }
+
+        // Mouse-hook path. Right-button-up is the OS-level signal
+        // that *might* be opening a context menu containing Paste —
+        // we cannot see inside the menu, so this is logged as
+        // RIGHT_CLICK_CONTEXT (a paste *vector*, not a confirmed
+        // paste). Same Task.Run offload as OnPasteCombinationDetected
+        // so neither the hook thread NOR the dispatcher is held by
+        // the violation dispatch. Hook is strictly passive — the
+        // right-click still reaches the focused app exactly as
+        // before this code existed.
+        private void OnRightClickContextDetected()
+        {
+            if (!_isStarted || IsPaused)
+                return;
+
+            var ev = new MonitoringDetectionEvent
+            {
+                EventType = DetectionConstants.EventRightClickContextMenu,
+                Description = "Right-click detected during active monitoring (potential paste vector via context menu).",
+                Timestamp = DateTime.UtcNow
+            };
+
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    if (_isDisposed) return;
+                    EmitSyntheticFinding(ev);
+                }
+                catch
+                {
+                    // Intentional: out-of-band finding path.
+                }
+            });
         }
 
         private void EmitSyntheticFinding(MonitoringDetectionEvent rawEvent)
@@ -298,6 +378,7 @@ namespace AcademicSentinel.Client.Services.SAC
                 IsLoggingEnabled = true;
                 _behavioralMonitoringService.StartMonitoring();
                 _keyboardHookService.Install();
+                _mouseHookService.Install();
                 _hardwareSoftwareArtifactService.Start();
 
                 var hardwareState = await _environmentIntegrityService.PerformFullScanAsync();
@@ -323,6 +404,7 @@ namespace AcademicSentinel.Client.Services.SAC
             IsLoggingEnabled = false;
             _behavioralMonitoringService.StopMonitoring();
             _keyboardHookService.Uninstall();
+            _mouseHookService.Uninstall();
             _hardwareSoftwareArtifactService.Stop();
         }
 
@@ -341,6 +423,7 @@ namespace AcademicSentinel.Client.Services.SAC
             _isStarted = false;
             _behavioralMonitoringService.StopMonitoring();
             _keyboardHookService.Uninstall();
+            _mouseHookService.Uninstall();
             _hardwareSoftwareArtifactService.Stop();
             await Task.CompletedTask;
         }
@@ -355,6 +438,7 @@ namespace AcademicSentinel.Client.Services.SAC
             _isStarted = false;
             _behavioralMonitoringService.StopMonitoring();
             _keyboardHookService.Uninstall();
+            _mouseHookService.Uninstall();
             _hardwareSoftwareArtifactService.Stop();
         }
 
@@ -382,6 +466,8 @@ namespace AcademicSentinel.Client.Services.SAC
             {
                 _keyboardHookService.ScreenshotKeyDetected      -= OnScreenshotKeyDetected;
                 _keyboardHookService.SnippingToolComboDetected  -= OnSnippingToolComboDetected;
+                _keyboardHookService.PasteCombinationDetected   -= OnPasteCombinationDetected;
+                _mouseHookService.RightClickContextDetected     -= OnRightClickContextDetected;
                 _hardwareSoftwareArtifactService.ArtifactDetected -= OnHasArtifactDetected;
             }
             catch { /* swallow — handler list may already be cleared */ }
@@ -395,6 +481,7 @@ namespace AcademicSentinel.Client.Services.SAC
             // by Dispose could leak an OS hook handle on every cycle.
             try { _behavioralMonitoringService.Dispose(); }     catch { }
             try { _keyboardHookService.Dispose(); }             catch { }
+            try { _mouseHookService.Dispose(); }                catch { }
             try { _hardwareSoftwareArtifactService.Dispose(); } catch { }
 
             // Step 4 — Detach the option callbacks so the captured closures
