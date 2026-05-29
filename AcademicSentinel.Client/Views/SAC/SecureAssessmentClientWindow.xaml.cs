@@ -1678,11 +1678,13 @@ namespace AcademicSentinel.Client.Views.SAC
                 return;
 
             // Mutual-exclusion guard: refuse Done while a Raise Hand
-            // request is already pending. UpdateUIForPhase greys the
-            // button out, but this is defence in depth against a fast
-            // double-click that fires before IsEnabled propagates
-            // through the WPF dispatcher.
-            if (_handRaiseState == HandRaiseState.Pending)
+            // request is in any non-Inactive state — Pending
+            // (awaiting instructor decision) OR Active (Q&A in
+            // progress, hand still up). UpdateUIForPhase greys the
+            // button out for both, but this is defence in depth
+            // against a fast double-click that fires before
+            // IsEnabled propagates through the WPF dispatcher.
+            if (_handRaiseState != HandRaiseState.Inactive)
                 return;
 
             if (_sessionEnded || _currentPhase != ExamPhase.Active)
@@ -1941,14 +1943,16 @@ namespace AcademicSentinel.Client.Views.SAC
                         BtnDone.Foreground = Brushes.White;
                     }
 
-                    // Mutual-exclusion overlay: if Raise Hand is in
-                    // flight (Pending), force-disable Done too. Done
-                    // re-enables automatically once raise-hand drops
-                    // back to Inactive (denied / lowered). This makes
-                    // _hasSentDone and _handRaiseState behave as a
-                    // single combined state machine for IsEnabled
+                    // Mutual-exclusion overlay: while a Raise Hand is
+                    // in flight — either Pending (instructor hasn't
+                    // decided yet) OR Active (Q&A approved, hand is
+                    // currently up) — force-disable Done. Done
+                    // re-enables automatically once _handRaiseState
+                    // drops back to Inactive (denied / lowered). This
+                    // makes _hasSentDone and _handRaiseState behave
+                    // as a single combined state machine for IsEnabled
                     // without changing either flag's transition rules.
-                    if (!_hasSentDone && _handRaiseState == HandRaiseState.Pending)
+                    if (!_hasSentDone && _handRaiseState != HandRaiseState.Inactive)
                     {
                         BtnDone.IsEnabled  = false;
                         BtnDone.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));

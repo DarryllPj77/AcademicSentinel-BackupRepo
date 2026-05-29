@@ -112,6 +112,53 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Outlined variants — used by the participant-card action
+             buttons (Approve/Deny finish, Allow Q&A/Deny ask, Lower
+             Hand). The base PrimaryBtn / GhostBtn templates hardcode
+             the Border properties, so per-button BorderBrush overrides
+             don't reach the visual tree; these derived styles re-emit
+             the template with a black 1px border instead. -->
+        <Style x:Key="PrimaryBtnOutlined" TargetType="Button" BasedOn="{StaticResource PrimaryBtn}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="b" Background="{TemplateBinding Background}"
+                                BorderBrush="Black" BorderThickness="1"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="{StaticResource FEUGreenLightBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="{StaticResource FEUGreenDarkBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="GhostBtnOutlined" TargetType="Button" BasedOn="{StaticResource GhostBtn}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="b" Background="{TemplateBinding Background}"
+                                BorderBrush="Black" BorderThickness="1"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="#F5F5F5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="0,0,0,-16">
@@ -509,7 +556,7 @@
                                                                 Click="BtnDenyJoin_Click"/>
                                                         <Button x:Name="BtnApproveLeave"
                                                                 Content="Approve"
-                                                                Style="{StaticResource PrimaryBtn}"
+                                                                Style="{StaticResource PrimaryBtnOutlined}"
                                                                 FontSize="10"
                                                                 Padding="8,4"
                                                                 Margin="0,0,6,0"
@@ -517,14 +564,14 @@
                                                                 Click="BtnApproveLeave_Click"/>
                                                         <Button x:Name="BtnDenyLeave"
                                                                 Content="Deny"
-                                                                Style="{StaticResource GhostBtn}"
+                                                                Style="{StaticResource GhostBtnOutlined}"
                                                                 FontSize="10"
                                                                 Padding="8,4"
                                                                 Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
                                                                 Click="BtnDenyLeave_Click"/>
                                                         <Button x:Name="BtnApproveHandRaise"
                                                                 Content="Allow Q&amp;A"
-                                                                Style="{StaticResource PrimaryBtn}"
+                                                                Style="{StaticResource PrimaryBtnOutlined}"
                                                                 FontSize="10"
                                                                 Padding="8,4"
                                                                 Margin="0,0,6,0"
@@ -532,7 +579,7 @@
                                                                 Click="BtnApproveHandRaise_Click"/>
                                                         <Button x:Name="BtnDenyHandRaise"
                                                                 Content="Deny"
-                                                                Style="{StaticResource GhostBtn}"
+                                                                Style="{StaticResource GhostBtnOutlined}"
                                                                 FontSize="10"
                                                                 Padding="8,4"
                                                                 Margin="0,0,6,0"
@@ -540,7 +587,7 @@
                                                                 Click="BtnDenyHandRaise_Click"/>
                                                         <Button x:Name="BtnLowerHand"
                                                                 Content="Lower Hand"
-                                                                Style="{StaticResource GhostBtn}"
+                                                                Style="{StaticResource GhostBtnOutlined}"
                                                                 FontSize="10"
                                                                 Padding="8,4"
                                                                 Visibility="{Binding IsHandRaiseActive, Converter={StaticResource BoolToVis}}"
