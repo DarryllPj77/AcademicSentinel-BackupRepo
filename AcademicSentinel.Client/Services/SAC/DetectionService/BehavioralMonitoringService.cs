@@ -1649,6 +1649,20 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     AddEvent(findings, DetectionConstants.EventClipboardCopy, 2,
                         "Clipboard content changed while monitoring is active.", 1);
                 }
+
+                // PASSIVE MONITORING — DO NOT MUTATE THE CLIPBOARD.
+                // We previously called Clipboard.Clear() here to
+                // neutralise right-click paste; that behaviour is
+                // banned by design because it (a) actively
+                // interferes with system input and (b) made Ctrl+V
+                // appear to be blocked even though the hook itself
+                // passes the keystroke through. Detection is logged
+                // here and via the hook-based CLIPBOARD_PASTE event;
+                // no clipboard state is altered. If a future
+                // requirement asks for paste prevention again,
+                // implement it at the application boundary (sandbox
+                // the exam shell), NOT by mutating the global
+                // clipboard mid-session.
             }
 
             bool ctrlPressed = IsKeyDown(VK_CONTROL);
@@ -1661,15 +1675,30 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             }
             _copyDown = copyPressed;
 
+            // ----------------------------------------------------
+            // Polled Ctrl+V (rising-edge) — paste violation flow
+            // ----------------------------------------------------
+            // The keyboard-hook path
+            // (KeyboardHookService.PasteCombinationDetected →
+            // SacDetectorRuntime.OnPasteCombinationDetected →
+            // EmitSyntheticFinding) is the FAST path that catches
+            // quick key taps which would land entirely between two
+            // monitoring ticks. THIS polling path is the AUDITABLE
+            // path — it puts CLIPBOARD_PASTE on exactly the same
+            // pipeline as the working CLIPBOARD_COPY detection above
+            // (AddEvent → Poll → EvaluateAndMapFindings →
+            // ReportViolationAsync → server → IMC log feed). Keeping
+            // both means the global log feed sees paste violations
+            // even if the hook channel ever drops (e.g. a slow
+            // dispatcher tick that delays the BeginInvoke or a
+            // downstream exception in the hook-path consumer).
+            //
+            // Severity 2 + cooldown 0 mirrors the original
+            // behaviour; AddEvent's per-event-type dedup throttles
+            // repeated identical entries inside the same tick.
             bool pastePressed = ctrlPressed && IsKeyDown(VK_V);
             if (pastePressed && !_pasteDown)
             {
-                // Cooldown set to 0 — report EVERY Ctrl+V press individually,
-                // regardless of how rapidly the student is pasting.  The
-                // !_pasteDown rising-edge guard above remains intact so a
-                // single physical key-down still emits exactly one event
-                // (without it, holding the key would flood the log at the
-                // OS key-repeat rate).
                 AddEvent(findings, DetectionConstants.EventClipboardPaste, 2,
                     "Paste command (Ctrl+V) detected while monitoring is active.", 0);
             }

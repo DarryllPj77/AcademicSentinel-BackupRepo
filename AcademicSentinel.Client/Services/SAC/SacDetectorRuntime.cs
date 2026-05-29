@@ -161,14 +161,14 @@ namespace AcademicSentinel.Client.Services.SAC
             EmitSyntheticFinding(ev);
         }
 
-        // Hook → dispatcher → here. Offload EmitSyntheticFinding
-        // (which runs the decision engine and ultimately triggers
-        // ReportViolationAsync's HTTP / SignalR work) onto the
-        // thread pool so the dispatcher tick is released
-        // immediately. The hook itself was already released the
-        // moment InvokeOnDispatcherSafe BeginInvoke'd this handler;
-        // the Task.Run hop is defence in depth so a slow violation
-        // dispatch can never block UI either.
+        // Hook → dispatcher → here. EmitSyntheticFinding already
+        // marshals back to the dispatcher for the consumer callback,
+        // so no Task.Run wrapper is needed here — adding one (which
+        // we previously did) introduced a swallowing try/catch that
+        // hid every exception thrown anywhere downstream and was the
+        // direct reason paste violations never appeared in the
+        // global log feed. The structure now mirrors
+        // OnScreenshotKeyDetected exactly (which has always worked).
         private void OnPasteCombinationDetected()
         {
             if (!_isStarted || IsPaused)
@@ -180,35 +180,18 @@ namespace AcademicSentinel.Client.Services.SAC
                 Description = "Paste combination (Ctrl+V) detected via low-level keyboard hook.",
                 Timestamp = DateTime.UtcNow
             };
-
-            // Fire-and-forget on the thread pool. Swallow exceptions
-            // — this is an out-of-band signal and must NEVER take the
-            // process down. EmitSyntheticFinding already marshals
-            // back to the dispatcher for the consumer callback, so
-            // ObservableCollection updates remain safe.
-            _ = System.Threading.Tasks.Task.Run(() =>
-            {
-                try
-                {
-                    if (_isDisposed) return;
-                    EmitSyntheticFinding(ev);
-                }
-                catch
-                {
-                    // Intentional: out-of-band finding path.
-                }
-            });
+            EmitSyntheticFinding(ev);
         }
 
         // Mouse-hook path. Right-button-up is the OS-level signal
         // that *might* be opening a context menu containing Paste —
         // we cannot see inside the menu, so this is logged as
         // RIGHT_CLICK_CONTEXT (a paste *vector*, not a confirmed
-        // paste). Same Task.Run offload as OnPasteCombinationDetected
-        // so neither the hook thread NOR the dispatcher is held by
-        // the violation dispatch. Hook is strictly passive — the
-        // right-click still reaches the focused app exactly as
-        // before this code existed.
+        // paste). Same flat structure as OnPasteCombinationDetected /
+        // OnScreenshotKeyDetected for the same reasons — no extra
+        // Task.Run, no exception-swallowing wrapper. Hook is
+        // strictly passive — the right-click still reaches the
+        // focused app exactly as before this code existed.
         private void OnRightClickContextDetected()
         {
             if (!_isStarted || IsPaused)
@@ -220,19 +203,7 @@ namespace AcademicSentinel.Client.Services.SAC
                 Description = "Right-click detected during active monitoring (potential paste vector via context menu).",
                 Timestamp = DateTime.UtcNow
             };
-
-            _ = System.Threading.Tasks.Task.Run(() =>
-            {
-                try
-                {
-                    if (_isDisposed) return;
-                    EmitSyntheticFinding(ev);
-                }
-                catch
-                {
-                    // Intentional: out-of-band finding path.
-                }
-            });
+            EmitSyntheticFinding(ev);
         }
 
         private void EmitSyntheticFinding(MonitoringDetectionEvent rawEvent)
