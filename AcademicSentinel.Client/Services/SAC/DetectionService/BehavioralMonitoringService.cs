@@ -553,6 +553,13 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         private string _lastEmittedExternalKey;
         private bool _hasBeenOnLmsSinceLastEmit = true;
 
+        // Friendly label of the most recent external target the student
+        // was on (e.g., "chatgpt.com", "Microsoft Teams"). Set whenever
+        // WINDOW_SWITCH or ALLOWED_APP emits; consumed by CANVAS_RETURNED
+        // to render the "...from <app>" suffix in the teacher-facing
+        // description. Null means no prior external visit this session.
+        private string _lastExternalTargetLabel;
+
         // ---- WinEvent foreground-hook state (Phase 1, Task A) ----
         // Handle returned by SetWinEventHook; IntPtr.Zero when not installed.
         private IntPtr _foregroundHookHandle = IntPtr.Zero;
@@ -670,6 +677,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // very first real external switch passes through.
             _lastEmittedExternalKey = null;
             _hasBeenOnLmsSinceLastEmit = true;
+            _lastExternalTargetLabel = null;
 
             // Drain any stale findings left in the queue from a previous
             // monitoring cycle that wasn't shut down cleanly.
@@ -692,6 +700,21 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             if (string.IsNullOrWhiteSpace(url)) return string.Empty;
             if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var parsed)) return string.Empty;
             return parsed.Host?.ToLowerInvariant() ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Returns a teacher-friendly host label for a URL — the bare host
+        /// with a leading "www." stripped (e.g., "www.youtube.com" →
+        /// "youtube.com"). Returns null on a missing or malformed URL so
+        /// callers can fall back to a window-title-based label.
+        /// </summary>
+        private static string ExtractFriendlyHost(string url)
+        {
+            var host = ExtractDomain(url);
+            if (string.IsNullOrEmpty(host)) return null;
+            if (host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
+                host = host.Substring(4);
+            return host;
         }
 
         /// <summary>
@@ -798,6 +821,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             _lastReportedIdleLevel = 0;
             _wasPreviouslyOnLms = false;
             _anchoredTabSignature = null;
+            _lastExternalTargetLabel = null;
             _lastReportedProcesses.Clear();
             _lastReportedAtByEvent.Clear();
 
@@ -1084,9 +1108,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             // etc.), the read returns null and we fall through to the
             // legacy title-based isOnLms above.
             string urlViolationReason = null;
+            string activeUrl = null;
             if (_urlAnchor != null && IsBrowserProcessForeground(foreground))
             {
-                string activeUrl = BrowserUrlReader.TryGetForegroundBrowserUrl(foreground);
+                activeUrl = BrowserUrlReader.TryGetForegroundBrowserUrl(foreground);
                 if (!string.IsNullOrEmpty(activeUrl))
                 {
                     var urlResult = UrlAnchorValidator.Validate(_urlAnchor, activeUrl);
@@ -1196,8 +1221,11 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             //      produced a false "returned focus" entry.
             if (isOnLms && _wasPreviouslyOutOfExamFocus)
             {
+                string returnDescription = string.IsNullOrWhiteSpace(_lastExternalTargetLabel)
+                    ? $"Student returned to exam in {_anchoredLmsDomain}."
+                    : $"Student returned to exam in {_anchoredLmsDomain} from {_lastExternalTargetLabel}.";
                 AddEvent(findings, DetectionConstants.EventCanvasReturned, 0,
-                    $"Student returned focus to the LMS exam ({_anchoredLmsDomain}).",
+                    returnDescription,
                     cooldownSeconds: 2);
             }
             _wasPreviouslyOnLms = isOnLms;
@@ -1255,6 +1283,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                             cooldownSeconds: 3);
                         _lastEmittedExternalKey = emitKey;
                         _hasBeenOnLmsSinceLastEmit = false;
+                        _lastExternalTargetLabel = allowedAppLabel;
                     }
 
                     _lastForegroundWindow = foreground;
@@ -1263,22 +1292,30 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     return;
                 }
 
-                string description;
-                if (urlViolationReason != null)
-                {
-                    // Deep-path URL gate rejected
-                    description = $"Browser navigated to a non-exam URL. {urlViolationReason}";
-                }
-                else if (sameAnchoredHwnd && titleHasNonLmsKeyword)
-                {
-                    description = "Focus left the LMS tab in the same browser window.";
-                }
-                else
-                {
-                    // Use the existing sanitizer to get the clean app name the student switched to
-                    string targetApp = GetSanitizedWindowLabel(foreground);
-                    description = $"Focus lost from LMS exam ({_anchoredLmsDomain}) to '{targetApp}'.";
-                }
+                // Friendly "to" label for the description and for the
+                // CANVAS_RETURNED "...from <X>" suffix on the next return.
+                // Prefer the address-bar host (most recognisable for a
+                // browser tab switch); fall back to the sanitised window
+                // label for native apps / when UIA couldn't read the URL.
+                string targetLabel = ExtractFriendlyHost(activeUrl);
+                if (string.IsNullOrWhiteSpace(targetLabel))
+                    targetLabel = GetSanitizedWindowLabel(foreground);
+                if (string.IsNullOrWhiteSpace(targetLabel))
+                    targetLabel = "another app";
+
+                // "From" label tracks the ACTUAL previous foreground so
+                // a chain like youtube → chatgpt → facebook reads as
+                // three separate transitions, not three "from LMS"
+                // entries. Falls back to the LMS domain only when the
+                // student is genuinely leaving the exam for the first
+                // time (or right after a CANVAS_RETURNED).
+                string sourceLabel =
+                    (_hasBeenOnLmsSinceLastEmit || string.IsNullOrWhiteSpace(_lastExternalTargetLabel))
+                        ? _anchoredLmsDomain
+                        : _lastExternalTargetLabel;
+
+                string description =
+                    $"Window switch detected from {sourceLabel} to {targetLabel}.";
 
                 // Edge-emit gate (same shape as the ALLOWED_APP branch
                 // above). Bouncing back to the same unauthorized
@@ -1286,7 +1323,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                 // transition — only re-arms when the student returns
                 // to the LMS OR switches to a different external
                 // target.
-                string windowSwitchEmitKey = "WINDOW_SWITCH:" + description;
+                string windowSwitchEmitKey = "WINDOW_SWITCH:" + targetLabel;
                 bool isWindowSwitchRepeat =
                     !_hasBeenOnLmsSinceLastEmit
                     && string.Equals(windowSwitchEmitKey, _lastEmittedExternalKey, StringComparison.OrdinalIgnoreCase);
@@ -1309,6 +1346,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                         description, cooldownSeconds: 1);
                     _lastEmittedExternalKey = windowSwitchEmitKey;
                     _hasBeenOnLmsSinceLastEmit = false;
+                    _lastExternalTargetLabel = targetLabel;
                 }
             }
 
@@ -1590,7 +1628,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
                     EmitFromBackgroundThread(
                         DetectionConstants.EventClipboardPaste,
                         severity: 2,
-                        description: "Paste command (Ctrl+V) detected by high-frequency edge poll.",
+                        description: "Paste command (Ctrl+V) detected.",
                         cooldownSeconds: 0);
                 }
             }
