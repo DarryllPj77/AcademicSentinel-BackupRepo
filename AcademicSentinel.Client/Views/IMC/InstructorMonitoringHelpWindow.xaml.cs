@@ -75,25 +75,29 @@ namespace AcademicSentinel.Client.Views.IMC
 
             // ---------- Student-state regions (sidebar) ----------
             ["studentDone"] = new RegionInfo(
-                Title:       "Student State: Done",
+                Title:       "Student State: Done (Finished tab)",
                 IconKind:    PackIconKind.CheckCircle,
-                Description: "A green 'Done' badge means the student tapped the Done button on their SAC softlock UI to mark the assessment as finished. Their softlock stays open and their connection stays live for a few seconds while the SAC sends the final ack, then it unlocks so they can close it.",
-                Purpose:     "Lets you see at a glance — without leaving the IMC — who is finished, so you can concentrate live monitoring on the students still taking the exam.",
-                Scenario:    "Alice Cruz finishes early at 10:30. On her end, her SAC softlock confirms submission; on your IMC, her row turns green with the 'Done' badge and her count moves from Taking to Done. You leave her session alone and focus on the rest of the cohort."),
+                Description: "A green 'Done' badge in the Finished tab means the student tapped Done on their SAC softlock, you approved the request from the IMC, and the SAC softlock then released them out of the session. This is the terminal state — the student has fully exited.",
+                Purpose:     "Closes the loop on the finish flow. Once you approve a student's Done request, they move from the Done tab into Finished and stop counting against active monitoring — so you instantly know which students are completely off the system versus still under softlock.",
+                Scenario:    "Alice Cruz taps Done in her SAC softlock at 10:30. Her row moves from Taking into the Done tab with an Approve / Deny prompt. You click Approve; her SAC softlock confirms and releases her, and her row settles into the Finished tab with the green Done badge. She's done — focus on the rest of the cohort."),
 
             ["studentRaiseHand"] = new RegionInfo(
                 Title:       "Student State: Raise Hand",
                 IconKind:    PackIconKind.HandBackRight,
-                Description: "An orange 'Raised' badge with a hand icon means the student tapped Raise Hand on their SAC softlock UI — the only way to get your attention without breaking softlock isolation.",
+                Description: "An orange 'Raised' badge with a hand icon means the student tapped Raise Hand on their SAC softlock UI — one of only two buttons on the softlock (the other is Done). It's the only way to get your attention without breaking softlock isolation.",
                 Purpose:     "Replaces literal hand-raising in a fully remote, locked-down session. Lets the student flag a question (test typo, can't access a file, technical issue) without alt-tabbing, opening chat, or any other channel that would trigger a violation.",
                 Scenario:    "Bob Dela Cruz raises his hand at 10:32. On the IMC his row goes orange-raised and the Global Log Feed shows 'Bob Dela Cruz raised their hand'. You approve the raise hand from the IMC to grant him temporary allowed-app access (e.g. Microsoft Teams) so he can ask without producing a WINDOW_SWITCH violation."),
 
+            // Repurposed: the old 'Request to Leave' button no longer
+            // exists on the softlock. The 'Pending' state now means the
+            // student tapped Done and is sitting in the Done tab waiting
+            // for the instructor's Approve / Deny decision.
             ["studentRequestApproval"] = new RegionInfo(
-                Title:       "Student State: Request Approval",
+                Title:       "Student State: Done — Pending Approval (Done tab)",
                 IconKind:    PackIconKind.HelpCircle,
-                Description: "An orange 'Pending' badge means the student tapped Request to Leave on their SAC softlock UI and is waiting for your decision from the IMC.",
-                Purpose:     "Gives you explicit control over every mid-session leave in a remote setup. The softlock keeps them in the session and on the timer until you approve from the IMC — they can't just exit unmonitored.",
-                Scenario:    "Carol Estrada needs a quick break. She taps 'Request to Leave' on her SAC softlock; her row in the IMC goes orange-pending. You click her card, review her current risk level in the Student Details panel, then approve or deny from there. The decision is pushed back to her SAC immediately."),
+                Description: "An orange 'Pending' badge in the Done tab means the student tapped Done on their SAC softlock and is now waiting for you to Approve or Deny from the IMC. Their softlock shows 'Waiting for instructor approval...' and stays locked — they cannot exit until you decide.",
+                Purpose:     "Gives you a final checkpoint before any student leaves a softlocked session. While they're pending you can still open their Student Details, check their risk level and violations, and either Approve (they move to Finished) or Deny (they go back into Taking and keep being monitored).",
+                Scenario:    "Carol Estrada thinks she's done. At 10:33 she taps Done in her SAC softlock — her row moves from Taking into the Done tab with the orange 'Pending' badge, and the Global Log Feed shows 'Carol Estrada finished the exam — awaiting your approval'. You click her card, glance at her risk level, then click Approve. Her softlock releases her and she moves into Finished."),
 
             // ---------- Selected student → opens the dedicated replica popup ----------
             // (Special-cased in Region_Click — opens StudentDetailsHelpWindow
@@ -117,9 +121,9 @@ namespace AcademicSentinel.Client.Views.IMC
             ["logEntry_completed"] = new RegionInfo(
                 Title:       "Log Entry: Completed Exam",
                 IconKind:    PackIconKind.CheckCircle,
-                Description: "A green 'completed the exam' line means the student's SAC submitted the final ack and their state flipped to Done.",
-                Purpose:     "Authoritative record that the student finished cleanly. Used by the post-session report as the per-student end time.",
-                Scenario:    "You see '10:30:00 — Alice Cruz completed the exam'. That timestamp becomes Alice's submission time on the archive."),
+                Description: "A green 'completed the exam' line means the student tapped Done, you Approved from the IMC, and their SAC softlock released them out of the session. They are now in the Finished tab.",
+                Purpose:     "Authoritative record that the student finished cleanly and was released by your approval. Used by the post-session report as the per-student end time.",
+                Scenario:    "You see '10:30:00 — Alice Cruz completed the exam'. That's the moment after you approved Alice's Done request and her softlock released her — that timestamp becomes Alice's submission time on the archive."),
 
             ["logEntry_handraised"] = new RegionInfo(
                 Title:       "Log Entry: Raise Hand",
@@ -129,11 +133,11 @@ namespace AcademicSentinel.Client.Views.IMC
                 Scenario:    "'10:32:15 — Bob Dela Cruz raised their hand'. You see it pop in, address Bob's question, and the entry stays in the log for the rest of the session."),
 
             ["logEntry_approval"] = new RegionInfo(
-                Title:       "Log Entry: Leave Approval Request",
+                Title:       "Log Entry: Finished — Awaiting Approval",
                 IconKind:    PackIconKind.HelpCircle,
-                Description: "An 'approval to leave' line corresponds to the student tapping Request to Leave. The next log line will be either 'leave approved' or 'leave denied' once you decide.",
-                Purpose:     "Auditable record of every mid-session leave. Pairs with the approve/deny action so reviewers can see who asked, when, and how it was handled.",
-                Scenario:    "'10:33:42 — Carol Estrada requested approval to leave the session'. You approve; a follow-up line 'Leave approved for Carol Estrada' appears at 10:33:48."),
+                Description: "A 'finished the exam — awaiting your approval' line corresponds to the student tapping Done on their SAC softlock. They are now in the Done tab with the orange 'Pending' badge, and their SAC shows 'Waiting for instructor approval...'. The next log line will be either 'completed the exam' (Approve) or a returned-to-Taking notice (Deny).",
+                Purpose:     "Auditable trail of every Done request that hit the IMC. Pairs with the Approve / Deny action so reviewers can see who asked to finish, when, and how you handled it.",
+                Scenario:    "'10:33:42 — Carol Estrada finished the exam — awaiting your approval'. You click her card, glance at her risk level, click Approve, and a follow-up line 'Carol Estrada completed the exam' appears."),
 
             ["logEntry_join"] = new RegionInfo(
                 Title:       "Log Entry: Joined Session",
