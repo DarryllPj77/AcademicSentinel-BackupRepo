@@ -77,23 +77,23 @@ namespace AcademicSentinel.Client.Views.IMC
             ["studentDone"] = new RegionInfo(
                 Title:       "Student State: Done",
                 IconKind:    PackIconKind.CheckCircle,
-                Description: "A green 'Done' badge marks a student who has finished their exam and submitted. Their connection may still be active for a few seconds while the SAC sends the final ack.",
-                Purpose:     "Lets you see at a glance who is finished so you don't accidentally interrupt them or worry about an inactive screen.",
-                Scenario:    "Alice Cruz finishes early at 10:30. Her row turns green with the 'Done' badge and her tab count moves from 'Taking' to 'Done'. You leave her alone and focus on the rest."),
+                Description: "A green 'Done' badge means the student tapped the Done button on their SAC softlock UI to mark the assessment as finished. Their softlock stays open and their connection stays live for a few seconds while the SAC sends the final ack, then it unlocks so they can close it.",
+                Purpose:     "Lets you see at a glance — without leaving the IMC — who is finished, so you can concentrate live monitoring on the students still taking the exam.",
+                Scenario:    "Alice Cruz finishes early at 10:30. On her end, her SAC softlock confirms submission; on your IMC, her row turns green with the 'Done' badge and her count moves from Taking to Done. You leave her session alone and focus on the rest of the cohort."),
 
             ["studentRaiseHand"] = new RegionInfo(
                 Title:       "Student State: Raise Hand",
                 IconKind:    PackIconKind.HandBackRight,
-                Description: "An orange 'Raised' badge with a hand icon means the student has tapped Raise Hand in the SAC to get your attention without leaving their seat.",
-                Purpose:     "Replaces literal hand-raising in proctored exam rooms. Lets students flag a question (test typo, can't access a file) without disrupting others or leaving their machine.",
-                Scenario:    "Bob Dela Cruz raises his hand at 10:32. His row goes yellow, the Global Log Feed shows 'Bob Dela Cruz raised their hand', and you walk over to his desk to answer."),
+                Description: "An orange 'Raised' badge with a hand icon means the student tapped Raise Hand on their SAC softlock UI — the only way to get your attention without breaking softlock isolation.",
+                Purpose:     "Replaces literal hand-raising in a fully remote, locked-down session. Lets the student flag a question (test typo, can't access a file, technical issue) without alt-tabbing, opening chat, or any other channel that would trigger a violation.",
+                Scenario:    "Bob Dela Cruz raises his hand at 10:32. On the IMC his row goes orange-raised and the Global Log Feed shows 'Bob Dela Cruz raised their hand'. You approve the raise hand from the IMC to grant him temporary allowed-app access (e.g. Microsoft Teams) so he can ask without producing a WINDOW_SWITCH violation."),
 
             ["studentRequestApproval"] = new RegionInfo(
                 Title:       "Student State: Request Approval",
                 IconKind:    PackIconKind.HelpCircle,
-                Description: "An orange 'Pending' badge means the student has requested permission to leave the session (bathroom break, technical issue) and is waiting for your approval.",
-                Purpose:     "Gives instructors explicit control over mid-session leaves. The student stays in the session (and on the timer) until you approve, so they can't just walk out unmonitored.",
-                Scenario:    "Carol Estrada needs a quick bathroom break. She taps 'Request to Leave' in the SAC; her row goes orange-pending. You click her card, review her current risk level, then click Approve. Her status flips to 'On Leave' for the duration."),
+                Description: "An orange 'Pending' badge means the student tapped Request to Leave on their SAC softlock UI and is waiting for your decision from the IMC.",
+                Purpose:     "Gives you explicit control over every mid-session leave in a remote setup. The softlock keeps them in the session and on the timer until you approve from the IMC — they can't just exit unmonitored.",
+                Scenario:    "Carol Estrada needs a quick break. She taps 'Request to Leave' on her SAC softlock; her row in the IMC goes orange-pending. You click her card, review her current risk level in the Student Details panel, then approve or deny from there. The decision is pushed back to her SAC immediately."),
 
             // ---------- Selected student → opens the dedicated replica popup ----------
             // (Special-cased in Region_Click — opens StudentDetailsHelpWindow

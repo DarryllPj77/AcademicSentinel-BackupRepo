@@ -109,13 +109,15 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- Violations Summary button (mock) -->
-                    <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="6" Padding="0,12" Margin="0,0,0,12">
+                    <!-- Violations Summary button (clickable — opens help popup) -->
+                    <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="6" Padding="0,12" Margin="0,0,0,12"
+                            Cursor="Hand" Tag="violationsSummary" MouseLeftButtonDown="Button_Click">
                         <TextBlock Text="Violations Summary" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center"/>
                     </Border>
 
-                    <!-- Remove from Session button (mock) -->
-                    <Border Background="{StaticResource DangerRedBrush}" CornerRadius="6" Padding="0,14">
+                    <!-- Remove from Session button (clickable — opens help popup) -->
+                    <Border Background="{StaticResource DangerRedBrush}" CornerRadius="6" Padding="0,14"
+                            Cursor="Hand" Tag="removeFromSession" MouseLeftButtonDown="Button_Click">
                         <TextBlock Text="Remove from Session" FontSize="14" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center"/>
                     </Border>
                 </StackPanel>
