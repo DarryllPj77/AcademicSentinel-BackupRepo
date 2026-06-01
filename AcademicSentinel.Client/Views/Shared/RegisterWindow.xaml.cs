@@ -119,10 +119,17 @@ namespace AcademicSentinel.Client.Views.Shared
             }
             else
             {
-                MessageBox.Show(
-                    "Registration failed. The email might be taken, or the domain isn't allowed " +
-                    "(only @fit.edu.ph, @feutech.edu.ph, and @gmail.com are accepted in this build).",
-                    "Registration Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                // Show the actual server reason if AuthService captured
+                // one (e.g. "Cannot reach server", "This email is already
+                // registered", "wait N seconds"). Fall back to the
+                // generic explanation only when no detail was captured.
+                var detail = _authService.LastErrorMessage;
+                var msg = string.IsNullOrWhiteSpace(detail)
+                    ? "Registration failed. The email might be taken, or the domain isn't allowed " +
+                      "(only @fit.edu.ph, @feutech.edu.ph, and @gmail.com are accepted in this build)."
+                    : $"Registration failed.\n\n{detail}";
+
+                MessageBox.Show(msg, "Registration Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 BtnRegister.IsEnabled = true;
                 BtnRegister.Content = "Create Account";
             }

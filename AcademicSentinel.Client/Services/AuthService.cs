@@ -21,14 +21,47 @@ namespace AcademicSentinel.Client.Services
         // Calls POST /api/auth/register
         public async Task<bool> RegisterAsync(UserRegisterDto registerData)
         {
+            LastErrorMessage = null;
             try
             {
-                // Hits the /api/auth/register endpoint we just created 
+                // Hits the /api/auth/register endpoint we just created
                 var response = await _httpClient.PostAsJsonAsync(ApiEndpoints.AuthRegister, registerData);
-                return response.IsSuccessStatusCode;
+                if (response.IsSuccessStatusCode)
+                    return true;
+
+                // Surface the real server reason so the UI can show
+                // "domain not allowed" vs "email already registered" vs
+                // "wait N seconds" instead of one generic message.
+                try
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    LastErrorMessage = string.IsNullOrWhiteSpace(body)
+                        ? $"Server returned {(int)response.StatusCode} {response.StatusCode}."
+                        : body;
+                }
+                catch
+                {
+                    LastErrorMessage = $"Server returned {(int)response.StatusCode} {response.StatusCode}.";
+                }
+                return false;
             }
-            catch (Exception)
+            catch (HttpRequestException hre)
             {
+                // Cannot reach the API at all — usually means the
+                // BaseUrl in ApiEndpoints.cs points somewhere the
+                // installed client can't actually hit (e.g. localhost
+                // on a deployed build).
+                LastErrorMessage = $"Cannot reach server: {hre.Message}";
+                return false;
+            }
+            catch (TaskCanceledException)
+            {
+                LastErrorMessage = "The server did not respond in time. Check your internet connection.";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LastErrorMessage = $"Unexpected error: {ex.Message}";
                 return false;
             }
         }
