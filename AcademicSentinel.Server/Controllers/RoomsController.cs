@@ -1525,6 +1525,61 @@ public class RoomsController : ControllerBase
             .OrderByDescending(p => p.JoinedAt)
             .FirstOrDefaultAsync();
 
+        // ============================================================
+        // EXPLICIT DISCONNECTED-STATE REJOIN GATE (deployment fix).
+        //
+        // When a student loses internet mid-exam, the server marks
+        // their participant row ConnectionStatus="Disconnected". When
+        // they regain connectivity and click the course tile on the
+        // dashboard, this REST endpoint is hit.
+        //
+        // Without this short-circuit, the request fell through to the
+        // generic blocking-event analysis below and — when the
+        // STUDENT_DISCONNECTED event wasn't written (e.g. the
+        // DisconnectService never finalized the row, only the hub did)
+        // — the participant looked like a fresh joiner with stale
+        // state, triggering JoinLiveExam's "already completed and
+        // exited" rejection on the next hub call.
+        //
+        // Explicit handling: flip the row to Pending approval, log a
+        // REJOIN_REQ event so the IMC's approval card pipeline picks
+        // it up, and return 202 Accepted so the SAC shows its
+        // waiting-for-approval overlay (matches the existing client
+        // contract in RequestJoinGateAsync).
+        // ============================================================
+        if (latestParticipant != null
+            && string.Equals(latestParticipant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
+            && latestParticipant.JoinedAt >= activeSession.StartTime)
+        {
+            _logger.LogInformation(
+                "RequestJoinSession: processing manual rejoin for disconnected student {StudentId} in room {RoomId}.",
+                studentId, roomId);
+
+            latestParticipant.JoinApprovalStatus = "Pending";
+            latestParticipant.IsCurrentlyActive = false;
+
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                RoomId = roomId,
+                StudentId = studentId,
+                EventType = "REJOIN_REQ",
+                Description = "Disconnected student attempting to rejoin — awaiting approval.",
+                SeverityScore = 0,
+                Timestamp = DateTime.UtcNow
+            });
+
+            await _context.SaveChangesAsync();
+
+            return StatusCode(StatusCodes.Status202Accepted, new
+            {
+                status = "Pending",
+                participantId = latestParticipant.Id,
+                isRejoin = true,
+                isLate = false,
+                message = "Rejoin request submitted successfully."
+            });
+        }
+
         bool isRejoin = latestParticipant != null
                      && latestParticipant.JoinedAt >= activeSession.StartTime;
         bool isLate = !isRejoin;
