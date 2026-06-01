@@ -13,7 +13,7 @@ public class RiskSummary
     // The computed statistics when the exam ends
     public int TotalViolations { get; set; }
     public int TotalSeverityScore { get; set; }
-    public string RiskLevel { get; set; } = "Safe"; // "Safe", "Suspicious", or "Cheating"
+    public string RiskLevel { get; set; } = "Safe"; // "Safe", "Suspicious", or "Possible Dishonesty"
 
     public DateTime ComputedAt { get; set; } = DateTime.UtcNow;
 }

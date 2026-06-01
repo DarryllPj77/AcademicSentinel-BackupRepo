@@ -23,7 +23,7 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
             var safeLogs = logs?.ToList() ?? new List<StudentMonitoringEvent>();
 
             DialogTitle = $"Violation Summary - {studentName}";
-            RiskLevelText = totalRiskScore < 20 ? "Safe" : totalRiskScore < 50 ? "Suspicious" : "Cheating";
+            RiskLevelText = totalRiskScore < 20 ? "Safe" : totalRiskScore < 50 ? "Suspicious" : "Possible Dishonesty";
 
             var grouped = safeLogs
                 .GroupBy(l => NormalizeEventType(l.EventType))
@@ -42,7 +42,7 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
             {
                 < 20 => ($"Safe ({TotalRiskScore} pts)", "#1B5E20"),
                 < 50 => ($"Suspicious ({TotalRiskScore} pts)", "#E65100"),
-                _ => ($"Cheating ({TotalRiskScore} pts)", "#D32F2F")
+                _ => ($"Possible Dishonesty ({TotalRiskScore} pts)", "#D32F2F")
             };
 
             RiskLevelText = riskText;

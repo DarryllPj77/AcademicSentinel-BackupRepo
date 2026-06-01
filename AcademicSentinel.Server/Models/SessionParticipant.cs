@@ -14,7 +14,7 @@ public class SessionParticipant
     public DateTime? DisconnectedAt { get; set; } // Nullable because they are currently connected!
 
     public string ConnectionStatus { get; set; } = "Connected";
-    public string? FinalRiskLevel { get; set; } // "Safe", "Suspicious", or "Cheating"
+    public string? FinalRiskLevel { get; set; } // "Safe", "Suspicious", or "Possible Dishonesty"
 
     // Join/Rejoin approval state machine. "Approved" by default so existing
     // join paths and backfilled rows behave as before; flipped to "Pending"

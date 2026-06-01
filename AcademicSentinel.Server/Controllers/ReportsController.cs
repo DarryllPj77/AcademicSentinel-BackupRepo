@@ -71,9 +71,11 @@ public class ReportsController : ControllerBase
                 else if (violation.SeverityLevel == "S3") totalScore += 50;
             }
 
-            // Classify based on the total score
+            // Classify based on the total score. Defense panel requires
+            // non-accusatory wording — the high band is reported as
+            // "Possible Dishonesty" rather than the legacy "Cheating".
             string risk = "Safe";
-            if (totalScore >= 50) risk = "Cheating";
+            if (totalScore >= 50) risk = "Possible Dishonesty";
             else if (totalScore >= 20) risk = "Suspicious";
 
             // Add them to the report
@@ -132,7 +134,7 @@ public class ReportsController : ControllerBase
         }
 
         string riskLevel = "Safe";
-        if (totalScore >= 50) riskLevel = "Cheating";
+        if (totalScore >= 50) riskLevel = "Possible Dishonesty";
         else if (totalScore >= 20) riskLevel = "Suspicious";
 
         // 7. Build the report DTO
@@ -233,7 +235,7 @@ public class ReportsController : ControllerBase
                 .ToListAsync();
 
             int totalRisk = logs.Where(l => l.SeverityScore > 0).Sum(l => l.SeverityScore);
-            string riskLevel = totalRisk >= 50 ? "CHEATING" : (totalRisk >= 20 ? "SUSPICIOUS" : "SAFE");
+            string riskLevel = totalRisk >= 50 ? "POSSIBLE DISHONESTY" : (totalRisk >= 20 ? "SUSPICIOUS" : "SAFE");
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
             // =======================================================

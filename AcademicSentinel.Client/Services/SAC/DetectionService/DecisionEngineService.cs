@@ -21,7 +21,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
     /// the risk band against the new thresholds:
     ///   Safe       (cumulative &lt;   20)
     ///   Suspicious (cumulative 20..49)
-    ///   Cheating   (cumulative &gt;= 50)
+    ///   PossibleDishonesty (cumulative &gt;= 50)
     /// </summary>
     public class DecisionEngineService
     {
@@ -164,13 +164,13 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         /// Maps the cumulative score onto a risk band.
         ///   Safe       — score &lt;  20
         ///   Suspicious — 20 ≤ score &lt; 50
-        ///   Cheating   — score ≥ 50
+        ///   PossibleDishonesty — score ≥ 50
         /// </summary>
         private static RiskLevel ResolveRiskLevel(int cumulativeScore)
         {
             if (cumulativeScore < 20) return RiskLevel.Safe;
             if (cumulativeScore < 50) return RiskLevel.Suspicious;
-            return RiskLevel.Cheating;
+            return RiskLevel.PossibleDishonesty;
         }
     }
 }

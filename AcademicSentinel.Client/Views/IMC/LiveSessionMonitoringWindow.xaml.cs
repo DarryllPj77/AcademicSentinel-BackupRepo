@@ -2078,7 +2078,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 var totalRiskScore = specificLogs.Sum(x => Math.Max(0, x.SeverityScore));
                 string riskText = "SAFE";
-                if (totalRiskScore >= 50) riskText = "CHEATING";
+                if (totalRiskScore >= 50) riskText = "POSSIBLE DISHONESTY";
                 else if (totalRiskScore >= 20) riskText = "SUSPICIOUS";
 
                 TxtRiskLevel.Text = riskText;
@@ -2180,7 +2180,7 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 var totalRiskScore = specificLogs.Sum(x => Math.Max(0, x.SeverityScore));
                 string riskText = "SAFE";
-                if (totalRiskScore >= 50) riskText = "CHEATING";
+                if (totalRiskScore >= 50) riskText = "POSSIBLE DISHONESTY";
                 else if (totalRiskScore >= 20) riskText = "SUSPICIOUS";
 
                 TxtRiskLevel.Text = riskText;

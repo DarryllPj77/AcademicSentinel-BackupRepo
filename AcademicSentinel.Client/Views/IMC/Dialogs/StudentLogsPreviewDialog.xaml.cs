@@ -77,15 +77,26 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
             // --- Summary chips (unchanged metrics) ---
             TxtTotalEvents.Text = sortedLogs.Count.ToString();
             TxtTotalSeverity.Text = sortedLogs.Sum(l => l.SeverityScore).ToString();
-            TxtRiskLevel.Text = string.IsNullOrWhiteSpace(student.RiskLevel)
-                ? "—"
-                : student.RiskLevel;
 
-            TxtRiskLevel.Foreground = student.RiskLevel?.ToLowerInvariant() switch
+            // Legacy DB rows may still hold the raw "Cheating" / "CHEATING"
+            // string from older builds. The RiskLevelDisplay.Normalize helper
+            // re-maps those onto the panel-approved "Possible Dishonesty"
+            // wording while preserving the original case style. New rows
+            // already arrive in the panel-approved form and pass through.
+            var displayRiskLevel = AcademicSentinel.Client.Services.SAC.Models.RiskLevelDisplay
+                .Normalize(student.RiskLevel);
+
+            TxtRiskLevel.Text = string.IsNullOrWhiteSpace(displayRiskLevel) ? "—" : displayRiskLevel;
+
+            TxtRiskLevel.Foreground = displayRiskLevel.ToLowerInvariant() switch
             {
-                "cheating"   => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(211, 47, 47)),
-                "suspicious" => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 152, 0)),
-                _            => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(27, 94, 32))
+                // Both "cheating" (legacy) and "possible dishonesty" (new)
+                // route to the same critical-risk red — the visual urgency
+                // is preserved; only the wording has softened.
+                "cheating"            => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(211, 47, 47)),
+                "possible dishonesty" => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(211, 47, 47)),
+                "suspicious"          => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 152, 0)),
+                _                     => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(27, 94, 32))
             };
 
             PopulateEventTypeFilter(sortedLogs);

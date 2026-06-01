@@ -107,7 +107,7 @@
                     <ComboBoxItem Content="All" IsSelected="True"/>
                     <ComboBoxItem Content="SAFE"/>
                     <ComboBoxItem Content="SUSPICIOUS"/>
-                    <ComboBoxItem Content="CHEATING"/>
+                    <ComboBoxItem Content="POSSIBLE DISHONESTY"/>
                 </ComboBox>
             </Grid>
         </Border>

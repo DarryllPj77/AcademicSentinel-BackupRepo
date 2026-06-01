@@ -82,8 +82,13 @@ namespace AcademicSentinel.Client.Views.IMC
                 || (!string.IsNullOrWhiteSpace(student.Name) && student.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
                 || (!string.IsNullOrWhiteSpace(student.Email) && student.Email.Contains(query, StringComparison.OrdinalIgnoreCase));
 
+            // Legacy DB rows may still hold the raw "Cheating" / "CHEATING"
+            // string. Run the row through RiskLevelDisplay.Normalize so the
+            // ComboBox's "POSSIBLE DISHONESTY" entry still matches them.
+            var displayRiskLevel = AcademicSentinel.Client.Services.SAC.Models.RiskLevelDisplay
+                .Normalize(student.RiskLevel);
             var matchesRisk = string.Equals(selectedRisk, "All", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(student.RiskLevel, selectedRisk, StringComparison.OrdinalIgnoreCase);
+                || string.Equals(displayRiskLevel, selectedRisk, StringComparison.OrdinalIgnoreCase);
 
             return matchesQuery && matchesRisk;
         }

@@ -18,13 +18,25 @@ namespace AcademicSentinel.Client.Services
             var studentEmail = student?.Email ?? "Unknown";
             var riskScore = student?.RiskScore ?? 0;
             var violationCount = student?.ViolationCount ?? 0;
-            var riskLevel = (student?.RiskLevel ?? "SAFE").ToUpperInvariant();
+
+            // Historical-data sanitizer: rows written by older builds may
+            // still hold the raw "CHEATING" / "Cheating" string. Defense
+            // panel requires the printed report to use non-accusatory
+            // wording, so any legacy value is re-mapped to
+            // "POSSIBLE DISHONESTY" before it ever reaches the page.
+            // New rows already arrive in the panel-approved form and
+            // pass through unchanged.
+            var rawRiskLevel = (student?.RiskLevel ?? "SAFE").ToUpperInvariant();
+            var riskLevel = rawRiskLevel == "CHEATING" ? "POSSIBLE DISHONESTY" : rawRiskLevel;
 
             var riskColor = riskLevel switch
             {
-                "CHEATING" => "#D32F2F",
-                "SUSPICIOUS" => "#B8860B",
-                _ => "#2E7D32"
+                // Critical-risk band keeps the same red regardless of
+                // whether the source row used the legacy or new wording.
+                "POSSIBLE DISHONESTY" => "#D32F2F",
+                "CHEATING"            => "#D32F2F", // safety net; raw should already be remapped above
+                "SUSPICIOUS"          => "#B8860B",
+                _                     => "#2E7D32"
             };
 
             Document.Create(container =>
