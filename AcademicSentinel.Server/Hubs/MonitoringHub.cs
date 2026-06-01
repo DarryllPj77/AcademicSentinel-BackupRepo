@@ -533,52 +533,38 @@ public class MonitoringHub : Hub
                 await Clients.Group(roomId.ToString()).SendAsync("StudentConnectionLost", studentId);
             }
 
-            // SECURITY FIX: Rejoin must require teacher approval.
-            // A participant whose previous state is "Disconnected" is NOT
-            // allowed to silently reconnect — this was the auto-rejoin hole.
-            // Mark them Pending, log the request, and notify the instructor
-            // so they can Approve/Deny via the existing approval UI.
+            // ============================================================
+            // BLOCK SILENT AUTO-REJOINS (deployment fix).
+            //
+            // SignalR's WithAutomaticReconnect() in the SAC silently
+            // re-invokes JoinLiveExam after a transient network drop.
+            // Allowing that path here resurrects the participant with no
+            // instructor approval AND glitches the SAC UI (the SAC was
+            // already mid-teardown when the auto-reconnect fired).
+            //
+            // Hard policy: any participant whose DB state is "Disconnected"
+            // must NOT be re-admitted through the hub. Instead, push them
+            // back to the Student Dashboard so they explicitly re-click the
+            // course tile, hit the REST /request-join endpoint, and land in
+            // the instructor's pending-approval queue.
+            //
+            // The previous in-hub rejoin-approval flow
+            // (REJOIN_REQUESTED + AwaitingRejoinApproval + RejoinRequest
+            // broadcast) is intentionally removed — it competed with the
+            // dashboard REST flow and produced duplicate / out-of-order
+            // approval cards on the IMC.
+            // ============================================================
             if (participant != null
                 && string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(participant.JoinApprovalStatus, "Approved", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogInformation("JoinLiveExam: routing student {StudentId} through rejoin approval gate", studentId);
-                participant.JoinApprovalStatus = "Pending";
-                participant.IsCurrentlyActive = false;
+                _logger.LogWarning(
+                    "JoinLiveExam: blocked silent auto-reconnect for disconnected student {StudentId} in room {RoomId}. Forcing dashboard navigation.",
+                    studentId, roomId);
 
-                _context.MonitoringEvents.Add(new MonitoringEvent
-                {
-                    RoomId = roomId,
-                    StudentId = studentId,
-                    EventType = "REJOIN_REQUESTED",
-                    Description = "Student attempted to rejoin after a disconnect — awaiting instructor approval.",
-                    SeverityScore = 0,
-                    Timestamp = DateTime.UtcNow
-                });
-                await _context.SaveChangesAsync();
-
-                string studentLabel = string.IsNullOrWhiteSpace(studentUser.FullName)
-                    ? studentUser.Email : studentUser.FullName;
-
-                // Broadcast the rejoin request to the instructor. Payload
-                // shape matches StudentPendingApproval so the IMC can reuse
-                // its existing approval card UI without a new code path.
-                await Clients.Group(roomId.ToString()).SendAsync("RejoinRequest", new
-                {
-                    roomId,
-                    studentId,
-                    participantId = participant.Id,
-                    studentName = studentLabel,
-                    studentEmail = studentUser.Email,
-                    profileImageUrl = studentUser.ProfileImageUrl,
-                    isRejoin = true,
-                    isLate = false,
-                    requestedAt = DateTime.UtcNow
-                });
-
-                // Tell the student to display a pending-approval overlay
-                // instead of pretending they reconnected successfully.
-                await Clients.Caller.SendAsync("AwaitingRejoinApproval", roomId);
+                await Clients.Caller.SendAsync(
+                    "ForceDashboardReturn",
+                    "Connection lost. Please rejoin manually from the Student Dashboard.");
                 return;
             }
 

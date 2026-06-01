@@ -1504,6 +1504,38 @@ namespace AcademicSentinel.Client.Views.SAC
                     });
                 });
 
+                // Server-driven abort of a silent SignalR auto-reconnect.
+                // Fired when JoinLiveExam detects this connection belongs to
+                // a participant in the Disconnected state — the server
+                // refuses to silently re-admit them, so we tear down the SAC
+                // window and surface the dashboard so the student must
+                // manually click the course tile and go through the REST
+                // /request-join approval flow.
+                _hubConnection.On<string>("ForceDashboardReturn", reason =>
+                {
+                    _ = Dispatcher.InvokeAsync(() =>
+                    {
+                        if (_sessionEnded) return;
+                        _sessionEnded = true;
+                        try { if (_detectorRuntime != null) _detectorRuntime.IsPaused = true; } catch { }
+                        try { _detectorRuntime?.Stop(); } catch { }
+                        _detectorsRunning = false;
+                        _allowClose = true;
+                        _isDenied = true;
+                        _awaitingJoinApproval = false;
+
+                        MessageBox.Show(
+                            string.IsNullOrWhiteSpace(reason)
+                                ? "Connection lost. Please rejoin manually from the Student Dashboard."
+                                : reason,
+                            "Reconnect Required",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information);
+
+                        ReturnToStudentDashboard();
+                    });
+                });
+
                 _hubConnection.On("SessionEnded", () =>
                 {
                     _ = Dispatcher.InvokeAsync(async () =>
