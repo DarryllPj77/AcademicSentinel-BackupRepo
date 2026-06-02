@@ -385,6 +385,7 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
                                 <Grid Grid.Column="0" Margin="0,0,6,0">
@@ -408,10 +409,42 @@
                                 </Border>
 
                                 <TextBlock Grid.Column="2" x:Name="TxtMissingCount" Text="Missing: 0"
-                                           Margin="10,0,0,0"
+                                           Margin="10,0,8,0"
                                            FontSize="11" FontWeight="SemiBold"
                                            Foreground="White"
                                            VerticalAlignment="Center"/>
+
+                                <!--
+                                    Session Analytic Mode toggle.
+                                    Sits in the green Participants header
+                                    so the instructor can quickly flip
+                                    between the per-student row view and
+                                    the aggregate session dashboard
+                                    (Risk distribution + Connection
+                                    distribution + total violations).
+                                    Background is repainted in code-behind
+                                    when toggled so the active state is
+                                    visually obvious.
+                                -->
+                                <Button Grid.Column="3"
+                                        x:Name="BtnSessionAnalyticMode"
+                                        Click="BtnSessionAnalyticMode_Click"
+                                        Background="#1976D2"
+                                        Foreground="White"
+                                        BorderThickness="0"
+                                        FontWeight="Bold"
+                                        FontSize="11"
+                                        Padding="10,4"
+                                        Cursor="Hand"
+                                        VerticalAlignment="Center"
+                                        ToolTip="Toggle session analytics dashboard">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="ChartBar" Width="14" Height="14"
+                                                                 VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBlock x:Name="TxtSessionAnalyticMode" Text="Analytics"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
                             </Grid>
                         </Border>
 
@@ -490,7 +523,16 @@
                             </Border>
                         </Border>
 
-                        <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="360" Height="340">
+                        <!--
+                            Participants list region. The ScrollViewer (the
+                            existing per-student row list) and the
+                            ParticipantsAnalyticsPanel (session-level
+                            dashboard) share the same Grid slot — only one
+                            is visible at a time. Visibility is flipped by
+                            BtnSessionAnalyticMode_Click.
+                        -->
+                        <Grid>
+                        <ScrollViewer x:Name="ParticipantsScrollViewer" VerticalScrollBarVisibility="Auto" MaxHeight="360" Height="340">
                             <Grid>
                                 <StackPanel x:Name="EmptyParticipantsState" VerticalAlignment="Center"
                                         HorizontalAlignment="Center" Margin="0,30"
@@ -630,6 +672,118 @@
                                 </ItemsControl>
                             </Grid>
                         </ScrollViewer>
+
+                        <!--
+                            Session Analytics dashboard (Risk distribution +
+                            Connection distribution + total violations).
+                            Sits in the same Grid slot as the participants
+                            ScrollViewer with Visibility=Collapsed by
+                            default. BtnSessionAnalyticMode_Click flips
+                            which child is visible; LoadSessionAnalytics()
+                            populates the two ItemsControls with grouped
+                            MetricAnalyticItem rows whose Count/Max drive
+                            the ProgressBar widths.
+                        -->
+                        <Border x:Name="ParticipantsAnalyticsPanel"
+                                Visibility="Collapsed"
+                                Background="White"
+                                Padding="14,12"
+                                Height="340"
+                                MaxHeight="360">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="Total Session Violations"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#616161"/>
+                                    <TextBlock x:Name="TxtSessionTotalViolations"
+                                               Text="0 violations recorded."
+                                               FontSize="16" FontWeight="Bold"
+                                               Foreground="#D32F2F"
+                                               TextWrapping="Wrap"
+                                               Margin="0,4,0,16"/>
+
+                                    <TextBlock Text="Risk Level Distribution"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#616161" Margin="0,0,0,6"/>
+                                    <ItemsControl x:Name="SessionRiskAnalyticsControl" Margin="0,0,0,16">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,3,0,3">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="130"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="40"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Category}"
+                                                               FontSize="11" FontWeight="SemiBold"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Category}"/>
+                                                    <Border Grid.Column="1" Background="#EEEEEE"
+                                                            CornerRadius="3" Height="16" Margin="6,0">
+                                                        <ProgressBar Value="{Binding Count, Mode=OneWay}"
+                                                                     Maximum="{Binding Max, Mode=OneWay}"
+                                                                     Foreground="{Binding BarBrush}"
+                                                                     Background="Transparent"
+                                                                     BorderThickness="0"
+                                                                     Height="16"/>
+                                                    </Border>
+                                                    <TextBlock Grid.Column="2"
+                                                               Text="{Binding Count}"
+                                                               TextAlignment="Right"
+                                                               VerticalAlignment="Center"
+                                                               FontWeight="Bold" FontSize="11"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <TextBlock Text="Connection Status"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#616161" Margin="0,0,0,6"/>
+                                    <ItemsControl x:Name="SessionConnectionAnalyticsControl">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,3,0,3">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="130"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="40"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Category}"
+                                                               FontSize="11" FontWeight="SemiBold"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Category}"/>
+                                                    <Border Grid.Column="1" Background="#EEEEEE"
+                                                            CornerRadius="3" Height="16" Margin="6,0">
+                                                        <ProgressBar Value="{Binding Count, Mode=OneWay}"
+                                                                     Maximum="{Binding Max, Mode=OneWay}"
+                                                                     Foreground="{Binding BarBrush}"
+                                                                     Background="Transparent"
+                                                                     BorderThickness="0"
+                                                                     Height="16"/>
+                                                    </Border>
+                                                    <TextBlock Grid.Column="2"
+                                                               Text="{Binding Count}"
+                                                               TextAlignment="Right"
+                                                               VerticalAlignment="Center"
+                                                               FontWeight="Bold" FontSize="11"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <TextBlock x:Name="TxtSessionAnalyticsEmpty"
+                                               Text="No participants to analyze yet."
+                                               FontSize="11" FontStyle="Italic"
+                                               Foreground="#9E9E9E"
+                                               Margin="0,12,0,0"
+                                               Visibility="Collapsed"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                        </Grid>
                     </StackPanel>
                 </Border>
             </StackPanel>

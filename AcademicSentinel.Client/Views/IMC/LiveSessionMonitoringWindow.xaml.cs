@@ -473,6 +473,181 @@ namespace AcademicSentinel.Client.Views.IMC
         private void RbFilterDisconnected_Checked(object sender, RoutedEventArgs e)
             => SetParticipantFilter(ParticipantFilterMode.Disconnected);
 
+        // ============================================================
+        // SESSION ANALYTIC MODE
+        // ============================================================
+        // Toggles between the per-student participant list and a
+        // session-level dashboard (Risk distribution + Connection
+        // distribution + total violations). The participant ScrollViewer
+        // and the analytics Border share the same Grid slot — only one
+        // is Visible at a time. Real-time polling, filtering, and the
+        // ObservableCollections behind the list keep updating in the
+        // background; the analytics snapshot is recomputed every time
+        // the user enters analytics mode so a long-open dashboard
+        // doesn't get stale relative to the participant list under it.
+        private bool _isSessionAnalyticMode = false;
+
+        private void BtnSessionAnalyticMode_Click(object sender, RoutedEventArgs e)
+        {
+            _isSessionAnalyticMode = !_isSessionAnalyticMode;
+
+            if (_isSessionAnalyticMode)
+            {
+                if (ParticipantsScrollViewer != null)
+                    ParticipantsScrollViewer.Visibility = Visibility.Collapsed;
+                if (ParticipantsAnalyticsPanel != null)
+                    ParticipantsAnalyticsPanel.Visibility = Visibility.Visible;
+
+                BtnSessionAnalyticMode.Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(56, 142, 60));   // #388E3C — active green
+                if (TxtSessionAnalyticMode != null)
+                    TxtSessionAnalyticMode.Text = "List View";
+
+                LoadSessionAnalytics();
+            }
+            else
+            {
+                if (ParticipantsScrollViewer != null)
+                    ParticipantsScrollViewer.Visibility = Visibility.Visible;
+                if (ParticipantsAnalyticsPanel != null)
+                    ParticipantsAnalyticsPanel.Visibility = Visibility.Collapsed;
+
+                BtnSessionAnalyticMode.Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(25, 118, 210));  // #1976D2 — default blue
+                if (TxtSessionAnalyticMode != null)
+                    TxtSessionAnalyticMode.Text = "Analytics";
+            }
+        }
+
+        /// <summary>
+        /// Aggregates the current participant set (ActiveStudents) into
+        /// Risk and Connection Status buckets, then binds the two
+        /// MetricAnalyticItem lists to the dashboard ItemsControls. Risk
+        /// is derived from the per-student summed SeverityScore in
+        /// _studentLogs — this matches the same Safe / Suspicious /
+        /// Possible Dishonesty band used by the right-hand Student
+        /// Details pane. Connection bucket reads from
+        /// LiveStudentStatus.IsDisconnected (true → "Disconnected") and
+        /// falls back to the row's Status text for joined / pending
+        /// rows. Total violations is just the sum of ViolationCount
+        /// across every participant.
+        /// </summary>
+        private void LoadSessionAnalytics()
+        {
+            // Defensive guard. The button can technically be clicked
+            // immediately on window open before LoadParticipantsFromServerAsync
+            // populates ActiveStudents.
+            if (ActiveStudents == null || ActiveStudents.Count == 0)
+            {
+                SessionRiskAnalyticsControl.ItemsSource = null;
+                SessionConnectionAnalyticsControl.ItemsSource = null;
+                TxtSessionTotalViolations.Text = "0 violations recorded.";
+                if (TxtSessionAnalyticsEmpty != null)
+                    TxtSessionAnalyticsEmpty.Visibility = Visibility.Visible;
+                return;
+            }
+
+            int totalStudents = ActiveStudents.Count;
+
+            // ----------------------------------------------------------
+            // A. RISK LEVEL — derived from per-student total severity.
+            //     Same thresholds the Student Details pane uses, so the
+            //     dashboard's bucket counts agree with what an instructor
+            //     sees when they click on an individual row.
+            //         < 20  → "Safe"
+            //         20-49 → "Suspicious"
+            //         ≥ 50  → "Possible Dishonesty"
+            // ----------------------------------------------------------
+            var riskBuckets = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Safe"]                = 0,
+                ["Suspicious"]          = 0,
+                ["Possible Dishonesty"] = 0,
+            };
+
+            foreach (var s in ActiveStudents)
+            {
+                int score = _studentLogs.TryGetValue(s.StudentId, out var logs)
+                    ? logs.Where(l => l.SeverityScore > 0).Sum(l => l.SeverityScore)
+                    : 0;
+
+                string bucket = score >= 50 ? "Possible Dishonesty"
+                              : score >= 20 ? "Suspicious"
+                              : "Safe";
+                riskBuckets[bucket]++;
+            }
+
+            var riskData = riskBuckets
+                .Where(kv => kv.Value > 0)
+                .Select(kv => new MetricAnalyticItem
+                {
+                    Category = kv.Key.ToUpperInvariant(),
+                    Count    = kv.Value,
+                    Max      = totalStudents,
+                    BarBrush = kv.Key.Equals("Possible Dishonesty", StringComparison.OrdinalIgnoreCase)
+                        ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(211, 47, 47))
+                        : kv.Key.Equals("Suspicious", StringComparison.OrdinalIgnoreCase)
+                            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(230, 81, 0))
+                            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(27, 94, 32))
+                })
+                .OrderByDescending(x => x.Count)
+                .ToList();
+            SessionRiskAnalyticsControl.ItemsSource = riskData;
+
+            // ----------------------------------------------------------
+            // B. CONNECTION STATUS — bucket from LiveStudentStatus
+            //     flags. IsDisconnected wins (matches the cohort filter
+            //     priority); the rest fall into the row's Status string
+            //     (Connected, Wants to Leave, Waiting to Join, etc.).
+            // ----------------------------------------------------------
+            var connData = ActiveStudents
+                .GroupBy(s => s.IsDisconnected
+                    ? "Disconnected"
+                    : (string.IsNullOrWhiteSpace(s.Status) ? "Unknown" : s.Status))
+                .Select(g => new MetricAnalyticItem
+                {
+                    Category = g.Key.ToUpperInvariant(),
+                    Count    = g.Count(),
+                    Max      = totalStudents,
+                    BarBrush = g.Key.Equals("Disconnected", StringComparison.OrdinalIgnoreCase)
+                        ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(211, 47, 47))
+                        : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(25, 118, 210))
+                })
+                .OrderByDescending(x => x.Count)
+                .ToList();
+            SessionConnectionAnalyticsControl.ItemsSource = connData;
+
+            // ----------------------------------------------------------
+            // C. TOTAL VIOLATIONS — sum of every row's ViolationCount.
+            //     ActiveStudents tracks this as events stream in via the
+            //     ReceiveViolationAlert handler, so the dashboard total
+            //     matches what the bottom-right header pill shows.
+            // ----------------------------------------------------------
+            int totalViolations        = ActiveStudents.Sum(s => s.ViolationCount);
+            int studentsWithViolations = ActiveStudents.Count(s => s.ViolationCount > 0);
+            TxtSessionTotalViolations.Text =
+                $"{totalViolations} violation(s) recorded across {studentsWithViolations} of {totalStudents} student(s).";
+
+            if (TxtSessionAnalyticsEmpty != null)
+                TxtSessionAnalyticsEmpty.Visibility = Visibility.Collapsed;
+        }
+
+        /// <summary>
+        /// Row shape bound to the Risk / Connection analytics
+        /// ItemsControls. Count drives the ProgressBar Value, Max drives
+        /// Maximum (always total participants so bar widths are
+        /// proportional to the whole session, not just to the largest
+        /// bucket). BarBrush is denormalized so each row can colour-code
+        /// itself without a converter.
+        /// </summary>
+        private sealed class MetricAnalyticItem
+        {
+            public string Category { get; set; }
+            public int Count { get; set; }
+            public int Max { get; set; }
+            public System.Windows.Media.Brush BarBrush { get; set; }
+        }
+
         private void SetParticipantFilter(ParticipantFilterMode mode)
         {
             if (_studentsView == null) return; // pre-init Checked callback
