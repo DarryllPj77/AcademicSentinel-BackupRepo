@@ -53,6 +53,12 @@ namespace AcademicSentinel.Client.Views.IMC
         private DateTime _sessionStartTime;
         private bool _isSessionEnded;
 
+        // Set once we've already routed the instructor back to the dashboard
+        // because of a SignalR drop. Suppresses re-entry from the second
+        // lifecycle event (Reconnecting → Closed fires both) and from the
+        // hub StopAsync we issue during clean End-Session teardown.
+        private bool _instructorDisconnectHandled;
+
         private ICollectionView _studentsView;
         private ICollectionView _logsView;
         private LiveStudentStatus _selectedStudent;
@@ -1119,6 +1125,27 @@ namespace AcademicSentinel.Client.Views.IMC
                 .WithUrl($"{ApiEndpoints.BaseUrl}/monitoringHub", o => o.AccessTokenProvider = () => Task.FromResult(SessionManager.JwtToken))
                 .WithAutomaticReconnect().Build();
 
+            // ============================================================
+            // INSTRUCTOR CONNECTION-LIFECYCLE HOOKS
+            // ============================================================
+            // Without these the IMC freezes silently when the instructor's
+            // internet drops — WithAutomaticReconnect retries in the
+            // background but the UI has no idea the pipe is broken. Hook
+            // both Reconnecting (transient drop) and Closed (terminal drop)
+            // and route the instructor back to TeacherDashboard via the
+            // UI thread so a background SignalR worker doesn't try to
+            // construct WPF objects off-thread.
+            _hubConnection.Reconnecting += error =>
+            {
+                Application.Current?.Dispatcher.InvokeAsync(HandleInstructorDisconnect);
+                return Task.CompletedTask;
+            };
+            _hubConnection.Closed += error =>
+            {
+                Application.Current?.Dispatcher.InvokeAsync(HandleInstructorDisconnect);
+                return Task.CompletedTask;
+            };
+
             _hubSubscriptions.Add(_hubConnection.On<int>("StudentJoined", (id) => Dispatcher.Invoke(() => {
                 if (_permanentlyDismissedStudents.Contains(id))
                     return;
@@ -1714,6 +1741,48 @@ namespace AcademicSentinel.Client.Views.IMC
 
             try { await _hubConnection.StartAsync(); await _hubConnection.InvokeAsync("JoinRoom", _roomId.ToString()); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
+        }
+
+        // ============================================================
+        // INSTRUCTOR DISCONNECT BAILOUT (UI-thread only)
+        // ============================================================
+        // Called from the Reconnecting / Closed hub lifecycle events.
+        // Guards:
+        //   • `_isSessionEnded` — the instructor clicked End Session and
+        //     the StopAsync inside BtnEndSession_Click is what fired
+        //     Closed. Not a real network drop; the window is already
+        //     closing itself.
+        //   • `_instructorDisconnectHandled` — Reconnecting fires first,
+        //     then Closed; without this flag the instructor would see
+        //     the dialog twice and we'd try to open two TeacherDashboard
+        //     windows.
+        // Routes back to TeacherDashboard so the instructor lands on a
+        // live, clickable surface and can re-enter the room manually
+        // through the normal Setup flow once their network returns.
+        private void HandleInstructorDisconnect()
+        {
+            if (_isSessionEnded) return;
+            if (_instructorDisconnectHandled) return;
+            _instructorDisconnectHandled = true;
+
+            MessageBox.Show(
+                "Connection to the server was lost. Returning to the dashboard.",
+                "Disconnected",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+
+            try
+            {
+                var dashboard = new TeacherDashboard();
+                dashboard.Show();
+            }
+            catch { /* best-effort surface — falling through to Close() either way */ }
+
+            // Suppress the OnClosing "must end the active session" guard:
+            // the connection is gone, the teacher can't End-Session on the
+            // server, and trapping them in a dead window is the bug.
+            _isSessionEnded = true;
+            try { this.Close(); } catch { }
         }
 
         private async void BtnApproveLeave_Click(object sender, RoutedEventArgs e)

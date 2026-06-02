@@ -97,14 +97,12 @@ namespace AcademicSentinel.Client.Views.Shared
 
                     if (userRole == "Instructor")
                     {
-                        new TeacherDashboard().Show();
+                        HandleSuccessfulInstructorLogin();
                     }
                     else if (userRole == "Student")
                     {
-                        new StudentDashboard().Show();
+                        HandleSuccessfulStudentLogin();
                     }
-
-                    this.Close();
                 }
                 else
                 {
@@ -154,6 +152,36 @@ namespace AcademicSentinel.Client.Views.Shared
                 MessageBox.Show($"Connection Error: {ex.Message}");
                 ResetLoginButton();
             }
+        }
+
+        // ============================================================
+        // POST-LOGIN ROUTING — DASHBOARDS ONLY.
+        // ============================================================
+        // STRICT INVARIANT: a successful login MUST land the user on
+        // their respective dashboard. Never launch LiveSessionMonitoringWindow
+        // or SecureAssessmentClientWindow directly from here — even when
+        // the server reports an active session for this user.
+        //
+        // Why: "auto-resume into the active session" was a previous source
+        // of zombie windows after a Task-Manager kill / crash recovery.
+        // The client booted straight into a monitoring/exam window that
+        // had no fresh hub handshake, no SignalR group join, and no
+        // approval-gate sync — producing an unresponsive softlock. Forcing
+        // the dashboard entry guarantees the user re-clicks the room card,
+        // which runs the REST validation flow (/request-join for students,
+        // GetLatestSessionStateAsync for instructors) and rebuilds session
+        // state from canonical server truth before any session UI opens.
+
+        private void HandleSuccessfulInstructorLogin()
+        {
+            new TeacherDashboard().Show();
+            this.Close();
+        }
+
+        private void HandleSuccessfulStudentLogin()
+        {
+            new StudentDashboard().Show();
+            this.Close();
         }
 
         private void ResetLoginButton()
