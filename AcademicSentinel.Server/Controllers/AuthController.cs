@@ -52,15 +52,20 @@ public class AuthController : ControllerBase
         // SINGLE-DEVICE SESSION LOCK
         // ============================================================
         // Refuse a second concurrent login while the account row is
-        // already marked IsLoggedIn. The lock has a built-in stale-
-        // session safety: if LastLoginAt is older than the JWT
-        // lifetime (8h), any token previously issued has already
-        // expired and the row would otherwise be permanently locked
-        // (e.g. the SAC crashed without calling /logout). In that
-        // case, silently reclaim the row instead of refusing.
-        const int jwtLifetimeHours = 8;
+        // already marked IsLoggedIn. Two safety nets keep the lock from
+        // permanently stranding a student whose client crashed:
+        //   (a) DisconnectService.HandleDisconnectAsync clears the flag
+        //       the moment the SAC's SignalR session is finalized.
+        //   (b) This stale-lock window is the backstop for cases (a)
+        //       doesn't cover — e.g. the server restarts while the SAC
+        //       is mid-session and OnDisconnectedAsync never gets to
+        //       run. 15 minutes is generous enough that a benign poll
+        //       hiccup mid-exam can't double-claim, but short enough
+        //       that a student who force-quit isn't locked out for the
+        //       rest of the school day.
+        const int staleLockMinutes = 15;
         bool lockIsStale = user.LastLoginAt.HasValue
-            && (DateTime.UtcNow - user.LastLoginAt.Value).TotalHours >= jwtLifetimeHours;
+            && (DateTime.UtcNow - user.LastLoginAt.Value).TotalMinutes >= staleLockMinutes;
 
         if (user.IsLoggedIn && !lockIsStale)
         {

@@ -481,6 +481,18 @@ namespace AcademicSentinel.Client.Views.SAC
                 // directly rather than swapping the brush reference.
                 if (MonitorDotBrush != null)
                     MonitorDotBrush.Color = Color.FromRgb(211, 47, 47);
+
+                // Hard-disable the two SAC action buttons. While the hub
+                // is offline these clicks would just bounce off the
+                // "not Connected" guards anyway, but leaving the buttons
+                // visually enabled tricks the user into thinking the app
+                // is responsive — which is exactly what made the bug
+                // report describe the UI as "stuck on the last state".
+                // The Reconnected handler restores IsEnabled.
+                if (FindName("BtnDone") is System.Windows.Controls.Button btnDone)
+                    btnDone.IsEnabled = false;
+                if (FindName("BtnRaiseHand") is System.Windows.Controls.Button btnRaise)
+                    btnRaise.IsEnabled = false;
             }
 
             if (Dispatcher.CheckAccess())
@@ -961,6 +973,29 @@ namespace AcademicSentinel.Client.Views.SAC
                     .WithAutomaticReconnect()
                     .Build();
 
+                // PROACTIVE TRANSIENT-DROP HANDLER.
+                //
+                // WithAutomaticReconnect() polls at 0 / 2 / 10 / 30s and
+                // only fires Closed after ~45s of consecutive failures.
+                // During that window the connection state is
+                // HubConnectionState.Reconnecting — the SAC was previously
+                // staring at "Monitoring: ACTIVE" while every button silently
+                // refused to fire because the per-click guard noticed the
+                // hub wasn't Connected.
+                //
+                // Hooking Reconnecting flips the overlay the SECOND the line
+                // goes down, so the user has visible feedback during the
+                // entire 45-second window. If the connection comes back, the
+                // Reconnected handler restores the buttons + status; if it
+                // fails permanently, the Closed handler keeps the overlay up
+                // (overwriting is harmless and idempotent).
+                _hubConnection.Reconnecting += _ =>
+                {
+                    if (!_sessionEnded)
+                        ShowOwnDisconnectOverlay();
+                    return Task.CompletedTask;
+                };
+
                 _hubConnection.Reconnected += async _ =>
                 {
                     // Bug fix: Bug1 - block zombie reconnect after denial
@@ -988,6 +1023,21 @@ namespace AcademicSentinel.Client.Views.SAC
                         if (reconnectedStudentId > 0)
                             await _hubConnection.InvokeAsync("ReSyncState", _roomId, reconnectedStudentId);
                         await Dispatcher.InvokeAsync(async () => await FlushPendingViolationsAsync());
+
+                        // Restore the action buttons + drop the
+                        // disconnect banner now that we're back online.
+                        // UpdateUIForPhase will repaint the monitoring
+                        // status text from the canonical phase state, so
+                        // we don't have to manually overwrite the red
+                        // "DISCONNECTED" label here.
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            if (FindName("BtnDone") is System.Windows.Controls.Button btnDone)
+                                btnDone.IsEnabled = true;
+                            if (FindName("BtnRaiseHand") is System.Windows.Controls.Button btnRaise)
+                                btnRaise.IsEnabled = true;
+                            HideTeacherDisconnectedBanner();
+                        });
                     }
                     catch
                     {

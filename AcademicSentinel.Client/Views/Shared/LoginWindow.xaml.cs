@@ -137,8 +137,8 @@ namespace AcademicSentinel.Client.Views.Shared
                     {
                         MessageBox.Show(
                             "This account is already logged in on another device.\n\n" +
-                            "Please log out of the other device first, or wait a few hours if that device " +
-                            "crashed before it could log out cleanly.",
+                            "Please log out of the other device first. If that device crashed or was force-closed, " +
+                            "the lock will release automatically within a few minutes — try again shortly.",
                             "Already Logged In",
                             MessageBoxButton.OK, MessageBoxImage.Warning);
                         ResetLoginButton();

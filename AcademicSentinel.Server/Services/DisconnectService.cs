@@ -218,6 +218,38 @@ public sealed class DisconnectService
             participant.JoinApprovalStatus  = "Pending";
 
             // ------------------------------------------------------------
+            // 7b. RELEASE THE SINGLE-DEVICE LOGIN LOCK.
+            // ------------------------------------------------------------
+            // AuthController.Login claims User.IsLoggedIn so a second
+            // device can't sign in concurrently. The lock is normally
+            // cleared by POST /api/auth/logout, but a force-killed SAC
+            // (Task Manager, power loss, the Reconnecting→Closed window)
+            // never calls that endpoint — and the original stale-lock
+            // window was 8 hours, which stranded students at the login
+            // screen with an "already logged in on another device" toast
+            // for the rest of the day.
+            //
+            // Clearing the flag here is semantically correct: the
+            // student's SignalR session is gone, so by definition they
+            // are no longer "logged in" anywhere. They can sign back in
+            // immediately on the same machine or a different one, and
+            // the participant row staying in "Disconnected" state still
+            // routes the rejoin through the instructor's approval gate.
+            //
+            // Loaded as a separate row (no FK navigation on
+            // SessionParticipant) so this stays a single targeted UPDATE
+            // alongside the participant + audit-event writes in the same
+            // SaveChanges below.
+            var userRow = await db.Users.FirstOrDefaultAsync(u => u.Id == studentId, ct);
+            if (userRow != null && userRow.IsLoggedIn)
+            {
+                userRow.IsLoggedIn = false;
+                _logger.LogInformation(
+                    "[DisconnectService] Released login lock for studentId={StudentId} on disconnect.",
+                    studentId);
+            }
+
+            // ------------------------------------------------------------
             // 8. AUDIT EVENT  (atomic with the UPDATE)
             // ------------------------------------------------------------
             db.MonitoringEvents.Add(new MonitoringEvent
