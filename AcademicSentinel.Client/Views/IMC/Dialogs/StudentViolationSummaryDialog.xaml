@@ -9,8 +9,8 @@
         WindowStyle="None"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
-        Width="600"
-        Height="450"
+        Width="520"
+        Height="430"
         Background="Transparent">
 
     <Window.Resources>
@@ -81,14 +81,35 @@
                 <Border Grid.Column="0" Background="{StaticResource FEULightGrayBrush}" CornerRadius="8" Padding="14">
                     <StackPanel>
                         <TextBlock Text="Total Violations" FontSize="12" Foreground="{StaticResource FEUSubTextBrush}" />
-                        <TextBlock Text="{Binding TotalViolationsCount}" FontSize="30" FontWeight="Bold" Foreground="{StaticResource FEUDarkTextBrush}" />
+                        <TextBlock Text="{Binding TotalViolationsCount}" FontSize="26" FontWeight="Bold" Foreground="{StaticResource FEUDarkTextBrush}" />
                     </StackPanel>
                 </Border>
 
+                <!--
+                    Risk Status card.
+                    The risk label is wrapped + sized to 18 so the longest
+                    wording ("Possible Dishonesty") fits in the half-width
+                    column without truncation. The cumulative score moved
+                    onto its own smaller line beneath the label, freeing
+                    the headline from a "(NN pts)" suffix that previously
+                    pushed it off-screen.
+                -->
                 <Border Grid.Column="2" Background="{StaticResource FEULightGrayBrush}" CornerRadius="8" Padding="14">
                     <StackPanel>
                         <TextBlock Text="Risk Status" FontSize="12" Foreground="{StaticResource FEUSubTextBrush}" />
-                        <TextBlock Text="{Binding RiskLevelText}" FontSize="30" FontWeight="Bold" Foreground="{Binding RiskLevelColorHex}" />
+                        <TextBlock Text="{Binding RiskLevelText}"
+                                   FontSize="18"
+                                   FontWeight="Bold"
+                                   Foreground="{Binding RiskLevelColorHex}"
+                                   TextWrapping="Wrap"
+                                   LineHeight="22"
+                                   LineStackingStrategy="BlockLineHeight"
+                                   Margin="0,2,0,0" />
+                        <TextBlock Text="{Binding RiskLevelScoreText}"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{Binding RiskLevelColorHex}"
+                                   Margin="0,2,0,0" />
                     </StackPanel>
                 </Border>
             </Grid>

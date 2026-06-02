@@ -15,6 +15,11 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
         public int TotalViolationsCount { get; }
         public int TotalRiskScore { get; }
         public string RiskLevelText { get; }
+        // Score line — shown beneath the bold risk label as a smaller,
+        // secondary readout (e.g. "60 pts"). Splitting it off the main
+        // label lets "Possible Dishonesty" wrap cleanly in a half-width
+        // card without colliding with the cumulative-score figure.
+        public string RiskLevelScoreText { get; }
         public string RiskLevelColorHex { get; }
         public ObservableCollection<ViolationCategorySummary> ViolationSummaries { get; }
 
@@ -40,13 +45,14 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
 
             (string riskText, string riskColor) = TotalRiskScore switch
             {
-                < 20 => ($"Safe ({TotalRiskScore} pts)", "#1B5E20"),
-                < 50 => ($"Suspicious ({TotalRiskScore} pts)", "#E65100"),
-                _ => ($"Possible Dishonesty ({TotalRiskScore} pts)", "#D32F2F")
+                < 20 => ("Safe", "#1B5E20"),
+                < 50 => ("Suspicious", "#E65100"),
+                _    => ("Possible Dishonesty", "#D32F2F")
             };
 
-            RiskLevelText = riskText;
-            RiskLevelColorHex = riskColor;
+            RiskLevelText      = riskText;
+            RiskLevelScoreText = $"{TotalRiskScore} pts";
+            RiskLevelColorHex  = riskColor;
 
             TotalViolationsCount = grouped.Sum(x => x.Count);
             ViolationSummaries = new ObservableCollection<ViolationCategorySummary>(grouped);
@@ -62,16 +68,70 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
 
         private static string MapToFriendlyCategory(string eventType)
         {
+            // Canonical event-type vocabulary is wider than the original
+            // switch covered — names like PROCESS_DETECTED, CLIPBOARD_COPY,
+            // REMOTE_DESKTOP_DETECTED, FOCUS_LOST, etc. used to slip past
+            // the exact-match cases and reach the fallback, which only
+            // did Replace('_', ' ') and left the raw ALL CAPS in place.
+            // That produced the inconsistent grid (Title Case rows next to
+            // "PROCESS DETECTED"). Now every known family maps explicitly,
+            // and the fallback runs ToTitleCase so ad-hoc / future event
+            // types still come out in the same case style as the rest of
+            // the column.
             return eventType switch
             {
-                "ALT_TAB" or "RTFM" or "FOCUS" or "WINDOW_SWITCH" => "Window Focus Lost",
-                "CSAD" or "CLIPBOARD" or "COPY" or "PASTE" or "PRINTSCREEN" or "SCREENSHOT" => "Clipboard Copy",
-                "PBD" or "PROCESS" or "BLACKLIST" => "Restricted App Opened",
-                "VAC" or "VM" or "EMULATOR" or "VIRTUAL" => "Virtualization/Emulator Detected",
-                "HAS" or "HARDWARE" or "ARTIFACT" or "SUSPICIOUS_SETUP" => "Hardware/Software Artifacts",
-                "IDLE" or "INACTIVITY" => "Inactivity Detected",
-                _ => string.IsNullOrWhiteSpace(eventType) ? "Uncategorized" : eventType.Replace('_', ' ')
+                "ALT_TAB" or "RTFM" or "FOCUS" or "FOCUS_LOST"
+                    or "WINDOW_SWITCH" or "CANVAS_FOCUS_LOST"
+                    or "CANVAS_NOT_FOUND" or "CANVAS_CLOSED"
+                    => "Window Focus Lost",
+
+                "CSAD" or "CLIPBOARD" or "CLIPBOARD_COPY" or "CLIPBOARD_PASTE"
+                    or "COPY" or "PASTE" or "PRINTSCREEN" or "SCREENSHOT"
+                    or "SNIP_TOOL"
+                    => "Clipboard Activity",
+
+                "PBD" or "PROCESS" or "PROCESS_DETECTED" or "BLACKLIST"
+                    => "Restricted App Opened",
+
+                "VAC" or "VM" or "VAC_HAS_VIOLATION"
+                    or "EMULATOR" or "VIRTUAL"
+                    => "Virtualization Detected",
+
+                "HAS" or "HARDWARE" or "ARTIFACT" or "SUSPICIOUS_SETUP"
+                    or "HAS_DEBUGGER" or "HAS_TIME_TAMPER" or "HAS_CLOCK_DRIFT"
+                    => "Hardware/Software Artifacts",
+
+                "REMOTE" or "REMOTE_DESKTOP_DETECTED"
+                    => "Remote Access Detected",
+
+                "IDLE" or "INACTIVITY"
+                    => "Inactivity Detected",
+
+                _ => string.IsNullOrWhiteSpace(eventType)
+                    ? "Uncategorized"
+                    : ToTitleCase(eventType.Replace('_', ' '))
             };
+        }
+
+        /// <summary>
+        /// Lower-cases the input, then upper-cases the first letter of
+        /// each whitespace-separated word. Used for the fallback path so
+        /// unmapped event types still appear in the same Title Case style
+        /// as the explicit categories (e.g. "PROCESS DETECTED" → "Process
+        /// Detected"), keeping the grid visually consistent.
+        /// </summary>
+        private static string ToTitleCase(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text ?? string.Empty;
+            var parts = text.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (parts[i].Length == 1)
+                    parts[i] = char.ToUpperInvariant(parts[i][0]).ToString();
+                else
+                    parts[i] = char.ToUpperInvariant(parts[i][0]) + parts[i].Substring(1);
+            }
+            return string.Join(' ', parts);
         }
 
         private void BtnClose_Click(object sender, RoutedEventArgs e)
