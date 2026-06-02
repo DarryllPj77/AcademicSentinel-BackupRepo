@@ -415,6 +415,80 @@ namespace AcademicSentinel.Client.Views.SAC
                 banner.Visibility = Visibility.Collapsed;
         }
 
+        /// <summary>
+        /// Centralized "this client is offline" UI transition.
+        ///
+        /// Called from two places that previously diverged:
+        ///   (1) Button guards (BtnDone_Click, BtnRaiseHand_Click) when the
+        ///       student clicks an action while the hub is disconnected.
+        ///       The old code showed an isolated MessageBox ("Not connected
+        ///       to server.") and left the softlock UI claiming
+        ///       "Monitoring: ACTIVE", trapping the student with no
+        ///       indication of what to do next.
+        ///   (2) The SignalR <c>Closed</c> handler — fires proactively the
+        ///       moment the WS transport drops, so the UI flips even
+        ///       before the student tries to click anything.
+        ///
+        /// Both entry points must produce the SAME safe-state UI:
+        ///   • Yellow disconnect banner up with reconnect copy
+        ///   • Main + compact monitoring status repainted to
+        ///     "Monitoring: DISCONNECTED" in red so the student can see
+        ///     the prior "ACTIVE" reading is no longer accurate
+        ///   • Monitor dot recoloured red
+        /// WithAutomaticReconnect() will continue to attempt reconnection
+        /// in the background; on success, the <c>Reconnected</c> handler
+        /// already calls <see cref="HideTeacherDisconnectedBanner"/> and
+        /// SetMonitoringActive/SetMonitoringStateUI restores accurate
+        /// status text. This helper deliberately does NOT teardown the
+        /// detector — the exam softlock stays armed so a transient drop
+        /// can't be used as a cheating vector.
+        ///
+        /// Safe to call repeatedly; banner / status writes are idempotent
+        /// and the helper marshals to the dispatcher thread itself, so
+        /// hub callbacks running on background threads can invoke it
+        /// without explicit Dispatcher.Invoke at the call site.
+        /// </summary>
+        private void ShowOwnDisconnectOverlay()
+        {
+            void apply()
+            {
+                ShowTeacherDisconnectedBanner(
+                    "You are offline. Attempting to reconnect — please check your internet.");
+
+                var redBrush = new SolidColorBrush(Color.FromRgb(198, 40, 40));
+
+                if (TxtMonitoringStatus != null)
+                {
+                    TxtMonitoringStatus.Text = "Monitoring: DISCONNECTED — please reconnect";
+                    TxtMonitoringStatus.Foreground = redBrush;
+                }
+
+                if (FindName("TxtCompactMonitoringStatus") is TextBlock compactStatus)
+                {
+                    compactStatus.Text = "Monitoring: DISCONNECTED";
+                    compactStatus.Foreground = redBrush;
+                }
+
+                if (FindName("TxtHeaderMonitoringStatus") is TextBlock headerStatus)
+                {
+                    headerStatus.Text = "DISCONNECTED";
+                    headerStatus.Foreground = redBrush;
+                }
+
+                // Repaint the status dot red so the visual indicator
+                // matches the textual state. MonitorDotBrush is an
+                // x:Name'd SolidColorBrush in the XAML so we set Color
+                // directly rather than swapping the brush reference.
+                if (MonitorDotBrush != null)
+                    MonitorDotBrush.Color = Color.FromRgb(211, 47, 47);
+            }
+
+            if (Dispatcher.CheckAccess())
+                apply();
+            else
+                Dispatcher.Invoke(apply);
+        }
+
         private void SetMonitoringActive(bool isActive)
         {
             _isMonitoringActive = isActive;
@@ -940,6 +1014,20 @@ namespace AcademicSentinel.Client.Views.SAC
                     // "SESSION JOINED / CONNECTION RESTORED" log entries. Just clear the
                     // join flag so the next genuine reconnect can rejoin once.
                     lock (_joinLiveExamLock) { _hasJoinedLiveExam = false; }
+
+                    // Proactively flip the softlock UI into its offline
+                    // state. Without this the student could be looking at
+                    // a stale "Monitoring: ACTIVE" indicator for several
+                    // seconds (until WithAutomaticReconnect either fires
+                    // Reconnected or the user tries to click a button).
+                    // ShowOwnDisconnectOverlay marshals to the UI thread
+                    // itself; if the session is already ending, the
+                    // banner / status writes are still safe but the
+                    // Reconnected handler / SessionEnded handler will
+                    // overwrite them with the correct final state.
+                    if (!_sessionEnded)
+                        ShowOwnDisconnectOverlay();
+
                     return Task.CompletedTask;
                 };
 
@@ -1730,8 +1818,13 @@ namespace AcademicSentinel.Client.Views.SAC
             {
                 if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
                 {
-                    MessageBox.Show("Not connected to server.", "Done",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    // Replaced the legacy MessageBox "Not connected to
+                    // server." popup with the centralized disconnect
+                    // overlay so the softlock UI no longer keeps claiming
+                    // "Monitoring: ACTIVE" while the student is actually
+                    // offline. See ShowOwnDisconnectOverlay() for the full
+                    // rationale and the list of UI elements it repaints.
+                    ShowOwnDisconnectOverlay();
                     return;
                 }
 
@@ -1767,7 +1860,16 @@ namespace AcademicSentinel.Client.Views.SAC
             int studentId = SessionManager.CurrentUser?.Id ?? 0;
             if (studentId <= 0) return;
             if (_sessionEnded || _currentPhase != ExamPhase.Active) return;
-            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected) return;
+            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
+            {
+                // Match BtnDone_Click — surface the centralized
+                // disconnect overlay instead of silently swallowing the
+                // click. Previously a tap on Raise Hand while offline
+                // did absolutely nothing, leaving the student with no
+                // feedback that the network was the reason.
+                ShowOwnDisconnectOverlay();
+                return;
+            }
 
             // Mutual-exclusion guard: refuse Raise Hand while a Done
             // request is already pending. Lower Hand (the Active
