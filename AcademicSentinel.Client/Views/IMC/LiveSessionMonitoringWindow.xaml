@@ -448,9 +448,26 @@
                                              GroupName="ParticipantFilter"
                                              FontSize="11"
                                              FontWeight="SemiBold"
+                                             Margin="0,0,6,0"
                                              Padding="10,4"
                                              Foreground="#616161"
                                              Checked="RbFilterFinished_Checked"/>
+                                <!--
+                                    Disconnected cohort tab. Bucket for
+                                    students whose participant row carries
+                                    ConnectionStatus="Disconnected". Listed
+                                    here so an instructor can quickly find
+                                    students offline mid-session without
+                                    scrolling the full Taking list.
+                                -->
+                                <RadioButton x:Name="RbFilterDisconnected"
+                                             Content="Disconnected (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Padding="10,4"
+                                             Foreground="#D32F2F"
+                                             Checked="RbFilterDisconnected_Checked"/>
                             </StackPanel>
                         </Border>
 

@@ -874,8 +874,21 @@ public class MonitoringHub : Hub
             .Select(p => p.ConnectionStatus)
             .FirstOrDefaultAsync();
 
-        if (string.Equals(latestParticipantState, "Completed", StringComparison.OrdinalIgnoreCase))
+        // BUG-FIX (deployment): block ghost telemetry from a SAC that
+        // regained network before the student manually re-joined.
+        // Previously only "Completed" was filtered, so a Disconnected
+        // student whose SAC's WithAutomaticReconnect succeeded silently
+        // could keep flooding the server with focus/alt-tab/process
+        // events while the student was actually on the dashboard's
+        // re-join screen — unfairly raising their risk score.
+        // ConnectionStatus only flips back to "Connected" once the
+        // instructor approves the rejoin via the REST /request-join
+        // path → ApproveStudentJoin, so this is the canonical gate.
+        if (string.Equals(latestParticipantState, "Completed",    StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(latestParticipantState, "Disconnected", StringComparison.OrdinalIgnoreCase))
+        {
             return;
+        }
 
         // Verify the room exists
         var room = await _context.Rooms.FindAsync(roomId);

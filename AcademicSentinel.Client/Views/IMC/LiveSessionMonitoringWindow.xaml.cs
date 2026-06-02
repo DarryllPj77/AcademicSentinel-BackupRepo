@@ -104,12 +104,17 @@ namespace AcademicSentinel.Client.Views.IMC
         //
         // Cohort semantics (mirrored in ParticipantFilterPredicate
         // and UpdateParticipantCount so every surface agrees):
-        //   Taking    → !IsDoneRequested && !IsDone
-        //   Done      →  IsDoneRequested && !IsDone   (pending approval)
-        //   Finished  →  IsDone                       (teacher-approved)
-        // The three predicates partition the participant set exactly
-        // once — every row matches exactly one tab.
-        private enum ParticipantFilterMode { Taking, Done, Finished }
+        //   Disconnected → IsDisconnected                (offline mid-session)
+        //   Taking       → !IsDisconnected && !IsDoneRequested && !IsDone
+        //   Done         → !IsDisconnected && IsDoneRequested && !IsDone (pending)
+        //   Finished     → !IsDisconnected && IsDone                     (approved)
+        // The four predicates partition the participant set exactly
+        // once — every row matches exactly one tab. Disconnected takes
+        // precedence so a student whose SAC drops while in Done/Finished
+        // is surfaced under the Disconnected tab (where the instructor
+        // is looking for them) rather than staying in their previous
+        // bucket.
+        private enum ParticipantFilterMode { Taking, Done, Finished, Disconnected }
         private ParticipantFilterMode _participantFilter = ParticipantFilterMode.Taking;
 
         // The search box's lowercased current text. Kept as a field so
@@ -121,22 +126,28 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (obj is not LiveStudentStatus s) return false;
 
-            // Three disjoint cohorts. Done tab is now ONLY the pending
-            // sub-state (where Approve/Deny live); Finished tab is the
-            // teacher-approved completed sub-state. A student moves
-            // Done → Finished on approval; Done → Taking on denial.
-            bool isPendingDone = s.IsDoneRequested && !s.IsDone;
-            bool isFinished    = s.IsDone;
-            bool isTaking      = !isPendingDone && !isFinished;
+            // Four disjoint cohorts. Disconnected wins outright so a
+            // student whose SAC drops doesn't keep sitting in Taking
+            // / Done / Finished and surprise the instructor — they
+            // appear under the Disconnected tab the moment their
+            // participant row flips to ConnectionStatus="Disconnected".
+            // Done tab is ONLY the pending sub-state (where Approve/Deny
+            // live); Finished tab is the teacher-approved completed
+            // sub-state.
+            bool isDisconnected = s.IsDisconnected;
+            bool isPendingDone  = !isDisconnected && s.IsDoneRequested && !s.IsDone;
+            bool isFinished     = !isDisconnected && s.IsDone;
+            bool isTaking       = !isDisconnected && !isPendingDone && !isFinished;
 
             bool cohortMatch = _participantFilter switch
             {
-                ParticipantFilterMode.Done     => isPendingDone,
-                ParticipantFilterMode.Finished => isFinished,
+                ParticipantFilterMode.Disconnected => isDisconnected,
+                ParticipantFilterMode.Done         => isPendingDone,
+                ParticipantFilterMode.Finished     => isFinished,
                 // Default arm is Taking — covers ParticipantFilterMode.Taking
                 // and any future addition that hasn't been wired yet,
                 // erring on the safer "show active" side.
-                _                              => isTaking,
+                _                                  => isTaking,
             };
             if (!cohortMatch) return false;
 
@@ -458,6 +469,9 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void RbFilterFinished_Checked(object sender, RoutedEventArgs e)
             => SetParticipantFilter(ParticipantFilterMode.Finished);
+
+        private void RbFilterDisconnected_Checked(object sender, RoutedEventArgs e)
+            => SetParticipantFilter(ParticipantFilterMode.Disconnected);
 
         private void SetParticipantFilter(ParticipantFilterMode mode)
         {
@@ -1706,13 +1720,16 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void UpdateParticipantCount()
         {
-            // Three disjoint buckets — exactly mirrors
+            // Four disjoint buckets — exactly mirrors
             // ParticipantFilterPredicate so the tab labels, the header
             // pill, the missing line, and the visible row counts never
-            // disagree.
-            int takingCount   = ActiveStudents.Count(s => !s.IsDoneRequested && !s.IsDone);
-            int doneCount     = ActiveStudents.Count(s =>  s.IsDoneRequested && !s.IsDone);
-            int finishedCount = ActiveStudents.Count(s =>  s.IsDone);
+            // disagree. Disconnected wins outright so a dropped row
+            // is counted once under its own tab and never double-counted
+            // in Taking / Done / Finished.
+            int disconnectedCount = ActiveStudents.Count(s => s.IsDisconnected);
+            int takingCount       = ActiveStudents.Count(s => !s.IsDisconnected && !s.IsDoneRequested && !s.IsDone);
+            int doneCount         = ActiveStudents.Count(s => !s.IsDisconnected &&  s.IsDoneRequested && !s.IsDone);
+            int finishedCount     = ActiveStudents.Count(s => !s.IsDisconnected &&  s.IsDone);
 
             if (EmptyParticipantsState != null && ActiveStudents.Count > 0)
                 EmptyParticipantsState.Visibility = Visibility.Collapsed;
@@ -1723,12 +1740,12 @@ namespace AcademicSentinel.Client.Views.IMC
             TxtParticipantCount.Text = $"{takingCount}/{_enrolledCount}";
 
             // Missing = enrolled minus everyone we currently have on
-            // screen across all three buckets. Finished and Done are
-            // spelled out so the teacher can see at a glance how many
-            // students are at each stage.
-            var missing = Math.Max(0, _enrolledCount - takingCount - doneCount - finishedCount);
+            // screen across all four buckets. Disconnected is shown
+            // inline so a glance at the header tells the teacher
+            // whether anyone has dropped offline mid-session.
+            var missing = Math.Max(0, _enrolledCount - takingCount - doneCount - finishedCount - disconnectedCount);
             if (FindName("TxtMissingCount") is TextBlock txtMissing)
-                txtMissing.Text = $"Finished: {finishedCount} · Done: {doneCount} · Missing: {missing}";
+                txtMissing.Text = $"Finished: {finishedCount} · Done: {doneCount} · Offline: {disconnectedCount} · Missing: {missing}";
 
             // Refresh the filter-tab labels so each carries its own
             // running count without needing a binding converter.
@@ -1738,6 +1755,8 @@ namespace AcademicSentinel.Client.Views.IMC
                 rbDone.Content = $"Done ({doneCount})";
             if (FindName("RbFilterFinished") is RadioButton rbFinished)
                 rbFinished.Content = $"Finished ({finishedCount})";
+            if (FindName("RbFilterDisconnected") is RadioButton rbDisconnected)
+                rbDisconnected.Content = $"Disconnected ({disconnectedCount})";
         }
 
         // Tracks the last known ParticipationStatus per student between
@@ -1871,6 +1890,46 @@ namespace AcademicSentinel.Client.Views.IMC
                         IsOffline = isDisconnected,
                         Status = statusText,
                         StatusColor = statusColor
+                    });
+                }
+
+                // 1b. Surface DISCONNECTED participants in the dedicated
+                //     Disconnected cohort tab. The previous QA rule
+                //     ("disconnected students disappear from the list")
+                //     left the instructor with no easy way to see who
+                //     had dropped — now they appear under their own
+                //     red-coloured tab with IsDisconnected=true so the
+                //     filter predicate and SectionSortOrder route them
+                //     correctly. They are NOT added to Taking/Done/
+                //     Finished because IsDisconnected outranks those
+                //     buckets in ParticipantFilterPredicate.
+                foreach (var p in participants.Where(p =>
+                    string.Equals(p.ParticipationStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
+                    && !_safelyLeftStudentIds.Contains(p.StudentId)
+                    && !_permanentlyDismissedStudents.Contains(p.StudentId)
+                    && !_doneStudentIds.Contains(p.StudentId)))
+                {
+                    // Avoid duplicates if the row is already present
+                    // (e.g., a brief race where it was added in the
+                    // previous block before its status flipped).
+                    if (ActiveStudents.Any(s => s.StudentId == p.StudentId))
+                        continue;
+
+                    ActiveStudents.Add(new LiveStudentStatus
+                    {
+                        StudentId = p.StudentId,
+                        Name  = string.IsNullOrWhiteSpace(p.StudentName) ? p.StudentEmail : p.StudentName,
+                        Email = p.StudentEmail,
+                        ProfileImageUrl = string.IsNullOrWhiteSpace(p.ProfileImageUrl)
+                            ? string.Empty
+                            : (p.ProfileImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                                ? p.ProfileImageUrl
+                                : $"{ApiEndpoints.BaseUrl}{p.ProfileImageUrl}"),
+                        HasViolation   = _studentsWithViolations.Contains(p.StudentId),
+                        IsDisconnected = true,
+                        IsOffline      = true,
+                        Status         = "Disconnected",
+                        StatusColor    = "#D32F2F"
                     });
                 }
 
@@ -2610,6 +2669,29 @@ namespace AcademicSentinel.Client.Views.IMC
         }
         public bool IsLeaveRequested { get => _isLeaveRequested; set { _isLeaveRequested = value; OnPropertyChanged(); } }
         public bool IsJoinApprovalPending { get => _isJoinApprovalPending; set { _isJoinApprovalPending = value; OnPropertyChanged(); } }
+
+        // True when this row represents a participant whose server-side
+        // ConnectionStatus is "Disconnected" — surfaced under the
+        // dedicated "Disconnected" cohort tab in the IMC. Distinct from
+        // IsOffline (which was the old "no longer in participant list"
+        // flag) because we now keep disconnected students IN the list
+        // so the instructor can track them.
+        private bool _isDisconnected;
+        public bool IsDisconnected
+        {
+            get => _isDisconnected;
+            set
+            {
+                if (_isDisconnected == value) return;
+                _isDisconnected = value;
+                OnPropertyChanged();
+                // Cohort buckets are computed from IsDisconnected so any
+                // change must repaint Section + SectionSortOrder for the
+                // CollectionView to re-sort on the next Refresh().
+                OnPropertyChanged(nameof(Section));
+                OnPropertyChanged(nameof(SectionSortOrder));
+            }
+        }
         public bool IsHandRaisePending { get => _isHandRaisePending; set { _isHandRaisePending = value; OnPropertyChanged(); } }
         public bool IsHandRaiseActive { get => _isHandRaiseActive; set { _isHandRaiseActive = value; OnPropertyChanged(); } }
         public bool IsDone
@@ -2640,16 +2722,18 @@ namespace AcademicSentinel.Client.Views.IMC
                 OnPropertyChanged(nameof(SectionSortOrder));
             }
         }
-        // Section / SectionSortOrder now split into three: Taking
-        // (active), Done (pending approval), Finished (approved). The
-        // sort order is used as a secondary key inside _studentsView
-        // so rows within a tab stay stable across refreshes.
+        // Section / SectionSortOrder now split into four: Taking
+        // (active), Done (pending approval), Finished (approved),
+        // Disconnected (offline mid-session). Disconnected takes
+        // precedence — same rule as ParticipantFilterPredicate.
         public string Section =>
-            _isDone           ? "Finished"
+            _isDisconnected   ? "Disconnected"
+          : _isDone           ? "Finished"
           : _isDoneRequested  ? "Done"
           :                     "Taking";
         public int SectionSortOrder =>
-            _isDone           ? 2
+            _isDisconnected   ? 3
+          : _isDone           ? 2
           : _isDoneRequested  ? 1
           :                     0;
         public bool HasViolation { get => _hasViolation; set { _hasViolation = value; OnPropertyChanged(); } }
