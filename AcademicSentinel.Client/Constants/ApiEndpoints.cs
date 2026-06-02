@@ -5,8 +5,8 @@
         // ========================================================
         // MAIN SERVER URL
         // ========================================================
-        //public const string BaseUrl = "http://206.189.82.67"; // for deployment
-        public const string BaseUrl = "https://localhost:7123"; // for testing
+        public const string BaseUrl = "http://206.189.82.67"; // for deployment
+        //public const string BaseUrl = "https://localhost:7123"; // for testing
 
         // ========================================================
         // AUTHENTICATION
