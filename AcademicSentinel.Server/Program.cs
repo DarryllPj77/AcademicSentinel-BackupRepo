@@ -157,6 +157,17 @@ builder.Services.AddSingleton<AcademicSentinel.Server.Services.DisconnectService
 // Services/DisconnectSweeperService.cs for the full reasoning.
 builder.Services.AddHostedService<AcademicSentinel.Server.Services.DisconnectSweeperService>();
 
+// Ghost-lock sweeper for the single-device login policy. Runs every 5
+// minutes and releases User.IsLoggedIn + CurrentDeviceId when:
+//   • the account is marked logged-in, AND
+//   • LastLoginAt is older than 15 min (matches AuthController's own
+//     stale-lock window), AND
+//   • the user isn't currently alive on the hub heartbeat map.
+// Without this, a force-quit BEFORE the user joined any room would
+// leave the lock pinned until the next contested login attempt
+// passively cleared it. See Services/GhostLockSweeperService.cs.
+builder.Services.AddHostedService<AcademicSentinel.Server.Services.GhostLockSweeperService>();
+
 // --------------------------------------------------------------------------
 // PAST SESSION ARCHIVE — Trash retention.
 //
