@@ -182,8 +182,19 @@ public class AuthController : ControllerBase
         }
 
         // Orphan-safe registration:
-        //   • verified row → refuse (account already exists; the
-        //     caller should sign in or use Forgot Password).
+        //   • verified institutional row → refuse (account already
+        //     exists; the caller should sign in or — once email is
+        //     configured — use Forgot Password).
+        //   • verified @gmail.com row → ROTATE password/name/role on
+        //     the SAME row. This is a PROTOTYPE-ONLY recovery path:
+        //     SMTP is unconfigured so Forgot Password is disabled,
+        //     and testers (defense panel) need a way out of a
+        //     forgotten-password lockout without DB surgery. Limited
+        //     to the prototype domain (@gmail.com) so institutional
+        //     accounts cannot be silently overwritten by a stranger
+        //     who guesses the email. Tighten back to the original
+        //     "refuse all verified rows" rule when SMTP + Forgot
+        //     Password are restored.
         //   • unverified row → rotate the code on the SAME row
         //     (overwrite name/password/code hash/expiry, reset
         //     attempts, restart cooldown). This eliminates the
@@ -192,11 +203,9 @@ public class AuthController : ControllerBase
         //     the user just clicks Register again and the row
         //     self-heals with a fresh code.
         //   • no row → fall through to the normal create path.
-        // Verified accounts cannot be hijacked by this branch
-        // because rotation only triggers when IsEmailVerified
-        // is false.
         var existing = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
-        if (existing != null && existing.IsEmailVerified)
+        bool isPrototypeDomain = string.Equals(domain, "gmail.com", StringComparison.OrdinalIgnoreCase);
+        if (existing != null && existing.IsEmailVerified && !isPrototypeDomain)
         {
             // PROTOTYPE: Forgot Password is disabled, so the recovery
             // hint is intentionally absent. Restore the "or use Forgot
@@ -229,6 +238,7 @@ public class AuthController : ControllerBase
         User user;
         if (existing != null)
         {
+            bool wasVerified = existing.IsEmailVerified;
             existing.FullName                    = registerDto.FullName.Trim();
             existing.PasswordHash                = passwordHash;
             existing.Role                        = derivedRole;
@@ -238,9 +248,21 @@ public class AuthController : ControllerBase
             existing.EmailVerificationAttempts   = 0;
             existing.LastVerificationCodeSentAt  = DateTime.UtcNow;
             user = existing;
-            _logger.LogInformation(
-                "Register (prototype): auto-verifying existing unverified account {Email} (role={Role}).",
-                user.Email, derivedRole);
+            if (wasVerified)
+            {
+                // Distinct log line for the password-recovery path so a
+                // reviewer can audit prototype rotations separately from
+                // first-time auto-verifications.
+                _logger.LogWarning(
+                    "Register (prototype): ROTATING password for verified @gmail.com account {Email} (role={Role}). Prototype-only recovery path.",
+                    user.Email, derivedRole);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Register (prototype): auto-verifying existing unverified account {Email} (role={Role}).",
+                    user.Email, derivedRole);
+            }
         }
         else
         {
