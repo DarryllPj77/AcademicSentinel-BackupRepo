@@ -34,4 +34,20 @@ public class User
     public DateTime? EmailVerificationExpiresAt { get; set; }
     public int EmailVerificationAttempts { get; set; } = 0;
     public DateTime? LastVerificationCodeSentAt { get; set; }
+
+    // Single-device session lock.
+    //   IsLoggedIn   — set true on a successful /api/auth/login,
+    //                  cleared by /api/auth/logout.
+    //   LastLoginAt  — UTC stamp of the last successful login.
+    //                  Used as a stale-lock safety: if a client crashed
+    //                  without calling /logout, the row would otherwise
+    //                  be permanently locked. Once LastLoginAt is older
+    //                  than the JWT lifetime (8h), the next /login can
+    //                  reclaim the row because any token previously
+    //                  issued has already expired.
+    // The Login endpoint enforces the lock; the RoomsController layer
+    // adds defence-in-depth by refusing /request-join when the
+    // participant row is already Connected.
+    public bool IsLoggedIn { get; set; } = false;
+    public DateTime? LastLoginAt { get; set; }
 }

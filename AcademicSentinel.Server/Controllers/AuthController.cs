@@ -48,6 +48,39 @@ public class AuthController : ControllerBase
             return Unauthorized("Invalid email or password.");
         }
 
+        // ============================================================
+        // SINGLE-DEVICE SESSION LOCK
+        // ============================================================
+        // Refuse a second concurrent login while the account row is
+        // already marked IsLoggedIn. The lock has a built-in stale-
+        // session safety: if LastLoginAt is older than the JWT
+        // lifetime (8h), any token previously issued has already
+        // expired and the row would otherwise be permanently locked
+        // (e.g. the SAC crashed without calling /logout). In that
+        // case, silently reclaim the row instead of refusing.
+        const int jwtLifetimeHours = 8;
+        bool lockIsStale = user.LastLoginAt.HasValue
+            && (DateTime.UtcNow - user.LastLoginAt.Value).TotalHours >= jwtLifetimeHours;
+
+        if (user.IsLoggedIn && !lockIsStale)
+        {
+            _logger.LogWarning(
+                "Login blocked for {Email} — account already in use (LastLoginAt={LastLoginAt:O}).",
+                user.Email, user.LastLoginAt);
+            return StatusCode(StatusCodes.Status409Conflict, new
+            {
+                code = "ALREADY_LOGGED_IN",
+                message = "This account is already logged in on another device. Please log out of the other device first."
+            });
+        }
+
+        // Claim the lock + stamp the time. The companion /logout
+        // endpoint clears IsLoggedIn; the stale-lock window above
+        // unblocks accounts that crashed without a clean logout.
+        user.IsLoggedIn  = true;
+        user.LastLoginAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+
         // PROTOTYPE: email-verification gate disabled because outbound
         // email delivery is not yet configured (Resend sandbox can
         // only deliver to one inbox until a domain is verified). When
@@ -99,6 +132,32 @@ public class AuthController : ControllerBase
             // Clean assignment without citation tags
             ProfileImageUrl = user.ProfileImageUrl
         });
+    }
+
+    // POST /api/auth/logout
+    // Releases the single-device session lock claimed by /login.
+    // Required for the new IsLoggedIn flow — without it a clean
+    // sign-out would otherwise leave the row locked until the
+    // stale-lock window (8h) elapsed. The endpoint is idempotent:
+    // calling it twice / when not logged in is still 200 OK.
+    // Defends against partial sign-outs by ignoring user-not-found
+    // and clearing the flag whatever its current value.
+    [HttpPost("logout")]
+    [Authorize]
+    public async Task<IActionResult> Logout()
+    {
+        var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!int.TryParse(userIdString, out var userId))
+            return Ok(new { message = "Logged out." });
+
+        var user = await _context.Users.FindAsync(userId);
+        if (user != null)
+        {
+            user.IsLoggedIn = false;
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("User {Email} logged out — single-device lock released.", user.Email);
+        }
+        return Ok(new { message = "Logged out." });
     }
 
     // PROTOTYPE: domain allowlist expanded to include gmail.com so

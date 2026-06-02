@@ -102,6 +102,18 @@ namespace AcademicSentinel.Client.Services
                     return false;
                 }
 
+                // Single-device session lock — server returns 409 when
+                // the account is already logged in elsewhere. Surface a
+                // distinct marker so the LoginWindow can show the
+                // actionable "already logged in on another device"
+                // message instead of the generic invalid-credentials
+                // toast.
+                if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+                {
+                    LastErrorMessage = "ALREADY_LOGGED_IN";
+                    return false;
+                }
+
                 LastErrorMessage = "INVALID_CREDENTIALS";
                 return false;
             }

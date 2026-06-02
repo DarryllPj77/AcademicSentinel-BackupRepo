@@ -129,6 +129,22 @@ namespace AcademicSentinel.Client.Views.Shared
                         return;
                     }
 
+                    // Single-device lock — surface the specific reason
+                    // so the user knows to log out of the other device
+                    // (or wait for the 8-hour stale-lock window to
+                    // elapse if the previous device crashed).
+                    if (string.Equals(_authService.LastErrorMessage, "ALREADY_LOGGED_IN", StringComparison.Ordinal))
+                    {
+                        MessageBox.Show(
+                            "This account is already logged in on another device.\n\n" +
+                            "Please log out of the other device first, or wait a few hours if that device " +
+                            "crashed before it could log out cleanly.",
+                            "Already Logged In",
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
+                        ResetLoginButton();
+                        return;
+                    }
+
                     MessageBox.Show("Invalid email or password.", "Login Failed", MessageBoxButton.OK, MessageBoxImage.Error);
                     ResetLoginButton();
                 }

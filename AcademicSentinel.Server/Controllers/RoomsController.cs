@@ -1526,6 +1526,33 @@ public class RoomsController : ControllerBase
             .FirstOrDefaultAsync();
 
         // ============================================================
+        // CONCURRENT-DEVICE JOIN GUARD (defence-in-depth)
+        // ============================================================
+        // The single-device login lock in AuthController.Login is the
+        // primary defence, but a student who logged in on two devices
+        // BEFORE the lock was added (or who legitimately holds two
+        // valid JWTs because the second login happened after a stale-
+        // lock reclaim) could still hit this endpoint twice. Refuse the
+        // second join if the participant row is already Connected for
+        // the active session — that's the canonical "I am currently in
+        // the exam" state and exactly one device is allowed to hold it.
+        // Disconnected and other states fall through to the existing
+        // rejoin/late-join paths below.
+        if (latestParticipant != null
+            && string.Equals(latestParticipant.ConnectionStatus, "Connected", StringComparison.OrdinalIgnoreCase)
+            && latestParticipant.JoinedAt >= activeSession.StartTime)
+        {
+            _logger.LogWarning(
+                "RequestJoinSession: blocked concurrent join for student {StudentId} in session {SessionId} — participant row is already Connected.",
+                studentId, activeSession.Id);
+            return StatusCode(StatusCodes.Status409Conflict, new
+            {
+                code = "ALREADY_CONNECTED",
+                message = "Your account is already actively connected to this exam from another device."
+            });
+        }
+
+        // ============================================================
         // EXPLICIT DISCONNECTED-STATE REJOIN GATE (deployment fix).
         //
         // When a student loses internet mid-exam, the server marks

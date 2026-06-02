@@ -5,14 +5,15 @@
         // ========================================================
         // MAIN SERVER URL
         // ========================================================
-        public const string BaseUrl = "http://206.189.82.67"; // for deployment
-        //public const string BaseUrl = "https://localhost:7123"; // for testing
+        //public const string BaseUrl = "http://206.189.82.67"; // for deployment
+        public const string BaseUrl = "https://localhost:7123"; // for testing
 
         // ========================================================
         // AUTHENTICATION
         // ========================================================
         public const string AuthRegister = $"{BaseUrl}/api/auth/register";
         public const string AuthLogin = $"{BaseUrl}/api/auth/login";
+        public const string AuthLogout = $"{BaseUrl}/api/auth/logout";
         public const string AuthProfile = $"{BaseUrl}/api/auth/profile";
         public const string AuthChangePassword = $"{BaseUrl}/api/auth/change-password";
 
