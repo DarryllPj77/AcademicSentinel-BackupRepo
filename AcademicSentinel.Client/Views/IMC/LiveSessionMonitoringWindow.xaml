@@ -379,11 +379,23 @@
                         <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                     </Border.Effect>
                     <StackPanel>
+                        <!--
+                            Participants green header.
+                            Layout reverted to the original 3-column design
+                            (Title | Count badge | Missing stats) — putting
+                            the Analytics button here was crowding the row
+                            and clipping content when the session became
+                            Active and the Student Details panel pinched
+                            the sidebar toward its 290 px MinWidth. The
+                            Analytics button now lives on its own row
+                            below the filter tabs (see BtnSessionAnalyticMode
+                            block further down) so it's always fully
+                            visible regardless of sidebar width.
+                        -->
                         <Border Background="{StaticResource FEUGreenBrush}" CornerRadius="12,12,0,0" Padding="14,12">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
@@ -409,43 +421,43 @@
                                 </Border>
 
                                 <TextBlock Grid.Column="2" x:Name="TxtMissingCount" Text="Missing: 0"
-                                           Margin="10,0,8,0"
+                                           Margin="10,0,0,0"
                                            FontSize="11" FontWeight="SemiBold"
                                            Foreground="White"
                                            VerticalAlignment="Center"/>
-
-                                <!--
-                                    Session Analytic Mode toggle.
-                                    Sits in the green Participants header
-                                    so the instructor can quickly flip
-                                    between the per-student row view and
-                                    the aggregate session dashboard
-                                    (Risk distribution + Connection
-                                    distribution + total violations).
-                                    Background is repainted in code-behind
-                                    when toggled so the active state is
-                                    visually obvious.
-                                -->
-                                <Button Grid.Column="3"
-                                        x:Name="BtnSessionAnalyticMode"
-                                        Click="BtnSessionAnalyticMode_Click"
-                                        Background="#1976D2"
-                                        Foreground="White"
-                                        BorderThickness="0"
-                                        FontWeight="Bold"
-                                        FontSize="11"
-                                        Padding="10,4"
-                                        Cursor="Hand"
-                                        VerticalAlignment="Center"
-                                        ToolTip="Toggle session analytics dashboard">
-                                    <StackPanel Orientation="Horizontal">
-                                        <materialDesign:PackIcon Kind="ChartBar" Width="14" Height="14"
-                                                                 VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBlock x:Name="TxtSessionAnalyticMode" Text="Analytics"
-                                                   VerticalAlignment="Center"/>
-                                    </StackPanel>
-                                </Button>
                             </Grid>
+                        </Border>
+
+                        <!--
+                            Analytics toggle row. Pinned to its own line
+                            with HorizontalAlignment="Stretch" so the
+                            button is always fully visible regardless of
+                            sidebar width (previously placed inside the
+                            green Participants header, where it got
+                            clipped when the session became Active and
+                            the right Student Details panel pinched the
+                            sidebar column toward its 290 px MinWidth).
+                        -->
+                        <Border Padding="12,10,12,0">
+                            <Button x:Name="BtnSessionAnalyticMode"
+                                    Click="BtnSessionAnalyticMode_Click"
+                                    Background="#1976D2"
+                                    Foreground="White"
+                                    BorderThickness="0"
+                                    FontWeight="Bold"
+                                    FontSize="12"
+                                    Padding="10,6"
+                                    Cursor="Hand"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Center"
+                                    ToolTip="Toggle session analytics dashboard">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="ChartBar" Width="14" Height="14"
+                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock x:Name="TxtSessionAnalyticMode" Text="Analytics"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
                         </Border>
 
                         <!-- Participant cohort filter. RbFilterTaking is IsChecked=True
@@ -454,16 +466,21 @@
                              shows both cohorts (still sorted Taking-before-Done by
                              the CollectionView's SectionSortOrder). The Content text
                              is updated in code-behind so the running counts stay
-                             live without a binding-converter dance. -->
+                             live without a binding-converter dance.
+
+                             Container is a WrapPanel so the four cohort tabs flow
+                             onto a second line if the sidebar gets squeezed below
+                             a single-row threshold (the original StackPanel would
+                             clip the Disconnected tab on narrow widths). -->
                         <Border Padding="12,10,12,4">
-                            <StackPanel Orientation="Horizontal">
+                            <WrapPanel Orientation="Horizontal">
                                 <RadioButton x:Name="RbFilterTaking"
                                              Content="Taking (0)"
                                              GroupName="ParticipantFilter"
                                              IsChecked="True"
                                              FontSize="11"
                                              FontWeight="SemiBold"
-                                             Margin="0,0,6,0"
+                                             Margin="0,0,6,4"
                                              Padding="10,4"
                                              Foreground="{StaticResource FEUGreenBrush}"
                                              Checked="RbFilterTaking_Checked"/>
@@ -472,7 +489,7 @@
                                              GroupName="ParticipantFilter"
                                              FontSize="11"
                                              FontWeight="SemiBold"
-                                             Margin="0,0,6,0"
+                                             Margin="0,0,6,4"
                                              Padding="10,4"
                                              Foreground="#616161"
                                              Checked="RbFilterDone_Checked"/>
@@ -481,7 +498,7 @@
                                              GroupName="ParticipantFilter"
                                              FontSize="11"
                                              FontWeight="SemiBold"
-                                             Margin="0,0,6,0"
+                                             Margin="0,0,6,4"
                                              Padding="10,4"
                                              Foreground="#616161"
                                              Checked="RbFilterFinished_Checked"/>
@@ -498,10 +515,11 @@
                                              GroupName="ParticipantFilter"
                                              FontSize="11"
                                              FontWeight="SemiBold"
+                                             Margin="0,0,0,4"
                                              Padding="10,4"
                                              Foreground="#D32F2F"
                                              Checked="RbFilterDisconnected_Checked"/>
-                            </StackPanel>
+                            </WrapPanel>
                         </Border>
 
                         <Border Padding="12,4,12,6">
