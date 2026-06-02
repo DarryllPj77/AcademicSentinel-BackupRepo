@@ -48,6 +48,15 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
         // SelectionChanged handler and read by the filter predicate.
         private string _eventTypeFilter = AllEventsOption;
 
+        // Master log list — kept as a field so Analytic Mode can compute
+        // the event-type frequency breakdown against the full set, not
+        // whatever subset is currently visible through the filter view.
+        private List<SessionLogDto> _allLogs = new();
+
+        // Analytic Mode toggle state. Default = false (chronological log
+        // grid). Flipped by BtnAnalyticMode_Click.
+        private bool _isAnalyticMode = false;
+
         public bool ExportRequested { get; private set; }
 
         public StudentLogsPreviewDialog(SessionStudentDto student)
@@ -65,6 +74,10 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
             var logs = student.Logs ?? new List<SessionLogDto>();
             // Newest first — DataGrid header click can still resort.
             var sortedLogs = logs.OrderByDescending(l => l.Timestamp).ToList();
+            // Cache the master list — Analytic Mode groups against this
+            // regardless of the current ComboBox filter, so the chart
+            // always reflects the student's full session.
+            _allLogs = sortedLogs;
 
             // --- DataGrid via ICollectionView ---
             // GetDefaultView returns a CollectionView wrapping the list;
@@ -227,6 +240,122 @@ namespace AcademicSentinel.Client.Views.IMC.Dialogs
         {
             public string EventType { get; set; }
             public int Count { get; set; }
+        }
+
+        // -----------------------------------------------------------------
+        // ANALYTIC MODE TOGGLE
+        //
+        // Swaps the chronological log grid for a horizontal bar chart of
+        // event-type frequency. The chart uses the FULL log set (not the
+        // current filter view) so the picture is always the student's
+        // complete session — analytics that changed shape every time the
+        // teacher tweaked the filter would be confusing.
+        //
+        // Visibility flips:
+        //   OFF (default) → LogsDataGridContainer visible, AnalyticsPanel collapsed
+        //   ON            → LogsDataGridContainer collapsed, AnalyticsPanel visible
+        // The Event Type ComboBox stays visible either way — it still
+        // drives the chronological view, just becomes a no-op while
+        // Analytic Mode is on.
+        // -----------------------------------------------------------------
+        private void BtnAnalyticMode_Click(object sender, RoutedEventArgs e)
+        {
+            _isAnalyticMode = !_isAnalyticMode;
+
+            if (_isAnalyticMode)
+            {
+                LogsDataGridContainer.Visibility = Visibility.Collapsed;
+                AnalyticsPanel.Visibility = Visibility.Visible;
+                BtnAnalyticMode.Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(56, 142, 60));   // #388E3C — active green
+                if (TxtAnalyticMode != null) TxtAnalyticMode.Text = "Standard View";
+
+                LoadAnalytics();
+            }
+            else
+            {
+                LogsDataGridContainer.Visibility = Visibility.Visible;
+                AnalyticsPanel.Visibility = Visibility.Collapsed;
+                BtnAnalyticMode.Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(25, 118, 210));  // #1976D2 — default blue
+                if (TxtAnalyticMode != null) TxtAnalyticMode.Text = "Analytic Mode";
+            }
+        }
+
+        /// <summary>
+        /// Group every cached log by EventType, count occurrences, and
+        /// bind to the AnalyticsItemsControl. Each row carries both Count
+        /// and MaxCount so the ProgressBar can render proportional widths
+        /// without a value converter. Severity is denormalized into the
+        /// row so the bar can colour-code violations (>0 score) red and
+        /// informational entries (0 score) green.
+        /// </summary>
+        private void LoadAnalytics()
+        {
+            // Defensive guard — the button can technically be clicked
+            // before the constructor has finished caching, even though
+            // the current call-graph doesn't trigger that.
+            if (_allLogs == null || _allLogs.Count == 0)
+            {
+                AnalyticsItemsControl.ItemsSource = null;
+                if (AnalyticsEmpty != null) AnalyticsEmpty.Visibility = Visibility.Visible;
+                return;
+            }
+
+            var grouped = _allLogs
+                .Where(l => !string.IsNullOrWhiteSpace(l.EventType))
+                .GroupBy(l => l.EventType, StringComparer.OrdinalIgnoreCase)
+                .Select(g => new
+                {
+                    EventType  = g.Key.ToUpperInvariant(),
+                    Count      = g.Count(),
+                    MaxSeverity = g.Max(x => x.SeverityScore)
+                })
+                .OrderByDescending(x => x.Count)
+                .ThenBy(x => x.EventType, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (grouped.Count == 0)
+            {
+                AnalyticsItemsControl.ItemsSource = null;
+                if (AnalyticsEmpty != null) AnalyticsEmpty.Visibility = Visibility.Visible;
+                return;
+            }
+
+            int maxCount = grouped[0].Count;   // already sorted desc; safe.
+
+            // Materialize as EventAnalyticItem so the WPF binding has
+            // public properties to bind to (anonymous types work in
+            // collections but not great with XAML reflection).
+            var rows = grouped.Select(g => new EventAnalyticItem
+            {
+                EventType = g.EventType,
+                Count     = g.Count,
+                MaxCount  = maxCount,
+                // Red for actual violations (severity > 0), green for
+                // informational / system events (severity == 0). The bar
+                // bar visually communicates whether a high count is a
+                // problem or just chatter (CANVAS_RETURNED etc.).
+                BarBrush  = g.MaxSeverity > 0
+                    ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(211, 47, 47))
+                    : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(76, 175, 80))
+            }).ToList();
+
+            AnalyticsItemsControl.ItemsSource = rows;
+            if (AnalyticsEmpty != null) AnalyticsEmpty.Visibility = Visibility.Collapsed;
+        }
+
+        /// <summary>
+        /// Row shape bound to the AnalyticsItemsControl. Count drives the
+        /// progress-bar Value, MaxCount drives Maximum so widths are
+        /// proportional to the most-frequent event in the set.
+        /// </summary>
+        private sealed class EventAnalyticItem
+        {
+            public string EventType { get; set; }
+            public int Count { get; set; }
+            public int MaxCount { get; set; }
+            public System.Windows.Media.Brush BarBrush { get; set; }
         }
     }
 }

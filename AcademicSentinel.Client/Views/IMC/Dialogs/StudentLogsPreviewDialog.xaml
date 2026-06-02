@@ -43,26 +43,62 @@
         <Border Grid.Row="1" Background="White" CornerRadius="10"
                 BorderBrush="#D0D0D0" BorderThickness="1.5"
                 Padding="16,12" Margin="0,0,0,14">
-            <StackPanel Orientation="Horizontal">
-                <StackPanel Margin="0,0,28,0">
-                    <TextBlock Text="Total Events" FontSize="11" FontWeight="SemiBold"
-                               Foreground="{StaticResource FEUSubTextBrush}"/>
-                    <TextBlock x:Name="TxtTotalEvents" Text="0" FontSize="20" FontWeight="Bold"
-                               Foreground="{StaticResource FEUGreenBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <StackPanel Margin="0,0,28,0">
+                        <TextBlock Text="Total Events" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource FEUSubTextBrush}"/>
+                        <TextBlock x:Name="TxtTotalEvents" Text="0" FontSize="20" FontWeight="Bold"
+                                   Foreground="{StaticResource FEUGreenBrush}"/>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,28,0">
+                        <TextBlock Text="Total Severity" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource FEUSubTextBrush}"/>
+                        <TextBlock x:Name="TxtTotalSeverity" Text="0" FontSize="20" FontWeight="Bold"
+                                   Foreground="#D32F2F"/>
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock Text="Risk Level" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource FEUSubTextBrush}"/>
+                        <TextBlock x:Name="TxtRiskLevel" Text="—" FontSize="20" FontWeight="Bold"
+                                   Foreground="#1B5E20"/>
+                    </StackPanel>
                 </StackPanel>
-                <StackPanel Margin="0,0,28,0">
-                    <TextBlock Text="Total Severity" FontSize="11" FontWeight="SemiBold"
-                               Foreground="{StaticResource FEUSubTextBrush}"/>
-                    <TextBlock x:Name="TxtTotalSeverity" Text="0" FontSize="20" FontWeight="Bold"
-                               Foreground="#D32F2F"/>
-                </StackPanel>
-                <StackPanel>
-                    <TextBlock Text="Risk Level" FontSize="11" FontWeight="SemiBold"
-                               Foreground="{StaticResource FEUSubTextBrush}"/>
-                    <TextBlock x:Name="TxtRiskLevel" Text="—" FontSize="20" FontWeight="Bold"
-                               Foreground="#1B5E20"/>
-                </StackPanel>
-            </StackPanel>
+
+                <!--
+                    Analytic Mode toggle.
+                    Lives alongside the three aggregate stats so it reads
+                    as part of the same "summary" header. Click swaps the
+                    chronological log grid for a bar-chart breakdown of
+                    event-type frequency — handled in
+                    BtnAnalyticMode_Click. Background is repainted in
+                    code-behind when toggled so the active state is
+                    visually obvious.
+                -->
+                <Button Grid.Column="1"
+                        x:Name="BtnAnalyticMode"
+                        Click="BtnAnalyticMode_Click"
+                        Background="#1976D2"
+                        Foreground="White"
+                        BorderThickness="0"
+                        FontWeight="Bold"
+                        FontSize="13"
+                        Padding="16,8"
+                        Cursor="Hand"
+                        VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="ChartBar" Width="18" Height="18"
+                                                 VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBlock x:Name="TxtAnalyticMode" Text="Analytic Mode"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </Grid>
         </Border>
 
         <!-- Event-type filter (row 2) -->
@@ -79,8 +115,13 @@
                       SelectionChanged="EventTypeFilter_SelectionChanged"/>
         </Grid>
 
-        <!-- Logs table (row 3) -->
-        <Border Grid.Row="3" BorderBrush="#BDBDBD" BorderThickness="1"
+        <!--
+            Logs table (row 3).
+            x:Name LogsDataGridContainer so the Analytic Mode toggle can
+            collapse the entire bordered card (header + grid) in one
+            assignment rather than chasing every child separately.
+        -->
+        <Border x:Name="LogsDataGridContainer" Grid.Row="3" BorderBrush="#BDBDBD" BorderThickness="1"
                 CornerRadius="6" ClipToBounds="True">
             <DataGrid x:Name="LogsDataGrid"
                       AutoGenerateColumns="False"
@@ -131,6 +172,72 @@
                                         SortMemberPath="Description" Width="*"/>
                 </DataGrid.Columns>
             </DataGrid>
+        </Border>
+
+        <!--
+            Analytics panel — overlays row 3 when Analytic Mode is on.
+            Bar chart of event-type frequency, sorted descending.
+            ItemsSource is bound from BtnAnalyticMode_Click → LoadAnalytics
+            in code-behind. Each item carries both Count and MaxCount so
+            the ProgressBar can render proportional widths without a
+            converter / AncestorType binding.
+        -->
+        <Border x:Name="AnalyticsPanel" Grid.Row="3" Background="White" CornerRadius="6"
+                BorderBrush="#BDBDBD" BorderThickness="1" Padding="16"
+                Visibility="Collapsed">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Text="Event Frequency Breakdown"
+                           FontSize="14" FontWeight="SemiBold"
+                           Foreground="{StaticResource FEUGreenBrush}" Margin="0,0,0,12"/>
+
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl x:Name="AnalyticsItemsControl">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,4,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="60"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0" Text="{Binding EventType}"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#1B1B1B" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding EventType}"/>
+
+                                    <Border Grid.Column="1" Background="#EEEEEE"
+                                            CornerRadius="3" Height="20" Margin="10,0">
+                                        <ProgressBar Value="{Binding Count, Mode=OneWay}"
+                                                     Maximum="{Binding MaxCount, Mode=OneWay}"
+                                                     Foreground="{Binding BarBrush}"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Height="20"/>
+                                    </Border>
+
+                                    <TextBlock Grid.Column="2" Text="{Binding Count, StringFormat='×{0}'}"
+                                               TextAlignment="Right" VerticalAlignment="Center"
+                                               FontWeight="Bold" FontSize="13" Foreground="#1B1B1B"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <TextBlock x:Name="AnalyticsEmpty" Grid.Row="2" Text="No events to analyze."
+                           FontSize="12" FontStyle="Italic"
+                           Foreground="{StaticResource FEUSubTextBrush}"
+                           HorizontalAlignment="Center"
+                           Visibility="Collapsed"/>
+            </Grid>
         </Border>
 
         <!-- Violation breakdown (row 4) — dynamically populated; only
