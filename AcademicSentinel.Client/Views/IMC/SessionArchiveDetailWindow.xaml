@@ -67,10 +67,36 @@
                     <TextBlock Text="Session Archive" FontSize="22" FontWeight="Bold" Foreground="#1B1B1B"/>
                 </StackPanel>
 
-                <Button Grid.Column="1"
-                        Content="Back"
-                        Click="BtnBack_Click"
-                        Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                <!--
+                    Header action row: Analytic Mode toggle next to Back.
+                    Active state repaints the background green in
+                    code-behind so the instructor immediately sees which
+                    view they're in.
+                -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="BtnArchiveAnalyticMode"
+                            Click="BtnArchiveAnalyticMode_Click"
+                            Background="#1976D2"
+                            Foreground="White"
+                            BorderThickness="0"
+                            FontWeight="Bold"
+                            FontSize="12"
+                            Padding="14,8"
+                            Margin="0,0,8,0"
+                            Cursor="Hand"
+                            ToolTip="Toggle session-wide analytics dashboard">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="ChartBar" Width="16" Height="16"
+                                                     VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock x:Name="TxtArchiveAnalyticMode" Text="Analytic Mode"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Button Content="Back"
+                            Click="BtnBack_Click"
+                            Style="{StaticResource MaterialDesignOutlinedButton}"/>
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -112,7 +138,15 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="4" Background="{StaticResource CardBrush}" CornerRadius="12" Padding="16" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1">
+        <!--
+            Row 4 hosts BOTH the standard data-grid card AND the
+            analytics dashboard. Both children occupy the same Grid
+            slot — Visibility is flipped by BtnArchiveAnalyticMode_Click.
+            The search box + risk-level dropdown above stay visible
+            either way (they just become no-ops while analytics is on).
+        -->
+        <Grid Grid.Row="4">
+        <Border x:Name="ArchiveDataGridCard" Background="{StaticResource CardBrush}" CornerRadius="12" Padding="16" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1">
             <DataGrid x:Name="ArchiveDataGrid"
                       AutoGenerateColumns="False"
                       IsReadOnly="True"
@@ -173,5 +207,115 @@
                 </DataGrid.Columns>
             </DataGrid>
         </Border>
+
+        <!--
+            Analytics dashboard. Sits on top of row 4 with Visibility
+            Collapsed by default. LoadArchiveAnalytics() populates the
+            two ItemsControls with grouped MetricAnalyticItem rows;
+            Count/Max drive the ProgressBar widths so they are scaled
+            against the total participant count.
+        -->
+        <Border x:Name="ArchiveAnalyticsPanel"
+                Background="{StaticResource CardBrush}"
+                CornerRadius="12"
+                Padding="20"
+                BorderBrush="{StaticResource SubtleBorderBrush}"
+                BorderThickness="1"
+                Visibility="Collapsed">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="Session Overview"
+                               FontWeight="Bold" FontSize="16"
+                               Foreground="#1B1B1B" Margin="0,0,0,4"/>
+                    <TextBlock x:Name="TxtArchiveTotalViolations"
+                               Text="0 violation(s) recorded."
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="#D32F2F"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,20"/>
+
+                    <TextBlock Text="Risk Level Distribution"
+                               FontWeight="SemiBold" FontSize="13"
+                               Foreground="#424242" Margin="0,0,0,8"/>
+                    <ItemsControl x:Name="ArchiveRiskAnalyticsControl" Margin="0,0,0,20">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,4,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="170"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="50"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Category}"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding Category}"/>
+                                    <Border Grid.Column="1" Background="#EEEEEE"
+                                            CornerRadius="3" Height="20" Margin="10,0">
+                                        <ProgressBar Value="{Binding Count, Mode=OneWay}"
+                                                     Maximum="{Binding Max, Mode=OneWay}"
+                                                     Foreground="{Binding BarBrush}"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Height="20"/>
+                                    </Border>
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding Count}"
+                                               TextAlignment="Right"
+                                               VerticalAlignment="Center"
+                                               FontWeight="Bold" FontSize="13"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Connection Quality Distribution"
+                               FontWeight="SemiBold" FontSize="13"
+                               Foreground="#424242" Margin="0,0,0,8"/>
+                    <ItemsControl x:Name="ArchiveConnectionAnalyticsControl">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,4,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="170"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="50"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Category}"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding Category}"/>
+                                    <Border Grid.Column="1" Background="#EEEEEE"
+                                            CornerRadius="3" Height="20" Margin="10,0">
+                                        <ProgressBar Value="{Binding Count, Mode=OneWay}"
+                                                     Maximum="{Binding Max, Mode=OneWay}"
+                                                     Foreground="{Binding BarBrush}"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Height="20"/>
+                                    </Border>
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding Count}"
+                                               TextAlignment="Right"
+                                               VerticalAlignment="Center"
+                                               FontWeight="Bold" FontSize="13"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock x:Name="TxtArchiveAnalyticsEmpty"
+                               Text="No participants to analyze for this session."
+                               FontSize="12" FontStyle="Italic"
+                               Foreground="#9E9E9E"
+                               HorizontalAlignment="Center"
+                               Margin="0,20,0,0"
+                               Visibility="Collapsed"/>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+        </Grid>
     </Grid>
 </Window>

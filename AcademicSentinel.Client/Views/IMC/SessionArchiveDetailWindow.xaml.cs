@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -183,6 +184,173 @@ namespace AcademicSentinel.Client.Views.IMC
         private void BtnBack_Click(object sender, RoutedEventArgs e)
         {
             Close();
+        }
+
+        // ============================================================
+        // ARCHIVE ANALYTIC MODE
+        // ============================================================
+        // Toggles between the per-student DataGrid and a session-level
+        // dashboard showing Risk Level distribution + Connection Quality
+        // distribution + total violations. The two views share the same
+        // Grid slot — visibility is flipped per click. The search box
+        // and risk-level dropdown above stay visible either way; they
+        // just become no-ops while analytics is on.
+        private bool _isArchiveAnalyticMode = false;
+
+        private void BtnArchiveAnalyticMode_Click(object sender, RoutedEventArgs e)
+        {
+            _isArchiveAnalyticMode = !_isArchiveAnalyticMode;
+
+            if (_isArchiveAnalyticMode)
+            {
+                if (ArchiveDataGridCard != null)
+                    ArchiveDataGridCard.Visibility = Visibility.Collapsed;
+                if (ArchiveAnalyticsPanel != null)
+                    ArchiveAnalyticsPanel.Visibility = Visibility.Visible;
+
+                BtnArchiveAnalyticMode.Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(56, 142, 60));   // #388E3C — active green
+                if (TxtArchiveAnalyticMode != null)
+                    TxtArchiveAnalyticMode.Text = "Standard View";
+
+                LoadArchiveAnalytics();
+            }
+            else
+            {
+                if (ArchiveDataGridCard != null)
+                    ArchiveDataGridCard.Visibility = Visibility.Visible;
+                if (ArchiveAnalyticsPanel != null)
+                    ArchiveAnalyticsPanel.Visibility = Visibility.Collapsed;
+
+                BtnArchiveAnalyticMode.Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(25, 118, 210));  // #1976D2 — default blue
+                if (TxtArchiveAnalyticMode != null)
+                    TxtArchiveAnalyticMode.Text = "Analytic Mode";
+            }
+        }
+
+        /// <summary>
+        /// Groups the loaded participant list by RiskLevel and
+        /// ConnectionQuality, computes total violations, and binds the
+        /// results to the dashboard ItemsControls. Works against the
+        /// FULL participant set regardless of the search box or
+        /// risk-level dropdown — the dashboard is meant to be a
+        /// session-wide overview, not a filtered subset.
+        ///
+        /// Legacy "CHEATING" rows are normalized to "POSSIBLE
+        /// DISHONESTY" via RiskLevelDisplay.Normalize so the bucket
+        /// label matches the panel-approved wording used elsewhere.
+        /// </summary>
+        private void LoadArchiveAnalytics()
+        {
+            if (_students == null || _students.Count == 0)
+            {
+                ArchiveRiskAnalyticsControl.ItemsSource = null;
+                ArchiveConnectionAnalyticsControl.ItemsSource = null;
+                if (TxtArchiveTotalViolations != null)
+                    TxtArchiveTotalViolations.Text = "0 violation(s) recorded.";
+                if (TxtArchiveAnalyticsEmpty != null)
+                    TxtArchiveAnalyticsEmpty.Visibility = Visibility.Visible;
+                return;
+            }
+
+            int totalStudents = _students.Count;
+
+            // ----------------------------------------------------------
+            // A. Risk Level distribution. Normalize the raw RiskLevel
+            //    string so legacy "Cheating" rows fold into the
+            //    "POSSIBLE DISHONESTY" bucket and don't show up as a
+            //    separate slice in the chart.
+            // ----------------------------------------------------------
+            var riskData = _students
+                .GroupBy(p =>
+                {
+                    var normalized = AcademicSentinel.Client.Services.SAC.Models.RiskLevelDisplay
+                        .Normalize(p.RiskLevel);
+                    return string.IsNullOrWhiteSpace(normalized) ? "UNKNOWN" : normalized.ToUpperInvariant();
+                }, StringComparer.OrdinalIgnoreCase)
+                .Select(g => new MetricAnalyticItem
+                {
+                    Category = g.Key,
+                    Count    = g.Count(),
+                    Max      = totalStudents,
+                    BarBrush = BrushForRisk(g.Key)
+                })
+                .OrderByDescending(x => x.Count)
+                .ToList();
+            ArchiveRiskAnalyticsControl.ItemsSource = riskData;
+
+            // ----------------------------------------------------------
+            // B. Connection Quality distribution. Buckets are whatever
+            //    the server-side classifier emits: "Clean Connection",
+            //    "Reconnected", "Disconnected", or empty for rows that
+            //    never produced an event. Empty falls into "UNKNOWN" to
+            //    keep the bar chart readable.
+            // ----------------------------------------------------------
+            var connData = _students
+                .GroupBy(p => string.IsNullOrWhiteSpace(p.ConnectionQuality)
+                    ? "UNKNOWN"
+                    : p.ConnectionQuality.ToUpperInvariant(),
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(g => new MetricAnalyticItem
+                {
+                    Category = g.Key,
+                    Count    = g.Count(),
+                    Max      = totalStudents,
+                    BarBrush = BrushForConnection(g.Key)
+                })
+                .OrderByDescending(x => x.Count)
+                .ToList();
+            ArchiveConnectionAnalyticsControl.ItemsSource = connData;
+
+            // ----------------------------------------------------------
+            // C. Total Violations headline.
+            // ----------------------------------------------------------
+            int totalViolations        = _students.Sum(p => p.ViolationCount);
+            int studentsWithViolations = _students.Count(p => p.ViolationCount > 0);
+            if (TxtArchiveTotalViolations != null)
+                TxtArchiveTotalViolations.Text =
+                    $"{totalViolations} violation(s) recorded across {studentsWithViolations} of {totalStudents} student(s).";
+
+            if (TxtArchiveAnalyticsEmpty != null)
+                TxtArchiveAnalyticsEmpty.Visibility = Visibility.Collapsed;
+        }
+
+        private static System.Windows.Media.Brush BrushForRisk(string category)
+        {
+            // Critical red / warning orange / safe green — matches the
+            // colour vocabulary the Student Details pane and the live
+            // monitoring dashboard already use, so cross-window glances
+            // read consistently.
+            if (category.Equals("POSSIBLE DISHONESTY", StringComparison.OrdinalIgnoreCase)
+                || category.Equals("CHEATING",          StringComparison.OrdinalIgnoreCase))
+                return new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(211, 47, 47));
+            if (category.Equals("SUSPICIOUS", StringComparison.OrdinalIgnoreCase))
+                return new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(230, 81, 0));
+            return new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(27, 94, 32));
+        }
+
+        private static System.Windows.Media.Brush BrushForConnection(string category)
+        {
+            if (category.Equals("DISCONNECTED", StringComparison.OrdinalIgnoreCase))
+                return new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(198, 40, 40));
+            if (category.Equals("RECONNECTED", StringComparison.OrdinalIgnoreCase))
+                return new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(230, 81, 0));
+            // Clean Connection (or any positive category) → blue.
+            return new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(25, 118, 210));
+        }
+
+        /// <summary>
+        /// Row shape bound to the analytics ItemsControls. Count drives
+        /// the ProgressBar Value, Max drives Maximum, BarBrush colours
+        /// the bar per row.
+        /// </summary>
+        private sealed class MetricAnalyticItem
+        {
+            public string Category { get; set; }
+            public int Count { get; set; }
+            public int Max { get; set; }
+            public System.Windows.Media.Brush BarBrush { get; set; }
         }
     }
 }
