@@ -170,6 +170,20 @@ namespace AcademicSentinel.Client.Views.IMC
         // rejoin via the StudentJoinedOrReconnected handler.
         private readonly HashSet<int> _disconnectLoggedStudentIds = new();
         private readonly HashSet<int> _studentsWithViolations = new HashSet<int>();
+
+        // Per-student historical violation totals seeded from the
+        // /api/Reports/sessions/{sessionId}/students endpoint on rejoin.
+        // Without this carry-over, a brand-new LiveSessionMonitoringWindow
+        // built when the teacher comes back from a network drop starts
+        // every student at ViolationCount=0 — the in-memory counters live
+        // only on the destroyed previous window. The participant-row
+        // builder (LoadParticipantsFromServerAsync) consults this map
+        // when constructing fresh LiveStudentStatus rows so the displayed
+        // counts include events the server kept persisting while the
+        // teacher was offline. Live ReceiveViolationAlert increments are
+        // mirrored back into this dict so a subsequent 4-second
+        // participant refresh doesn't snap the row back to the seed.
+        private readonly Dictionary<int, int> _initialViolationCountsByStudentId = new();
         private readonly ConcurrentDictionary<int, ObservableCollection<StudentMonitoringEvent>> _studentLogs = new();
         private readonly List<IDisposable> _hubSubscriptions = new();
         private int? _selectedStudentId;
@@ -286,6 +300,39 @@ namespace AcademicSentinel.Client.Views.IMC
                 var students = await response.Content.ReadFromJsonAsync<List<HistoricalStudentDto>>();
                 if (students == null || students.Count == 0) return;
 
+                // ============================================================
+                // REHYDRATE PER-STUDENT VIOLATION TOTALS
+                // ============================================================
+                // The server's response already carries an aggregated
+                // ViolationCount per student (counted from MonitoringEvents
+                // in ReportsController). Seed the in-memory maps so the
+                // student tiles render the correct historical total
+                // immediately, and so the periodic participant refresh
+                // doesn't reset rows to 0 by overwriting freshly-built
+                // LiveStudentStatus objects with no ViolationCount.
+                foreach (var s in students)
+                {
+                    if (s.ViolationCount > 0)
+                    {
+                        _initialViolationCountsByStudentId[s.StudentId] = s.ViolationCount;
+                        _studentsWithViolations.Add(s.StudentId);
+                    }
+                }
+
+                // Apply the seed to any rows already constructed by the
+                // constructor's first LoadParticipantsFromServerAsync tick
+                // (which ran before this rehydration finished).
+                foreach (var liveRow in ActiveStudents)
+                {
+                    if (_initialViolationCountsByStudentId.TryGetValue(liveRow.StudentId, out var historical)
+                        && liveRow.ViolationCount < historical)
+                    {
+                        liveRow.ViolationCount = historical;
+                        liveRow.HasViolation = true;
+                    }
+                }
+                _studentsView.Refresh();
+
                 // Flatten the per-student log lists into a single timeline.
                 var timeline = students
                     .SelectMany(s => (s.Logs ?? new List<HistoricalLogDto>())
@@ -369,9 +416,14 @@ namespace AcademicSentinel.Client.Views.IMC
                     LogActivity(entry.Email ?? "SYSTEM", badge, description, color);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Best-effort replay — silently skip on transport failure.
+                // Surface the failure to the debug output so a broken
+                // historical-fetch (401 token expiry, 500 server error,
+                // network blip) doesn't silently leave the IMC showing
+                // "0 alerts" and a blank Global Log Feed forever.
+                System.Diagnostics.Debug.WriteLine(
+                    $"[LoadHistoricalLogsAsync] failed for session {sessionId}: {ex.Message}");
             }
         }
 
@@ -382,6 +434,10 @@ namespace AcademicSentinel.Client.Views.IMC
             public int StudentId { get; set; }
             public string Name { get; set; }
             public string Email { get; set; }
+            // Server already aggregates this in ReportsController.GetSessionStudents
+            // (lines ~239, 376). We read it so the IMC can rebuild per-student
+            // violation totals on rejoin instead of starting from zero.
+            public int ViolationCount { get; set; }
             public List<HistoricalLogDto> Logs { get; set; }
         }
         private sealed class HistoricalLogDto
@@ -1302,13 +1358,23 @@ namespace AcademicSentinel.Client.Views.IMC
                 _studentsWithViolations.Add(payload.StudentId);
                 AppendStudentMonitoringEvent(payload.StudentId, payload.EventType, payload.SeverityScore);
 
+                int increment = Math.Max(1, payload.SeverityScore);
                 if (targetStudent != null)
                 {
-                    targetStudent.ViolationCount += Math.Max(1, payload.SeverityScore);
+                    targetStudent.ViolationCount += increment;
                     targetStudent.HasViolation = true;
                     targetStudent.Status = $"ALERT: {payload.EventType}";
                     targetStudent.StatusColor = "#D32F2F";
                 }
+
+                // Mirror the live increment into the historical-seed map
+                // so the periodic participant refresh rebuilds the row
+                // with the running total instead of snapping back to
+                // whatever the server-side aggregate was at rejoin time.
+                if (_initialViolationCountsByStudentId.TryGetValue(payload.StudentId, out var prior))
+                    _initialViolationCountsByStudentId[payload.StudentId] = prior + increment;
+                else
+                    _initialViolationCountsByStudentId[payload.StudentId] = increment;
 
                 var violationMessage = string.IsNullOrWhiteSpace(payload.Description)
                     ? payload.EventType
@@ -2116,6 +2182,15 @@ namespace AcademicSentinel.Client.Views.IMC
                     // event re-asserted the flag.
                     bool isDoneRequested = _doneRequestedStudentIds.Contains(p.StudentId);
 
+                    // Seed ViolationCount from the historical aggregate
+                    // (populated by LoadHistoricalLogsAsync on rejoin).
+                    // Without this the periodic refresh would build the
+                    // row with ViolationCount=0 and clobber the historical
+                    // total every 4 seconds.
+                    int seededViolationCount = _initialViolationCountsByStudentId.TryGetValue(p.StudentId, out var hist)
+                        ? hist
+                        : 0;
+
                     ActiveStudents.Add(new LiveStudentStatus
                     {
                         StudentId = p.StudentId,
@@ -2126,7 +2201,8 @@ namespace AcademicSentinel.Client.Views.IMC
                             : (p.ProfileImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
                                 ? p.ProfileImageUrl
                                 : $"{ApiEndpoints.BaseUrl}{p.ProfileImageUrl}"),
-                        HasViolation = _studentsWithViolations.Contains(p.StudentId),
+                        ViolationCount = seededViolationCount,
+                        HasViolation = seededViolationCount > 0 || _studentsWithViolations.Contains(p.StudentId),
                         IsLeaveRequested = isLeaveRequested,
                         IsDoneRequested = isDoneRequested,
                         IsHandRaisePending = isHandRaisePending,
@@ -2159,6 +2235,13 @@ namespace AcademicSentinel.Client.Views.IMC
                     if (ActiveStudents.Any(s => s.StudentId == p.StudentId))
                         continue;
 
+                    // Same historical-seed treatment as the Connected
+                    // cohort above — a disconnected student may still
+                    // have prior violations the teacher needs to see.
+                    int seededDisconnectedViolations = _initialViolationCountsByStudentId.TryGetValue(p.StudentId, out var histDisc)
+                        ? histDisc
+                        : 0;
+
                     ActiveStudents.Add(new LiveStudentStatus
                     {
                         StudentId = p.StudentId,
@@ -2169,7 +2252,8 @@ namespace AcademicSentinel.Client.Views.IMC
                             : (p.ProfileImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
                                 ? p.ProfileImageUrl
                                 : $"{ApiEndpoints.BaseUrl}{p.ProfileImageUrl}"),
-                        HasViolation   = _studentsWithViolations.Contains(p.StudentId),
+                        ViolationCount = seededDisconnectedViolations,
+                        HasViolation   = seededDisconnectedViolations > 0 || _studentsWithViolations.Contains(p.StudentId),
                         IsDisconnected = true,
                         IsOffline      = true,
                         Status         = "Disconnected",
