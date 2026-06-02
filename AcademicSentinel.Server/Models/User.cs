@@ -50,4 +50,17 @@ public class User
     // participant row is already Connected.
     public bool IsLoggedIn { get; set; } = false;
     public DateTime? LastLoginAt { get; set; }
+
+    // Hardware binding for the single-device lock. Records the
+    // Environment.MachineName sent by the WPF client on its last
+    // successful login. AuthController.Login compares the incoming
+    // DeviceId against this value:
+    //   • Same machine → ghost-lock recovery (the client crashed /
+    //     was force-killed; relaunching on the original PC unblocks
+    //     instantly).
+    //   • Different machine → strict concurrent-login refusal until
+    //     the other device logs out or the stale-lock window elapses.
+    // Cleared by AuthController.Logout alongside IsLoggedIn so a
+    // clean sign-out allows the next device to claim the row.
+    public string? CurrentDeviceId { get; set; }
 }

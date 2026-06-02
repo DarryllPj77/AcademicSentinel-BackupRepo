@@ -49,97 +49,67 @@ public class AuthController : ControllerBase
         }
 
         // ============================================================
-        // SINGLE-DEVICE SESSION LOCK
+        // SINGLE-DEVICE SESSION LOCK (HARDWARE-BOUND)
         // ============================================================
         // Refuse a second concurrent login while the account row is
-        // already marked IsLoggedIn — BUT only when we can prove the
-        // user is genuinely active somewhere. Three layered defences
-        // keep the lock from permanently stranding a student whose
-        // client crashed:
+        // already marked IsLoggedIn. Lock identity is now the
+        // CurrentDeviceId (Environment.MachineName from the WPF
+        // client), not just a boolean — this closes the dashboard
+        // gap where the previous SessionParticipants-based check
+        // mistook a logged-in-but-idle user for a crashed one.
         //
-        //   (a) DisconnectService.HandleDisconnectAsync clears the
-        //       flag the moment the SAC's SignalR session is
-        //       finalized. Best-case, cleanest path.
+        // Decision flow on a contested login:
+        //   1. Stale-lock window (15 min) elapsed → reclaim silently.
+        //   2. Same DeviceId → ghost-lock recovery. The user's
+        //      previous session on THIS exact machine crashed; let
+        //      them back in and overwrite the lock.
+        //   3. Different DeviceId (or empty) → strict 409 refusal.
+        //      They must log out of the other device first or wait
+        //      out the stale window.
         //
-        //   (b) DYNAMIC PRESENCE CHECK (this block). If IsLoggedIn
-        //       is true we cross-check the live state in the
-        //       database: is there an actual SessionParticipant row
-        //       for this student with ConnectionStatus="Connected"
-        //       inside an Active ExamSession? If NOT, the IsLoggedIn
-        //       flag is a ghost (Task Manager / power loss / etc.)
-        //       and we silently overwrite it instead of rejecting.
-        //       For instructors, the equivalent check is whether
-        //       they currently own an Active ExamSession.
-        //
-        //   (c) Stale-lock window backstop — if even the presence
-        //       check is inconclusive (e.g. server restarted, all
-        //       rows torn down), a 15-minute LastLoginAt cutoff
-        //       still releases the row eventually.
-        //
-        // Order matters: (b) is checked BEFORE (c) so a freshly
-        // force-killed user (LastLoginAt < 15 min ago, no live
-        // participant row) is unblocked immediately rather than
-        // having to wait out the stale window.
+        // Backup defences still in play:
+        //   • DisconnectService.HandleDisconnectAsync clears the flag
+        //     when the SAC's SignalR session is finalized.
+        //   • The 15-minute stale-window backstop above releases
+        //     accounts whose disconnect path never fired.
         const int staleLockMinutes = 15;
         bool lockIsStale = user.LastLoginAt.HasValue
             && (DateTime.UtcNow - user.LastLoginAt.Value).TotalMinutes >= staleLockMinutes;
 
         if (user.IsLoggedIn && !lockIsStale)
         {
-            bool isActiveSomewhere;
-            if (string.Equals(user.Role, "Instructor", StringComparison.OrdinalIgnoreCase))
-            {
-                // Instructor presence = at least one ExamSession in
-                // Active status for a room they own. Matches the
-                // canonical activity rule used by RoomsController.
-                isActiveSomewhere = await _context.ExamSessions
-                    .AnyAsync(s => s.Status == "Active"
-                                   && _context.Rooms.Any(r => r.Id == s.RoomId && r.InstructorId == user.Id));
-            }
-            else
-            {
-                // Student presence = at least one participant row
-                // marked Connected inside an Active session. The
-                // ExamSession join is critical — without it, a stale
-                // "Connected" row from a long-completed session
-                // would falsely reassert the lock forever.
-                isActiveSomewhere = await _context.SessionParticipants
-                    .AnyAsync(p => p.StudentId == user.Id
-                                   && p.ConnectionStatus == "Connected"
-                                   && _context.ExamSessions.Any(s => s.RoomId == p.RoomId && s.Status == "Active"));
-            }
+            // Same physical machine — ghost recovery.
+            bool sameDevice = !string.IsNullOrWhiteSpace(loginDto.DeviceId)
+                && string.Equals(loginDto.DeviceId, user.CurrentDeviceId, StringComparison.OrdinalIgnoreCase);
 
-            if (isActiveSomewhere)
+            if (!sameDevice)
             {
                 _logger.LogWarning(
-                    "Login blocked for {Email} — verified active session elsewhere (LastLoginAt={LastLoginAt:O}).",
-                    user.Email, user.LastLoginAt);
+                    "Login blocked for {Email} — account locked to device '{CurrentDevice}', attempted from '{NewDevice}'.",
+                    user.Email,
+                    string.IsNullOrEmpty(user.CurrentDeviceId) ? "(unknown)" : user.CurrentDeviceId,
+                    string.IsNullOrEmpty(loginDto.DeviceId) ? "(unknown)" : loginDto.DeviceId);
                 return StatusCode(StatusCodes.Status409Conflict, new
                 {
                     code = "ALREADY_LOGGED_IN",
-                    message = "This account is currently active in a session on another device. Please log out of that device first."
+                    message = "This account is currently active on another device. Please log out of that device first."
                 });
             }
 
-            // Ghost lock detected. IsLoggedIn was stuck true because
-            // the client crashed / force-killed / lost power before
-            // /logout could fire — and DisconnectService never got
-            // to clear it because the SignalR drop also bypassed it
-            // (e.g. the server crashed too, or it fired before any
-            // participant row existed). Safe to overwrite: we have
-            // verified there is no real active session under this
-            // account. Logged at Information level so a spike in
-            // these events flags a higher rate of client crashes.
+            // Same machine — ghost-lock bypass. Logged at Info level
+            // so a spike in these events surfaces a higher rate of
+            // client crashes.
             _logger.LogInformation(
-                "Bypassing ghost lock for {Email} (id={UserId}) — no live participant / session row found. App was likely closed improperly.",
-                user.Email, user.Id);
+                "Ghost-lock bypass for {Email} (id={UserId}) — recovered from same device '{DeviceId}'.",
+                user.Email, user.Id, loginDto.DeviceId);
         }
 
-        // Claim the lock + stamp the time. The companion /logout
-        // endpoint clears IsLoggedIn; the stale-lock window above
-        // unblocks accounts that crashed without a clean logout.
-        user.IsLoggedIn  = true;
-        user.LastLoginAt = DateTime.UtcNow;
+        // Claim the lock, bind it to this device, stamp the time.
+        // Companion /logout clears all three; the stale-lock window
+        // releases accounts that never reached /logout.
+        user.IsLoggedIn       = true;
+        user.LastLoginAt      = DateTime.UtcNow;
+        user.CurrentDeviceId  = string.IsNullOrWhiteSpace(loginDto.DeviceId) ? null : loginDto.DeviceId;
         await _context.SaveChangesAsync();
 
         // PROTOTYPE: email-verification gate disabled because outbound
@@ -214,7 +184,8 @@ public class AuthController : ControllerBase
         var user = await _context.Users.FindAsync(userId);
         if (user != null)
         {
-            user.IsLoggedIn = false;
+            user.IsLoggedIn      = false;
+            user.CurrentDeviceId = null;   // release the hardware binding
             await _context.SaveChangesAsync();
             _logger.LogInformation("User {Email} logged out — single-device lock released.", user.Email);
         }

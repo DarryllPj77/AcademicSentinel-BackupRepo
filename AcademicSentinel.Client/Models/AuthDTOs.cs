@@ -14,6 +14,12 @@
     {
         public string Email { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
+
+        // Hardware binding for the single-device lock — sent as
+        // Environment.MachineName so the server can distinguish a
+        // ghost-lock recovery (same machine relaunching after a
+        // crash) from a concurrent-login attempt (different machine).
+        public string DeviceId { get; set; } = string.Empty;
     }
 
     public class UserRegisterDto

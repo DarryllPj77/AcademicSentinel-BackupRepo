@@ -72,7 +72,16 @@ namespace AcademicSentinel.Client.Services
             LastErrorMessage = null;
             try
             {
-                var loginData = new UserLoginDto { Email = email, Password = password };
+                // Environment.MachineName is the Windows PC hostname.
+                // Server uses it to enforce single-device login: same
+                // value on a contested login → ghost-lock recovery;
+                // different value → strict 409 refusal.
+                var loginData = new UserLoginDto
+                {
+                    Email    = email,
+                    Password = password,
+                    DeviceId = Environment.MachineName ?? string.Empty
+                };
 
                 // Now using ApiEndpoints.AuthLogin!
                 var response = await _httpClient.PostAsJsonAsync(ApiEndpoints.AuthLogin, loginData);

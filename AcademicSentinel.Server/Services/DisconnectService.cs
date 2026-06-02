@@ -243,7 +243,8 @@ public sealed class DisconnectService
             var userRow = await db.Users.FirstOrDefaultAsync(u => u.Id == studentId, ct);
             if (userRow != null && userRow.IsLoggedIn)
             {
-                userRow.IsLoggedIn = false;
+                userRow.IsLoggedIn      = false;
+                userRow.CurrentDeviceId = null;   // release the hardware binding too
                 _logger.LogInformation(
                     "[DisconnectService] Released login lock for studentId={StudentId} on disconnect.",
                     studentId);
