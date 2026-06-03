@@ -31,12 +31,27 @@ namespace AcademicSentinel.Client.Views.SAC
         private readonly DispatcherTimer _autoSyncTimer;
         private bool _isSyncInProgress;
 
+        // Live filter on the courses grid. Backed by the default
+        // ICollectionView so search runs purely as a visibility filter
+        // over the existing ObservableCollection — items are NEVER
+        // removed / re-added when the user types, which is what would
+        // otherwise destroy and recreate the WPF visuals and cause a
+        // joinable card to "jump" or lose its bound state.
+        private System.ComponentModel.ICollectionView _coursesView;
+        private string _courseSearchTerm = string.Empty;
+
         public StudentDashboard()
         {
             InitializeComponent();
 
             StudentCourses = new ObservableCollection<StudentCourseItem>();
-            StudentCoursesControl.ItemsSource = StudentCourses;
+
+            // Route rendering through the default ICollectionView so the
+            // search TextBox can attach a Filter predicate without
+            // mutating the underlying ObservableCollection.
+            _coursesView = System.Windows.Data.CollectionViewSource.GetDefaultView(StudentCourses);
+            _coursesView.Filter = CourseFilterPredicate;
+            StudentCoursesControl.ItemsSource = _coursesView;
 
             _autoSyncTimer = new DispatcherTimer
             {
@@ -246,8 +261,19 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private void UpdateEmptyState()
         {
-            if (EmptyCoursesState != null)
-                EmptyCoursesState.Visibility = StudentCourses.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (EmptyCoursesState == null) return;
+
+            // Hide the "No Courses Yet" placeholder when EITHER the
+            // collection has items OR a search term is active. When a
+            // search returns zero matches we still hide the placeholder
+            // because its copy ("Click 'Add' to enroll...") is misleading
+            // in that context — the user just typed something with no
+            // results. The empty WrapPanel is sufficient feedback.
+            bool hasAnyCourses = StudentCourses.Count > 0;
+            bool isSearching   = !string.IsNullOrEmpty(_courseSearchTerm);
+            EmptyCoursesState.Visibility = (hasAnyCourses || isSearching)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
         }
 
         // ======================== WAITING ROOM PANEL LOGIC ========================
@@ -377,6 +403,111 @@ namespace AcademicSentinel.Client.Views.SAC
             }
         }
 
+        // ============================================================
+        // SEARCH BAR — live filter handler.
+        // ============================================================
+        // Stores the current search term and asks the ICollectionView to
+        // re-run CourseFilterPredicate. The collection is NOT touched,
+        // so joinable cards keep their identity, position, and bound
+        // state (including the live "Joinable Now" / "In Progress,
+        // Reconnect NOW!" labels) across every keystroke.
+        private void TxtCourseSearch_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            _courseSearchTerm = TxtCourseSearch?.Text?.Trim() ?? string.Empty;
+            _coursesView?.Refresh();
+
+            if (FindName("BtnClearSearch") is Button clearBtn)
+                clearBtn.Visibility = string.IsNullOrEmpty(_courseSearchTerm)
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
+
+            UpdateEmptyState();
+        }
+
+        private void BtnClearSearch_Click(object sender, RoutedEventArgs e)
+        {
+            if (TxtCourseSearch != null)
+                TxtCourseSearch.Text = string.Empty;
+        }
+
+        // Case-insensitive match against course code (EnrollmentCode) and
+        // course name (SubjectName / RoomDescription). Empty term → all.
+        private bool CourseFilterPredicate(object o)
+        {
+            if (string.IsNullOrWhiteSpace(_courseSearchTerm)) return true;
+            if (o is not StudentCourseItem c) return false;
+
+            var term = _courseSearchTerm;
+            const StringComparison cmp = StringComparison.OrdinalIgnoreCase;
+
+            return (!string.IsNullOrEmpty(c.SubjectName)      && c.SubjectName.IndexOf(term, cmp)      >= 0)
+                || (!string.IsNullOrEmpty(c.EnrollmentCode)   && c.EnrollmentCode.IndexOf(term, cmp)   >= 0)
+                || (!string.IsNullOrEmpty(c.CourseDescription)&& c.CourseDescription.IndexOf(term, cmp) >= 0)
+                || (!string.IsNullOrEmpty(c.Section)          && c.Section.IndexOf(term, cmp)          >= 0);
+        }
+
+        // ============================================================
+        // IN-PLACE MERGE of server response into StudentCourses.
+        // ============================================================
+        // Previously this method did StudentCourses.Clear() + Add for
+        // every server tick. Every WPF visual was therefore unloaded and
+        // recreated every 8 seconds, which:
+        //   • shuffled card order (WrapPanel relayout flicker),
+        //   • dropped scroll / hover / focus state,
+        //   • briefly orphaned joinable cards while the new instance
+        //     re-bound (the "jumping to a different container" symptom).
+        //
+        // The merge below preserves StudentCourseItem instances by Id.
+        // Volatile properties (HasActiveSession, IsJoinable,
+        // StudentWasDisconnected, etc.) flow through their existing
+        // INotifyPropertyChanged setters, so the cards repaint in place.
+        // Only genuinely added / removed rows touch the collection.
+        private void MergeCoursesIntoCollection(List<StudentCourseItem> incoming)
+        {
+            if (incoming == null) incoming = new List<StudentCourseItem>();
+
+            // 1. Remove rows the server no longer reports.
+            var incomingIds = new HashSet<int>(incoming.Select(i => i.Id));
+            for (int i = StudentCourses.Count - 1; i >= 0; i--)
+            {
+                if (!incomingIds.Contains(StudentCourses[i].Id))
+                    StudentCourses.RemoveAt(i);
+            }
+
+            // 2. Update existing rows in place + append new ones.
+            for (int idx = 0; idx < incoming.Count; idx++)
+            {
+                var fresh = incoming[idx];
+                var existing = StudentCourses.FirstOrDefault(c => c.Id == fresh.Id);
+
+                if (existing == null)
+                {
+                    StudentCourses.Add(fresh);
+                    continue;
+                }
+
+                // Static fields — overwrite directly. These don't raise
+                // PropertyChanged, but they rarely change post-enrollment
+                // and the bindings refresh when the volatile flags below
+                // notify (any PropertyChanged on the item triggers WPF to
+                // re-pull dependent paths for that item).
+                existing.SubjectName     = fresh.SubjectName;
+                existing.Section         = fresh.Section;
+                existing.EnrollmentCode  = fresh.EnrollmentCode;
+                existing.Status          = fresh.Status;
+                existing.CourseImagePath = fresh.CourseImagePath;
+                existing.RoomDescription = fresh.RoomDescription;
+                existing.CreatedBy       = fresh.CreatedBy;
+
+                // Volatile session state — assigned through observable
+                // setters so the joinable label / colour repaints without
+                // removing the card from the WrapPanel.
+                existing.HasActiveSession        = fresh.HasActiveSession;
+                existing.StudentWasDisconnected  = fresh.StudentWasDisconnected;
+                existing.UpdateJoinStatus();
+            }
+        }
+
         private async Task LoadCoursesFromServer(bool showErrors = false)
         {
             if (_isSyncInProgress) return;
@@ -400,20 +531,28 @@ namespace AcademicSentinel.Client.Views.SAC
                 if (response.IsSuccessStatusCode)
                 {
                     var courses = await response.Content.ReadFromJsonAsync<List<StudentCourseItem>>();
-                    StudentCourses.Clear();
+
+                    // Normalise image URLs before merging so the existing
+                    // row's CourseImagePath comparison sees the full URL
+                    // and the in-place update is idempotent.
                     if (courses != null)
                     {
                         foreach (var c in courses)
                         {
-                            if (!string.IsNullOrEmpty(c.CourseImagePath) && !c.CourseImagePath.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                            if (!string.IsNullOrEmpty(c.CourseImagePath)
+                                && !c.CourseImagePath.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                             {
                                 c.CourseImagePath = $"{ApiEndpoints.BaseUrl}{c.CourseImagePath}";
                             }
-
-                            c.UpdateJoinStatus();
-                            StudentCourses.Add(c);
                         }
                     }
+
+                    MergeCoursesIntoCollection(courses);
+
+                    // Re-run the filter once the underlying collection has
+                    // settled so the visible set reflects both the latest
+                    // server data AND the current search term.
+                    _coursesView?.Refresh();
 
                     if (WaitingRoomPanel.Visibility == Visibility.Visible)
                     {

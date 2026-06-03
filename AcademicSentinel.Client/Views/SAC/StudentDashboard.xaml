@@ -585,6 +585,7 @@
                 <Grid x:Name="CoursesPanel" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -640,7 +641,55 @@
                         </Grid>
                     </Border>
 
-                    <ScrollViewer Grid.Row="1"
+                    <!-- Live search bar. Filters StudentCoursesControl
+                         through an ICollectionView attached in code-behind
+                         so the underlying ObservableCollection is never
+                         mutated — joinable cards keep their state and
+                         position when the filter is applied or cleared. -->
+                    <Border Grid.Row="1"
+                            Background="White"
+                            CornerRadius="12"
+                            Padding="14,10"
+                            Margin="0,0,0,16">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.05" Color="Black"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <materialDesign:PackIcon Grid.Column="0"
+                                                     Kind="Magnify"
+                                                     Width="22" Height="22"
+                                                     Foreground="{StaticResource FEUSubTextBrush}"
+                                                     VerticalAlignment="Center"
+                                                     Margin="2,0,10,0"/>
+
+                            <TextBox x:Name="TxtCourseSearch"
+                                     Grid.Column="1"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     FontSize="14"
+                                     VerticalContentAlignment="Center"
+                                     TextChanged="TxtCourseSearch_TextChanged"
+                                     materialDesign:HintAssist.Hint="Search by course name or code (e.g. Math 101, CS-301)"/>
+
+                            <Button x:Name="BtnClearSearch"
+                                    Grid.Column="2"
+                                    Style="{StaticResource FEUOutlineButton}"
+                                    Padding="10,6"
+                                    Click="BtnClearSearch_Click"
+                                    Visibility="Collapsed"
+                                    ToolTip="Clear search">
+                                <materialDesign:PackIcon Kind="Close" Width="16" Height="16"/>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="2"
                                   VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="StudentCoursesControl">
@@ -730,7 +779,7 @@
                     </ScrollViewer>
 
                     <StackPanel x:Name="EmptyCoursesState"
-                                Grid.Row="1"
+                                Grid.Row="2"
                                 VerticalAlignment="Center"
                                 HorizontalAlignment="Center"
                                 Visibility="Visible">
