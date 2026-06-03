@@ -1239,6 +1239,16 @@ namespace AcademicSentinel.Client.Views.IMC
                 if (targetStudent != null)
                 {
                     targetStudent.IsOffline = true;
+                    // IsDisconnected (NOT just IsOffline) is what the cohort
+                    // filter, SectionSortOrder, and the Disconnected-tab tally
+                    // in UpdateParticipantCount key off. Setting it live moves
+                    // the row into the Disconnected bucket immediately instead
+                    // of waiting for — or depending on — the 4-second poll to
+                    // rebuild the list. This is the fix for the "Disconnected
+                    // tab count stays at 0" bug: a count derived from a
+                    // collection does not refresh just because IsOffline
+                    // flipped; it must be recomputed after IsDisconnected is set.
+                    targetStudent.IsDisconnected = true;
                     targetStudent.Status = "Disconnected";
                     targetStudent.StatusColor = "#D32F2F";
                     targetStudent.IsLeaveRequested = false;
@@ -1261,6 +1271,13 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
 
                 _studentsView.Refresh();
+                // Recompute the per-tab tallies (Disconnected / Taking /
+                // Done / Finished). UpdateParticipantCount reads
+                // ActiveStudents.Count(s => s.IsDisconnected) and writes it
+                // into the Disconnected radio-button label, so it must run
+                // AFTER IsDisconnected is set above — otherwise the tab keeps
+                // showing the stale "Disconnected (0)".
+                UpdateParticipantCount();
             })));
 
             // Single registration only — the previous duplicate registration here

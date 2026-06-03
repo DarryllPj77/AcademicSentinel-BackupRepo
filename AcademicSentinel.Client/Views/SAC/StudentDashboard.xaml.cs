@@ -336,6 +336,28 @@ namespace AcademicSentinel.Client.Views.SAC
                 return;
             }
 
+            // SESSION-READINESS GUARD (crash fix).
+            // Opening the SecureAssessmentClientWindow requires a live
+            // identity — the SAC immediately uses SessionManager.CurrentUser
+            // / JwtToken to join the hub and report the student id. If the
+            // token expired or the in-memory session was cleared (e.g. a
+            // background 401 wiped it), constructing the softlock here would
+            // surface as a "user session not found"-style failure mid-init.
+            // Detect it up front and route the student cleanly to login
+            // instead of launching a window that can't authenticate.
+            if (SessionManager.CurrentUser == null
+                || (SessionManager.CurrentUser.Id) <= 0
+                || string.IsNullOrEmpty(SessionManager.JwtToken))
+            {
+                MessageBox.Show(
+                    "Your session is no longer valid. Please log in again to join the exam.",
+                    "Session Expired", MessageBoxButton.OK, MessageBoxImage.Warning);
+                SessionManager.Logout();
+                new LoginWindow().Show();
+                Close();
+                return;
+            }
+
             var assessmentClient = new SecureAssessmentClientWindow(_activeRoomId, _activeRoomTitle);
             assessmentClient.Show();
             this.Close();
