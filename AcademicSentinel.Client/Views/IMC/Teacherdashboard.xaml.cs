@@ -32,6 +32,63 @@ namespace AcademicSentinel.Client.Views.IMC
         // window state on every hop.
         internal static WindowState LastWindowState = WindowState.Normal;
 
+        // Connection-recovery banner state (mirror of StudentDashboard).
+        // null = unknown (first poll), true = last poll OK, false = offline.
+        // The offline→online edge is what triggers the "restored" toast and
+        // a one-shot room refresh so the IN PROGRESS rejoin chip updates.
+        private bool? _lastSyncSucceeded;
+        private System.Windows.Threading.DispatcherTimer _connectivityTimer;
+        private System.Windows.Threading.DispatcherTimer _connectionBannerHideTimer;
+
+        // Single-window recovery helper (mirror of StudentDashboard.
+        // ShowSingleInstance). Reuses an existing TeacherDashboard if one
+        // is already open — activating it — otherwise creates one. Used by
+        // every recovery path (IMC disconnect, RoomDetail back-nav) so a
+        // storm of overlapping events can never leave two teacher windows
+        // on screen.
+        public static TeacherDashboard ShowSingleInstance(bool landOnProfile = false)
+        {
+            TeacherDashboard existing = null;
+            try
+            {
+                if (Application.Current != null)
+                {
+                    foreach (Window w in Application.Current.Windows)
+                    {
+                        if (w is TeacherDashboard dash)
+                        {
+                            existing = dash;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                existing = null;
+            }
+
+            if (existing != null)
+            {
+                try
+                {
+                    if (existing.WindowState == WindowState.Minimized)
+                        existing.WindowState = LastWindowState;
+                    existing.Show();
+                    existing.Activate();
+                    existing.Topmost = true;
+                    existing.Topmost = false;
+                    existing.Focus();
+                }
+                catch { }
+                return existing;
+            }
+
+            var dashboard = new TeacherDashboard(landOnProfile);
+            dashboard.Show();
+            return dashboard;
+        }
+
         public TeacherDashboard() : this(landOnProfile: false) { }
 
         public TeacherDashboard(bool landOnProfile)
@@ -59,6 +116,133 @@ namespace AcademicSentinel.Client.Views.IMC
                 BtnRoomCourses.IsChecked = true;
                 ShowRoomCourses();
             }
+
+            // Lightweight connectivity heartbeat. Drives the offline/restored
+            // banner and refreshes rooms (the IN PROGRESS rejoin chip) on the
+            // online edge. Deliberately does NOT rebuild the course list on
+            // every tick — that would wipe checkbox selections and flicker
+            // the WrapPanel — it only re-fetches once when connectivity is
+            // regained.
+            _connectivityTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(8)
+            };
+            _connectivityTimer.Tick += async (_, __) => await CheckConnectivityAsync();
+            _connectivityTimer.Start();
+        }
+
+        // ============================================================
+        // CONNECTION-RECOVERY BANNER (teacher-side mirror of student)
+        // ============================================================
+        private async System.Threading.Tasks.Task CheckConnectivityAsync()
+        {
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", SessionManager.JwtToken);
+                var response = await client.GetAsync($"{ApiEndpoints.Rooms}/instructor");
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    // A non-success status (auth, 5xx) is a server-side
+                    // condition, not a connectivity loss — leave the banner
+                    // alone so we don't flap it on transient 401/500s.
+                    return;
+                }
+
+                bool wasOffline = _lastSyncSucceeded == false;
+                _lastSyncSucceeded = true;
+
+                if (!wasOffline)
+                {
+                    // Steady-state success — clear any stale banner without
+                    // popping the "restored" toast on every tick.
+                    HideConnectionBanner();
+                    return;
+                }
+
+                // Offline → online edge. Refresh rooms once so the IN
+                // PROGRESS rejoin chip reflects the resumable session, then
+                // tailor the restored copy accordingly.
+                await LoadCoursesFromServer();
+                bool hasResumable = Courses.Any(c => c.IsSessionInProgress);
+                ShowConnectionBanner(
+                    hasResumable
+                        ? "Internet connection restored — you can rejoin your in-progress session."
+                        : "Internet connection restored.",
+                    isError: false,
+                    autoHide: true);
+            }
+            catch
+            {
+                NotifyConnectionLost();
+            }
+        }
+
+        private void NotifyConnectionLost()
+        {
+            if (_lastSyncSucceeded == false)
+                return; // already showing the offline banner
+            _lastSyncSucceeded = false;
+            ShowConnectionBanner(
+                "No internet connection. Trying to reconnect…",
+                isError: true,
+                autoHide: false);
+        }
+
+        private void ShowConnectionBanner(string message, bool isError, bool autoHide)
+        {
+            _connectionBannerHideTimer?.Stop();
+
+            if (FindName("ConnectionBanner") is System.Windows.Controls.Border banner)
+            {
+                banner.Visibility = Visibility.Visible;
+                banner.Background = new System.Windows.Media.SolidColorBrush(isError
+                    ? System.Windows.Media.Color.FromRgb(0xFD, 0xEC, 0xEA)
+                    : System.Windows.Media.Color.FromRgb(0xE8, 0xF5, 0xE9));
+                banner.BorderBrush = new System.Windows.Media.SolidColorBrush(isError
+                    ? System.Windows.Media.Color.FromRgb(0xD3, 0x2F, 0x2F)
+                    : System.Windows.Media.Color.FromRgb(0x2E, 0x7D, 0x32));
+                banner.BorderThickness = new Thickness(1);
+            }
+            if (FindName("ConnectionBannerIcon") is MaterialDesignThemes.Wpf.PackIcon icon)
+            {
+                icon.Kind = isError
+                    ? MaterialDesignThemes.Wpf.PackIconKind.WifiOff
+                    : MaterialDesignThemes.Wpf.PackIconKind.Wifi;
+                icon.Foreground = new System.Windows.Media.SolidColorBrush(isError
+                    ? System.Windows.Media.Color.FromRgb(0xC6, 0x28, 0x28)
+                    : System.Windows.Media.Color.FromRgb(0x1B, 0x5E, 0x20));
+            }
+            if (FindName("TxtConnectionBanner") is System.Windows.Controls.TextBlock txt)
+            {
+                txt.Text = message;
+                txt.Foreground = new System.Windows.Media.SolidColorBrush(isError
+                    ? System.Windows.Media.Color.FromRgb(0xC6, 0x28, 0x28)
+                    : System.Windows.Media.Color.FromRgb(0x1B, 0x5E, 0x20));
+            }
+
+            if (autoHide)
+            {
+                _connectionBannerHideTimer = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(6)
+                };
+                _connectionBannerHideTimer.Tick += (_, __) =>
+                {
+                    _connectionBannerHideTimer?.Stop();
+                    HideConnectionBanner();
+                };
+                _connectionBannerHideTimer.Start();
+            }
+        }
+
+        private void HideConnectionBanner()
+        {
+            _connectionBannerHideTimer?.Stop();
+            if (FindName("ConnectionBanner") is System.Windows.Controls.Border banner)
+                banner.Visibility = Visibility.Collapsed;
         }
 
         private async void LoadUserData()

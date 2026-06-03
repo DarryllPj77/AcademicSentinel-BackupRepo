@@ -311,6 +311,37 @@ namespace AcademicSentinel.Client.Views.IMC
                         _initialViolationCountsByStudentId[s.StudentId] = s.ViolationCount;
                         _studentsWithViolations.Add(s.StudentId);
                     }
+
+                    // ============================================================
+                    // REHYDRATE PER-STUDENT LOG TIMELINE (fix "Alerts: 0")
+                    // ============================================================
+                    // The Student Details panel reads its alert count AND its
+                    // risk score from _studentLogs[studentId] (see
+                    // ParticipantRow_Click). The live path only fills that dict
+                    // via AppendStudentMonitoringEvent on incoming violations —
+                    // so after a rejoin the panel showed 0 alerts / SAFE even
+                    // though the Global Log Feed and the tile badge correctly
+                    // showed the persisted violations. Rebuild the per-student
+                    // violation timeline from the SAME canonical server logs so
+                    // the summary is recomputed from truth, not reset to zero.
+                    // Only SeverityScore-bearing entries are counted, matching
+                    // the live AppendStudentMonitoringEvent semantics.
+                    var violationLogs = (s.Logs ?? new List<HistoricalLogDto>())
+                        .Where(l => l.SeverityScore > 0)
+                        .OrderByDescending(l => l.Timestamp)
+                        .Select(l => new StudentMonitoringEvent
+                        {
+                            EventType = l.EventType ?? "VIOLATION",
+                            SeverityScore = l.SeverityScore
+                        })
+                        .ToList();
+
+                    if (violationLogs.Count > 0)
+                    {
+                        // Replace (don't append) so a second rejoin/hydration
+                        // pass can't double-count the same persisted history.
+                        _studentLogs[s.StudentId] = new ObservableCollection<StudentMonitoringEvent>(violationLogs);
+                    }
                 }
 
                 // Apply the seed to any rows already constructed by the
@@ -409,6 +440,13 @@ namespace AcademicSentinel.Client.Views.IMC
 
                     LogActivity(entry.Email ?? "SYSTEM", badge, description, color);
                 }
+
+                // If a student detail panel is already open when the
+                // historical hydration completes, recompute its alert
+                // count + risk from the freshly-populated _studentLogs so
+                // it reflects the persisted totals immediately (not 0).
+                if (_selectedStudentId.HasValue && _selectedStudentId.Value > 0)
+                    UpdateDetailPanelForIncomingViolation(_selectedStudentId.Value);
             }
             catch (Exception ex)
             {
@@ -1871,6 +1909,12 @@ namespace AcademicSentinel.Client.Views.IMC
         // Routes back to TeacherDashboard so the instructor lands on a
         // live, clickable surface and can re-enter the room manually
         // through the normal Setup flow once their network returns.
+        // True once a terminal disconnect has routed the instructor back to
+        // the dashboard. RoomDetailWindow's liveWindow.Closed handler reads
+        // this: when set, RoomDetail closes itself instead of re-showing,
+        // so we never end up with RoomDetail + TeacherDashboard both open.
+        public bool RoutedToDashboard { get; private set; }
+
         private void HandleInstructorDisconnect()
         {
             if (_isSessionEnded) return;
@@ -1878,15 +1922,22 @@ namespace AcademicSentinel.Client.Views.IMC
             _instructorDisconnectHandled = true;
 
             MessageBox.Show(
-                "Connection to the server was lost. Returning to the dashboard.",
+                "Connection to the server was lost. You will be returned to your dashboard.",
                 "Disconnected",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
 
+            // Mark BEFORE Close() so the RoomDetailWindow.Closed handler
+            // (which fires synchronously during Close) sees the flag and
+            // suppresses its re-show.
+            RoutedToDashboard = true;
+
             try
             {
-                var dashboard = new TeacherDashboard();
-                dashboard.Show();
+                // Single-instance navigation — reuse the existing dashboard
+                // if one survived, otherwise create exactly one. Prevents
+                // the duplicate teacher windows during recovery.
+                TeacherDashboard.ShowSingleInstance();
             }
             catch { /* best-effort surface — falling through to Close() either way */ }
 

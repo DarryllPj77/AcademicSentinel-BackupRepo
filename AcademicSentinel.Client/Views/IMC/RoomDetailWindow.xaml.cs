@@ -237,6 +237,17 @@ namespace AcademicSentinel.Client.Views.IMC
             this.Hide();
             liveWindow.Closed += async (_, __) =>
             {
+                // If the live window tore itself down because the
+                // instructor's connection dropped, it has already routed to
+                // a single TeacherDashboard. Re-showing this hidden
+                // RoomDetailWindow would put TWO teacher windows on screen,
+                // so close it instead.
+                if (liveWindow.RoutedToDashboard)
+                {
+                    try { this.Close(); } catch { }
+                    return;
+                }
+
                 this.Show();
                 await RefreshAfterLiveSessionClosedAsync();
             };
@@ -306,6 +317,14 @@ namespace AcademicSentinel.Client.Views.IMC
                 this.Hide();
                 liveWindow.Closed += async (_, __) =>
                 {
+                    // Same single-window guard as BtnRejoinSession_Click —
+                    // a disconnect teardown already opened one dashboard.
+                    if (liveWindow.RoutedToDashboard)
+                    {
+                        try { this.Close(); } catch { }
+                        return;
+                    }
+
                     this.Show();
                     await RefreshAfterLiveSessionClosedAsync();
                 };
