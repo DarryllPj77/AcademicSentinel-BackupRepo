@@ -108,20 +108,35 @@ namespace AcademicSentinel.Client.Views.IMC
         // flip this and call _studentsView.Refresh(). Default is Taking
         // so the instructor's primary attention is on active students.
         //
-        // Cohort semantics (mirrored in ParticipantFilterPredicate
-        // and UpdateParticipantCount so every surface agrees):
+        // Cohort semantics. The SINGLE source of truth is GetCohort(s)
+        // below — ParticipantFilterPredicate and UpdateParticipantCount
+        // both call it so the tab labels, the header pill, the missing
+        // line, and the visible rows can never disagree. Precedence
+        // (highest first):
+        //   ReqApproval  → IsJoinApprovalPending || (IsLeaveRequested && !IsDoneRequested && !IsDone)
+        //                  (join / rejoin / leave awaiting instructor action)
         //   Disconnected → IsDisconnected                (offline mid-session)
-        //   Taking       → !IsDisconnected && !IsDoneRequested && !IsDone
-        //   Done         → !IsDisconnected && IsDoneRequested && !IsDone (pending)
-        //   Finished     → !IsDisconnected && IsDone                     (approved)
-        // The four predicates partition the participant set exactly
-        // once — every row matches exactly one tab. Disconnected takes
-        // precedence so a student whose SAC drops while in Done/Finished
-        // is surfaced under the Disconnected tab (where the instructor
-        // is looking for them) rather than staying in their previous
-        // bucket.
-        private enum ParticipantFilterMode { Taking, Done, Finished, Disconnected }
+        //   Done         → IsDoneRequested && !IsDone     (Done pressed, pending approval)
+        //   Finished     → IsDone                         (approved)
+        //   Taking       → everything else                (active)
+        // Every row maps to exactly one cohort. ReqApproval outranks
+        // Disconnected so a disconnected student who actively requests a
+        // rejoin moves into Req Approval (where the Approve/Deny action
+        // lives) rather than sitting in Disconnected.
+        private enum ParticipantFilterMode { Taking, Done, Finished, Disconnected, ReqApproval }
         private ParticipantFilterMode _participantFilter = ParticipantFilterMode.Taking;
+
+        // Single cohort classifier. Order matters — first match wins.
+        private static ParticipantFilterMode GetCohort(LiveStudentStatus s)
+        {
+            bool isReqApproval = s.IsJoinApprovalPending
+                || (s.IsLeaveRequested && !s.IsDoneRequested && !s.IsDone);
+            if (isReqApproval) return ParticipantFilterMode.ReqApproval;
+            if (s.IsDisconnected) return ParticipantFilterMode.Disconnected;
+            if (s.IsDoneRequested && !s.IsDone) return ParticipantFilterMode.Done;
+            if (s.IsDone) return ParticipantFilterMode.Finished;
+            return ParticipantFilterMode.Taking;
+        }
 
         // The search box's lowercased current text. Kept as a field so
         // ParticipantFilterPredicate can read it without re-querying
@@ -132,30 +147,9 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (obj is not LiveStudentStatus s) return false;
 
-            // Four disjoint cohorts. Disconnected wins outright so a
-            // student whose SAC drops doesn't keep sitting in Taking
-            // / Done / Finished and surprise the instructor — they
-            // appear under the Disconnected tab the moment their
-            // participant row flips to ConnectionStatus="Disconnected".
-            // Done tab is ONLY the pending sub-state (where Approve/Deny
-            // live); Finished tab is the teacher-approved completed
-            // sub-state.
-            bool isDisconnected = s.IsDisconnected;
-            bool isPendingDone  = !isDisconnected && s.IsDoneRequested && !s.IsDone;
-            bool isFinished     = !isDisconnected && s.IsDone;
-            bool isTaking       = !isDisconnected && !isPendingDone && !isFinished;
-
-            bool cohortMatch = _participantFilter switch
-            {
-                ParticipantFilterMode.Disconnected => isDisconnected,
-                ParticipantFilterMode.Done         => isPendingDone,
-                ParticipantFilterMode.Finished     => isFinished,
-                // Default arm is Taking — covers ParticipantFilterMode.Taking
-                // and any future addition that hasn't been wired yet,
-                // erring on the safer "show active" side.
-                _                                  => isTaking,
-            };
-            if (!cohortMatch) return false;
+            // Single classifier keeps the visible rows in lock-step with
+            // the tab counts (both call GetCohort).
+            if (GetCohort(s) != _participantFilter) return false;
 
             if (string.IsNullOrEmpty(_participantSearchTerm)) return true;
             return !string.IsNullOrEmpty(s.Email)
@@ -534,6 +528,9 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void RbFilterDisconnected_Checked(object sender, RoutedEventArgs e)
             => SetParticipantFilter(ParticipantFilterMode.Disconnected);
+
+        private void RbFilterReqApproval_Checked(object sender, RoutedEventArgs e)
+            => SetParticipantFilter(ParticipantFilterMode.ReqApproval);
 
         // ============================================================
         // SESSION ANALYTIC MODE
@@ -1235,6 +1232,38 @@ namespace AcademicSentinel.Client.Views.IMC
                 string displayEmail = targetStudent?.Email
                     ?? _allParticipants?.FirstOrDefault(p => p.StudentId == studentId)?.StudentEmail
                     ?? "SYSTEM";
+
+                if (targetStudent == null)
+                {
+                    // RACE FIX: the row may be momentarily absent from
+                    // ActiveStudents (the 4 s poll just rebuilt the list, or
+                    // the IMC subscribed to the group before the first poll
+                    // landed). Materialize a disconnected row from the cached
+                    // /participants snapshot so the student appears in the
+                    // Disconnected tab IMMEDIATELY on the live event rather
+                    // than waiting for the next poll cycle. Mirrors what
+                    // StudentPendingApproval / HandRaiseRequested already do
+                    // for their own late-arriving events.
+                    var snap = _allParticipants?.FirstOrDefault(p => p.StudentId == studentId);
+                    if (snap != null)
+                    {
+                        int seededViolations = _initialViolationCountsByStudentId.TryGetValue(studentId, out var hist) ? hist : 0;
+                        targetStudent = new LiveStudentStatus
+                        {
+                            StudentId = studentId,
+                            Name = string.IsNullOrWhiteSpace(snap.StudentName) ? snap.StudentEmail : snap.StudentName,
+                            Email = snap.StudentEmail ?? string.Empty,
+                            ProfileImageUrl = string.IsNullOrWhiteSpace(snap.ProfileImageUrl)
+                                ? string.Empty
+                                : (snap.ProfileImageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                                    ? snap.ProfileImageUrl
+                                    : $"{ApiEndpoints.BaseUrl}{snap.ProfileImageUrl}"),
+                            ViolationCount = seededViolations,
+                            HasViolation = seededViolations > 0 || _studentsWithViolations.Contains(studentId)
+                        };
+                        ActiveStudents.Add(targetStudent);
+                    }
+                }
 
                 if (targetStudent != null)
                 {
@@ -2047,16 +2076,15 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private void UpdateParticipantCount()
         {
-            // Four disjoint buckets — exactly mirrors
-            // ParticipantFilterPredicate so the tab labels, the header
+            // Disjoint buckets — counted via the SAME GetCohort classifier
+            // ParticipantFilterPredicate uses, so the tab labels, the header
             // pill, the missing line, and the visible row counts never
-            // disagree. Disconnected wins outright so a dropped row
-            // is counted once under its own tab and never double-counted
-            // in Taking / Done / Finished.
-            int disconnectedCount = ActiveStudents.Count(s => s.IsDisconnected);
-            int takingCount       = ActiveStudents.Count(s => !s.IsDisconnected && !s.IsDoneRequested && !s.IsDone);
-            int doneCount         = ActiveStudents.Count(s => !s.IsDisconnected &&  s.IsDoneRequested && !s.IsDone);
-            int finishedCount     = ActiveStudents.Count(s => !s.IsDisconnected &&  s.IsDone);
+            // disagree and every row is counted in exactly one bucket.
+            int reqApprovalCount  = ActiveStudents.Count(s => GetCohort(s) == ParticipantFilterMode.ReqApproval);
+            int disconnectedCount = ActiveStudents.Count(s => GetCohort(s) == ParticipantFilterMode.Disconnected);
+            int takingCount       = ActiveStudents.Count(s => GetCohort(s) == ParticipantFilterMode.Taking);
+            int doneCount         = ActiveStudents.Count(s => GetCohort(s) == ParticipantFilterMode.Done);
+            int finishedCount     = ActiveStudents.Count(s => GetCohort(s) == ParticipantFilterMode.Finished);
 
             if (EmptyParticipantsState != null && ActiveStudents.Count > 0)
                 EmptyParticipantsState.Visibility = Visibility.Collapsed;
@@ -2067,12 +2095,12 @@ namespace AcademicSentinel.Client.Views.IMC
             TxtParticipantCount.Text = $"{takingCount}/{_enrolledCount}";
 
             // Missing = enrolled minus everyone we currently have on
-            // screen across all four buckets. Disconnected is shown
-            // inline so a glance at the header tells the teacher
-            // whether anyone has dropped offline mid-session.
-            var missing = Math.Max(0, _enrolledCount - takingCount - doneCount - finishedCount - disconnectedCount);
+            // screen across all buckets. Disconnected is shown inline so
+            // a glance at the header tells the teacher whether anyone has
+            // dropped offline mid-session.
+            var missing = Math.Max(0, _enrolledCount - takingCount - doneCount - finishedCount - disconnectedCount - reqApprovalCount);
             if (FindName("TxtMissingCount") is TextBlock txtMissing)
-                txtMissing.Text = $"Finished: {finishedCount} · Done: {doneCount} · Offline: {disconnectedCount} · Missing: {missing}";
+                txtMissing.Text = $"Finished: {finishedCount} · Done: {doneCount} · Offline: {disconnectedCount} · Req: {reqApprovalCount} · Missing: {missing}";
 
             // Refresh the filter-tab labels so each carries its own
             // running count without needing a binding converter.
@@ -2084,6 +2112,8 @@ namespace AcademicSentinel.Client.Views.IMC
                 rbFinished.Content = $"Finished ({finishedCount})";
             if (FindName("RbFilterDisconnected") is RadioButton rbDisconnected)
                 rbDisconnected.Content = $"Disconnected ({disconnectedCount})";
+            if (FindName("RbFilterReqApproval") is RadioButton rbReqApproval)
+                rbReqApproval.Content = $"Req Approval ({reqApprovalCount})";
         }
 
         // Tracks the last known ParticipationStatus per student between
@@ -3012,8 +3042,32 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
             }
         }
-        public bool IsLeaveRequested { get => _isLeaveRequested; set { _isLeaveRequested = value; OnPropertyChanged(); } }
-        public bool IsJoinApprovalPending { get => _isJoinApprovalPending; set { _isJoinApprovalPending = value; OnPropertyChanged(); } }
+        public bool IsLeaveRequested
+        {
+            get => _isLeaveRequested;
+            set
+            {
+                if (_isLeaveRequested == value) return;
+                _isLeaveRequested = value;
+                OnPropertyChanged();
+                // Feeds the Req Approval cohort — re-sort on change.
+                OnPropertyChanged(nameof(Section));
+                OnPropertyChanged(nameof(SectionSortOrder));
+            }
+        }
+        public bool IsJoinApprovalPending
+        {
+            get => _isJoinApprovalPending;
+            set
+            {
+                if (_isJoinApprovalPending == value) return;
+                _isJoinApprovalPending = value;
+                OnPropertyChanged();
+                // Drives the Req Approval cohort (join / rejoin pending).
+                OnPropertyChanged(nameof(Section));
+                OnPropertyChanged(nameof(SectionSortOrder));
+            }
+        }
 
         // True when this row represents a participant whose server-side
         // ConnectionStatus is "Disconnected" — surfaced under the
@@ -3067,17 +3121,23 @@ namespace AcademicSentinel.Client.Views.IMC
                 OnPropertyChanged(nameof(SectionSortOrder));
             }
         }
-        // Section / SectionSortOrder now split into four: Taking
-        // (active), Done (pending approval), Finished (approved),
-        // Disconnected (offline mid-session). Disconnected takes
-        // precedence — same rule as ParticipantFilterPredicate.
+        // Section / SectionSortOrder mirror the GetCohort precedence used
+        // by ParticipantFilterPredicate and UpdateParticipantCount:
+        // ReqApproval > Disconnected > Done > Finished > Taking. Kept in
+        // sync manually here (the model can't see the window's static
+        // helper) — any change to GetCohort must be reflected below.
+        private bool IsReqApprovalRow =>
+            _isJoinApprovalPending
+            || (_isLeaveRequested && !_isDoneRequested && !_isDone);
         public string Section =>
-            _isDisconnected   ? "Disconnected"
+            IsReqApprovalRow  ? "Req Approval"
+          : _isDisconnected   ? "Disconnected"
           : _isDone           ? "Finished"
           : _isDoneRequested  ? "Done"
           :                     "Taking";
         public int SectionSortOrder =>
-            _isDisconnected   ? 3
+            IsReqApprovalRow  ? 4
+          : _isDisconnected   ? 3
           : _isDone           ? 2
           : _isDoneRequested  ? 1
           :                     0;

@@ -1258,8 +1258,22 @@ public class RoomsController : ControllerBase
             .Select(g => g.OrderByDescending(p => p.JoinedAt).First())
             .ToDictionary(p => p.StudentId);
 
-        var leaveGrantedStudentIds = await _context.MonitoringEvents
-            .Where(e => e.RoomId == roomId && e.EventType == "LEAVE_GRANTED")
+        // Scope LEAVE_GRANTED to the CURRENT active session. A grant from a
+        // prior session in this same room must NOT mark the student as
+        // "Completed" in a new session — otherwise, every later disconnect
+        // for a student who finished once is rendered "Completed" and
+        // silently dropped from BOTH the Joined and Disconnected cohorts,
+        // so they never appear under the Disconnected tab (they fall into
+        // "Missing" instead). This mirrors the canonical session-scoped
+        // rule already used by RequestJoinSession (lastLeaveGranted is
+        // filtered by >= activeSession.StartTime there).
+        var leaveGrantedQuery = _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId && e.EventType == "LEAVE_GRANTED");
+        if (activeSession != null)
+        {
+            leaveGrantedQuery = leaveGrantedQuery.Where(e => e.Timestamp >= activeSession.StartTime);
+        }
+        var leaveGrantedStudentIds = await leaveGrantedQuery
             .Select(e => e.StudentId)
             .Distinct()
             .ToHashSetAsync();

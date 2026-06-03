@@ -515,10 +515,28 @@
                                              GroupName="ParticipantFilter"
                                              FontSize="11"
                                              FontWeight="SemiBold"
-                                             Margin="0,0,0,4"
+                                             Margin="0,0,6,4"
                                              Padding="10,4"
                                              Foreground="#D32F2F"
                                              Checked="RbFilterDisconnected_Checked"/>
+                                <!--
+                                    Req Approval cohort tab. Bucket for any
+                                    participant currently awaiting instructor
+                                    action: join requests, rejoin requests
+                                    (post-disconnect), and leave requests.
+                                    Driven by canonical request state
+                                    (IsJoinApprovalPending / IsLeaveRequested)
+                                    via GetCohort — no UI-only flags.
+                                -->
+                                <RadioButton x:Name="RbFilterReqApproval"
+                                             Content="Req Approval (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,0,4"
+                                             Padding="10,4"
+                                             Foreground="#FF9800"
+                                             Checked="RbFilterReqApproval_Checked"/>
                             </WrapPanel>
                         </Border>
 
