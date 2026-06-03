@@ -40,6 +40,54 @@ namespace AcademicSentinel.Client.Views.SAC
         private System.ComponentModel.ICollectionView _coursesView;
         private string _courseSearchTerm = string.Empty;
 
+        // Single-window recovery helper. Reuses the existing StudentDashboard
+        // in Application.Current.Windows if one is already open; otherwise
+        // creates a new instance. Used by SAC's disconnect/teardown paths so
+        // a storm of overlapping handlers (Closed event + JoinFailed +
+        // ForceDashboardReturn) cannot spawn duplicate dashboards.
+        public static StudentDashboard ShowSingleInstance()
+        {
+            StudentDashboard existing = null;
+            try
+            {
+                if (Application.Current != null)
+                {
+                    foreach (Window w in Application.Current.Windows)
+                    {
+                        if (w is StudentDashboard dash)
+                        {
+                            existing = dash;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                existing = null;
+            }
+
+            if (existing != null)
+            {
+                try
+                {
+                    if (existing.WindowState == WindowState.Minimized)
+                        existing.WindowState = WindowState.Normal;
+                    existing.Show();
+                    existing.Activate();
+                    existing.Topmost = true;
+                    existing.Topmost = false;
+                    existing.Focus();
+                }
+                catch { }
+                return existing;
+            }
+
+            var dashboard = new StudentDashboard();
+            dashboard.Show();
+            return dashboard;
+        }
+
         public StudentDashboard()
         {
             InitializeComponent();

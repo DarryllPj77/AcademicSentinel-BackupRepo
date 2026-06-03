@@ -1574,13 +1574,33 @@ public class RoomsController : ControllerBase
         // waiting-for-approval overlay (matches the existing client
         // contract in RequestJoinGateAsync).
         // ============================================================
-        if (latestParticipant != null
+        // Treat both "Disconnected" and stale "Completed" (no LEAVE_GRANTED
+        // exists at this point — the canonical completion check above
+        // already short-circuits true completions) as the same recoverable
+        // disconnect-rejoin state. This makes the rejoin pipeline
+        // deterministic regardless of which side healed first (hub
+        // JoinLiveExam's stale-Completed normalization or this REST path).
+        bool isStaleCompleted = latestParticipant != null
+            && string.Equals(latestParticipant.ConnectionStatus, "Completed", StringComparison.OrdinalIgnoreCase)
+            && latestParticipant.JoinedAt >= activeSession.StartTime;
+        bool isDisconnectedRejoin = latestParticipant != null
             && string.Equals(latestParticipant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
-            && latestParticipant.JoinedAt >= activeSession.StartTime)
+            && latestParticipant.JoinedAt >= activeSession.StartTime;
+
+        if (isDisconnectedRejoin || isStaleCompleted)
         {
             _logger.LogInformation(
-                "RequestJoinSession: processing manual rejoin for disconnected student {StudentId} in room {RoomId}.",
+                "RequestJoinSession: processing manual rejoin for {State} student {StudentId} in room {RoomId}.",
+                isStaleCompleted ? "stale-Completed" : "Disconnected",
                 studentId, roomId);
+
+            // Normalize a stale Completed row back to Disconnected so the
+            // IMC participant tile / status displays consistently.
+            if (isStaleCompleted)
+            {
+                latestParticipant.ConnectionStatus = "Disconnected";
+                latestParticipant.DisconnectedAt = DateTime.UtcNow;
+            }
 
             latestParticipant.JoinApprovalStatus = "Pending";
             latestParticipant.IsCurrentlyActive = false;

@@ -445,10 +445,42 @@ public class MonitoringHub : Hub
                 .OrderByDescending(p => p.JoinedAt)
                 .FirstOrDefaultAsync();
 
-            if (participant != null && participant.ConnectionStatus == "Completed")
+            // ============================================================
+            // STALE "Completed" NORMALIZATION (disconnect-rejoin fix).
+            //
+            // The canonical "exam finished" truth source is the
+            // LEAVE_GRANTED audit event, already enforced by the gate
+            // above. If we reach this point, no LEAVE_GRANTED exists for
+            // this active session — so a participant row marked
+            // ConnectionStatus="Completed" here is a stale write left
+            // over from a prior teardown, NOT a legitimate completion.
+            //
+            // Previously this branch hard-rejected the rejoin with
+            // "You have already completed and exited this active session.",
+            // which falsely failed legitimate disconnect→manual-rejoin
+            // flows. Heal the row to "Disconnected" instead so the
+            // existing disconnect-rejoin pipeline (REJOIN_REQ →
+            // instructor approval → REJOIN_APPROVED) handles it
+            // cleanly.
+            // ============================================================
+            if (participant != null
+                && string.Equals(participant.ConnectionStatus, "Completed", StringComparison.OrdinalIgnoreCase))
             {
-                await Clients.Caller.SendAsync("JoinFailed", "You have already completed and exited this active session.");
-                return;
+                _logger.LogWarning(
+                    "JoinLiveExam: normalizing stale Completed participant for studentId={StudentId} in room {RoomId} — no LEAVE_GRANTED present, routing through disconnect-rejoin gate.",
+                    studentId, roomId);
+
+                participant.ConnectionStatus = "Disconnected";
+                participant.DisconnectedAt = DateTime.UtcNow;
+                // Force the manual-rejoin path: clear any prior Approved
+                // flag so the ForceDashboardReturn gate below fires and
+                // the student lands in /request-join's REJOIN_REQ flow.
+                if (!string.Equals(participant.JoinApprovalStatus, "Approved", StringComparison.OrdinalIgnoreCase))
+                {
+                    participant.JoinApprovalStatus = "Pending";
+                }
+                participant.IsCurrentlyActive = false;
+                await _context.SaveChangesAsync();
             }
 
             _logger.LogInformation("JoinLiveExam: roomId={RoomId}, studentId={StudentId}, existingParticipant={Existing}, connectionStatus={ConnStatus}, approvalStatus={ApprovalStatus}",

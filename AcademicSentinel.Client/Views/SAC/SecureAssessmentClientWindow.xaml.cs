@@ -1343,7 +1343,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         MessageBox.Show($"Unable to join exam: {message}", "Join Failed", MessageBoxButton.OK, MessageBoxImage.Error);
                         _isLeaveApproved = true;
                         _ = ForceStopSignalRAsync();
-                        new StudentDashboard().Show();
+                        StudentDashboard.ShowSingleInstance();
                         Close();
                     });
                 });
@@ -1538,7 +1538,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         _isPermanentlyDone = true;
                         _isLeaveApproved = true;
 
-                        try { new StudentDashboard().Show(); } catch { }
+                        try { StudentDashboard.ShowSingleInstance(); } catch { }
                         Close();
                     });
                 });
@@ -1625,7 +1625,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         _allowClose = true;
                         _isPermanentlyDone = true;
                         _isLeaveApproved = true;
-                        try { new StudentDashboard().Show(); } catch { }
+                        try { StudentDashboard.ShowSingleInstance(); } catch { }
                         Close();
                     });
                 };
@@ -1651,7 +1651,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         try { _detectorRuntime?.Stop(); } catch { }
                         _allowClose = true;
                         _isLeaveApproved = true;
-                        try { new StudentDashboard().Show(); } catch { }
+                        try { StudentDashboard.ShowSingleInstance(); } catch { }
                         Close();
                     });
                 });
@@ -1753,7 +1753,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         _allowClose = true;
                         _isPermanentlyDone = true;
                         _isLeaveApproved = true;
-                        try { new StudentDashboard().Show(); } catch { }
+                        try { StudentDashboard.ShowSingleInstance(); } catch { }
                         Close();
                     });
                 });
@@ -1779,7 +1779,7 @@ namespace AcademicSentinel.Client.Views.SAC
                     MessageBox.Show($"Unable to connect session: {ex.Message}", "Connection Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     _isLeaveApproved = true;
                     _ = ForceStopSignalRAsync();
-                    new StudentDashboard().Show();
+                    StudentDashboard.ShowSingleInstance();
                     Close();
                 });
             }
@@ -2243,10 +2243,13 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private void ReturnToStudentDashboard()
         {
+            // Single-window recovery: reuse the open StudentDashboard if any,
+            // otherwise create one. Prevents duplicate dashboards when
+            // multiple disconnect paths (Closed event, JoinFailed,
+            // ForceDashboardReturn, SessionEnded) race against each other.
             try
             {
-                var dashboard = new StudentDashboard();
-                dashboard.Show();
+                StudentDashboard.ShowSingleInstance();
             }
             catch
             {
