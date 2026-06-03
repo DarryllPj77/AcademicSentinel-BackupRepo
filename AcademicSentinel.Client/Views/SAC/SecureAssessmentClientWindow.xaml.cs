@@ -66,6 +66,12 @@ namespace AcademicSentinel.Client.Views.SAC
 
         private ExamPhase _currentPhase = ExamPhase.PreSession;
         private bool _allowClose;
+
+        // One-shot guard: set when a terminal SignalR disconnect has
+        // already routed the student back to the dashboard, so the
+        // Closed event (which can fire more than once during teardown)
+        // can't pop a second dialog or open a second dashboard window.
+        private bool _disconnectRouted;
         private bool _isPermanentlyDone;
         private bool _isLeaveApproved;
         private bool _isHandlingFailure = false;
@@ -691,9 +697,19 @@ namespace AcademicSentinel.Client.Views.SAC
                     Timestamp = now
                 };
 
+                // CONNECTION-LOSS FAIRNESS GUARD.
+                // If the hub is not Connected the student is effectively
+                // offline. A behaviour detected in this window cannot be
+                // fairly attributed (they may have lost internet through no
+                // fault of their own) and — critically — must NEVER be
+                // replayed to the server on reconnect. Buffer-and-replay
+                // was the direct cause of the "queued violations bombard
+                // the instructor's feed when the line comes back" bug.
+                // Discard the event outright and tell the student why.
                 if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
                 {
-                    EnqueuePendingViolation(payload);
+                    DetectionReports.Insert(0,
+                        $"Not recorded — you appear to be offline: {eventType} ({DateTime.Now:h:mm:ss tt})");
                     return;
                 }
 
@@ -761,14 +777,6 @@ namespace AcademicSentinel.Client.Views.SAC
             }
         }
 
-        private void EnqueuePendingViolation(MonitoringEventDto payload)
-        {
-            while (_pendingViolationQueue.Count >= 50)
-                _pendingViolationQueue.Dequeue();
-
-            _pendingViolationQueue.Enqueue(payload);
-        }
-
         private static int ParseCurrentScore(string description)
         {
             if (string.IsNullOrWhiteSpace(description))
@@ -801,20 +809,15 @@ namespace AcademicSentinel.Client.Views.SAC
             return value.Trim();
         }
 
-        private async Task FlushPendingViolationsAsync()
+        // Drop every violation buffered while the hub was disconnected.
+        // Behaviour detected while the student was offline must never be
+        // replayed to the server on reconnect — doing so unfairly scored
+        // the student and flooded the instructor's live feed. Invoked on
+        // reconnect, on initial join, and on terminal disconnect so the
+        // queue can never leak an offline-window detection.
+        private void DiscardPendingViolations()
         {
-            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
-                return;
-
-            int studentId = SessionManager.CurrentUser?.Id ?? 0;
-            if (studentId <= 0)
-                return;
-
-            while (_pendingViolationQueue.Count > 0)
-            {
-                var payload = _pendingViolationQueue.Dequeue();
-                await _hubConnection.InvokeAsync("SendMonitoringEvent", _roomId, studentId, payload);
-            }
+            _pendingViolationQueue.Clear();
         }
 
         private static bool IsDescendantOf(DependencyObject child, DependencyObject parent)
@@ -923,7 +926,9 @@ namespace AcademicSentinel.Client.Views.SAC
             if (shouldJoin)
                 await _hubConnection.InvokeAsync("JoinLiveExam", _roomId);
 
-            await FlushPendingViolationsAsync();
+            // Never replay anything detected before this join handshake —
+            // it would have been buffered during an offline window.
+            DiscardPendingViolations();
 
             var monitoringState = await _hubConnection.InvokeAsync<bool>("GetMonitoringState", _roomId);
 
@@ -1022,7 +1027,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         var reconnectedStudentId = SessionManager.CurrentUser?.Id ?? 0;
                         if (reconnectedStudentId > 0)
                             await _hubConnection.InvokeAsync("ReSyncState", _roomId, reconnectedStudentId);
-                        await Dispatcher.InvokeAsync(async () => await FlushPendingViolationsAsync());
+                        await Dispatcher.InvokeAsync(DiscardPendingViolations);
 
                         // Restore the action buttons + drop the
                         // disconnect banner now that we're back online.
@@ -1065,17 +1070,26 @@ namespace AcademicSentinel.Client.Views.SAC
                     // join flag so the next genuine reconnect can rejoin once.
                     lock (_joinLiveExamLock) { _hasJoinedLiveExam = false; }
 
-                    // Proactively flip the softlock UI into its offline
-                    // state. Without this the student could be looking at
-                    // a stale "Monitoring: ACTIVE" indicator for several
-                    // seconds (until WithAutomaticReconnect either fires
-                    // Reconnected or the user tries to click a button).
-                    // ShowOwnDisconnectOverlay marshals to the UI thread
-                    // itself; if the session is already ending, the
-                    // banner / status writes are still safe but the
-                    // Reconnected handler / SessionEnded handler will
-                    // overwrite them with the correct final state.
-                    if (!_sessionEnded)
+                    // Defensive: never replay anything detected while the
+                    // connection was down.
+                    Dispatcher.InvokeAsync(DiscardPendingViolations);
+
+                    // `Closed` fires from WithAutomaticReconnect ONLY after
+                    // the full reconnect window (~45s) is exhausted, so it
+                    // is the terminal "connection truly lost" signal — not a
+                    // transient blip (those surface as Reconnecting and are
+                    // handled by ShowOwnDisconnectOverlay, keeping the
+                    // softlock armed so a momentary drop can't be abused).
+                    // On a genuine terminal drop, stop monitoring, notify
+                    // the student, and route them to the Student Dashboard
+                    // for a clean, instructor-approved manual rejoin instead
+                    // of leaving them trapped behind a frozen softlock.
+                    // Skipped when the close was intentional (session ended
+                    // or an explicit exit path already set _allowClose) —
+                    // those flows own their own teardown + navigation.
+                    if (!_sessionEnded && !_allowClose)
+                        Dispatcher.InvokeAsync(HandleTerminalDisconnect);
+                    else if (!_sessionEnded)
                         ShowOwnDisconnectOverlay();
 
                     return Task.CompletedTask;
@@ -2240,6 +2254,44 @@ namespace AcademicSentinel.Client.Views.SAC
             }
 
             this.Close();
+        }
+
+        // Terminal-disconnect bailout for the student softlock. Invoked
+        // (UI thread only) from the hub `Closed` event once
+        // WithAutomaticReconnect has exhausted its retry window — i.e. the
+        // internet is genuinely gone. One-shot via _disconnectRouted.
+        // Stops the detector runtime so nothing else is evaluated or
+        // queued, drops any offline-window detections, notifies the
+        // student, and routes them to the Student Dashboard. The
+        // participant row is already flipped to Disconnected server-side by
+        // DisconnectService, so the subsequent rejoin runs through the
+        // normal REST /request-join instructor-approval gate.
+        private void HandleTerminalDisconnect()
+        {
+            if (_disconnectRouted) return;
+            if (_sessionEnded || _allowClose) return;
+            _disconnectRouted = true;
+
+            // Halt the detector first so no further behaviour is evaluated
+            // or buffered while we tear the window down.
+            try { if (_detectorRuntime != null) _detectorRuntime.IsPaused = true; } catch { }
+            try { _detectorRuntime?.Stop(); } catch { }
+            _detectorsRunning = false;
+
+            // Offline-window detections must never reach the server.
+            DiscardPendingViolations();
+
+            MessageBox.Show(
+                "Connection to the server was lost and could not be restored.\n\n" +
+                "You will be returned to your dashboard. Re-open the course to rejoin the session.",
+                "Connection Lost",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+
+            // Bypass the OnClosing softlock guard — the session is
+            // unreachable, so trapping the student in the window is the bug.
+            _allowClose = true;
+            ReturnToStudentDashboard();
         }
 
         private void UpdateCompactCountdown()
