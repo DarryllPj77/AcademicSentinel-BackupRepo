@@ -212,6 +212,106 @@ public class RoomsController : ControllerBase
     private async Task<bool> EnsureRoomConsistencyAsync(int roomId)
         => (await GetLatestSessionStateAsync(roomId)).IsActive;
 
+    // ==========================================================
+    // CANONICAL STUDENT-FACING ROOM STATE
+    // ==========================================================
+    // One source of truth for "what should the student see / be allowed
+    // to do for this room right now". Every student-facing surface (the
+    // dashboard room card, the rejoin gate's ALREADY_CONNECTED guard,
+    // reconnect messaging) derives from this so they can never disagree.
+    //
+    //   NotJoinable        — no active session
+    //   Finished           — student completed this session (LEAVE_GRANTED)
+    //   PendingApproval    — a join/rejoin request is awaiting the teacher
+    //   ReconnectAvailable — student dropped (or their socket is dead) and
+    //                        may rejoin the still-active session
+    //   Connected          — student is genuinely live (fresh heartbeat)
+    //   Joinable           — active session, student has not joined yet
+    public enum StudentRoomState
+    {
+        NotJoinable,
+        Joinable,
+        PendingApproval,
+        ReconnectAvailable,
+        Connected,
+        Finished
+    }
+
+    // Heartbeat liveness is the AUTHORITATIVE "is the student actually in
+    // the live session right now" signal — the DB ConnectionStatus column
+    // lags by up to ~15 s (sweeper) / ~45 s (SignalR transport timeout).
+    // A student sitting on the dashboard has no live SAC, so no fresh
+    // heartbeat exists even if the DB still says "Connected".
+    private static bool IsStudentHeartbeatLive(int roomId, int studentId)
+    {
+        var cutoff = DateTime.UtcNow.AddSeconds(-15);
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId == roomId
+                && kv.Value.StudentId == studentId
+                && kv.Value.LastBeat >= cutoff)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Maps participant + session + heartbeat into the canonical state.
+    // Read-only (no DB writes) so it is safe to call from any GET.
+    private async Task<StudentRoomState> ComputeStudentRoomStateAsync(int roomId, int studentId, LatestSessionState state)
+    {
+        if (!state.IsActive || state.Latest == null)
+            return StudentRoomState.NotJoinable;
+
+        var activeSession = state.Latest;
+
+        // True completion is an explicit LEAVE_GRANTED in THIS session —
+        // the same canonical rule the rejoin gate uses. A bare
+        // ConnectionStatus="Completed" without this event is a stale
+        // write and must NOT count as Finished (it reconciles to
+        // ReconnectAvailable below).
+        bool finished = await _context.MonitoringEvents.AnyAsync(e =>
+            e.RoomId == roomId
+            && e.StudentId == studentId
+            && e.EventType == "LEAVE_GRANTED"
+            && e.Timestamp >= activeSession.StartTime);
+        if (finished) return StudentRoomState.Finished;
+
+        var participant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId
+                        && p.StudentId == studentId
+                        && p.JoinedAt >= activeSession.StartTime)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+
+        if (participant == null)
+            return StudentRoomState.Joinable; // active session, never joined yet
+
+        if (string.Equals(participant.JoinApprovalStatus, "Pending", StringComparison.OrdinalIgnoreCase))
+            return StudentRoomState.PendingApproval;
+
+        if (string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
+            return StudentRoomState.ReconnectAvailable;
+
+        if (string.Equals(participant.ConnectionStatus, "Connected", StringComparison.OrdinalIgnoreCase))
+        {
+            // Reconcile stale "Connected": no live heartbeat means the SAC
+            // is gone, so the student is reconnect-eligible — never
+            // "Connected" and never ALREADY_CONNECTED.
+            return IsStudentHeartbeatLive(roomId, studentId)
+                ? StudentRoomState.Connected
+                : StudentRoomState.ReconnectAvailable;
+        }
+
+        // ConnectionStatus="Completed" but no LEAVE_GRANTED → stale write,
+        // treat as reconnect-eligible (matches MonitoringHub normalization).
+        if (string.Equals(participant.ConnectionStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+            return StudentRoomState.ReconnectAvailable;
+
+        return StudentRoomState.Joinable;
+    }
+
     private async Task SaveSilentlyAsync()
     {
         try { await _context.SaveChangesAsync(); } catch { /* best-effort heal */ }
@@ -1556,14 +1656,48 @@ public class RoomsController : ControllerBase
             && string.Equals(latestParticipant.ConnectionStatus, "Connected", StringComparison.OrdinalIgnoreCase)
             && latestParticipant.JoinedAt >= activeSession.StartTime)
         {
-            _logger.LogWarning(
-                "RequestJoinSession: blocked concurrent join for student {StudentId} in session {SessionId} — participant row is already Connected.",
-                studentId, activeSession.Id);
-            return StatusCode(StatusCodes.Status409Conflict, new
+            // ALREADY_CONNECTED must reflect a GENUINELY live connection,
+            // not a stale DB row. A student sitting on the dashboard has
+            // no live SAC, so no fresh heartbeat exists — even though the
+            // row may still read "Connected" because the disconnect hasn't
+            // been detected yet (≤15 s sweeper / ≤45 s SignalR timeout).
+            // Only block when a fresh heartbeat proves they are truly in
+            // the live session from another device.
+            if (IsStudentHeartbeatLive(roomId, studentId))
             {
-                code = "ALREADY_CONNECTED",
-                message = "Your account is already actively connected to this exam from another device."
+                _logger.LogWarning(
+                    "RequestJoinSession: blocked concurrent join for student {StudentId} in session {SessionId} — live heartbeat present.",
+                    studentId, activeSession.Id);
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    code = "ALREADY_CONNECTED",
+                    message = "Your account is already actively connected to this exam from another device."
+                });
+            }
+
+            // Stale "Connected" with no heartbeat: the SAC is gone.
+            // Reconcile to Disconnected here and DO NOT return — execution
+            // falls through to the disconnected-rejoin gate below, which
+            // routes the student through the normal instructor-approval
+            // pipeline. This is the fix for "ALREADY_CONNECTED when
+            // rejoining from the dashboard after a drop".
+            _logger.LogInformation(
+                "RequestJoinSession: reconciling stale Connected→Disconnected for student {StudentId} (no live heartbeat) before rejoin gate.",
+                studentId);
+            latestParticipant.ConnectionStatus   = "Disconnected";
+            latestParticipant.DisconnectedAt      = DateTime.UtcNow;
+            latestParticipant.JoinApprovalStatus  = "Pending";
+            latestParticipant.IsCurrentlyActive   = false;
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                RoomId = roomId,
+                StudentId = studentId,
+                EventType = "STUDENT_DISCONNECTED",
+                Description = "Student connection lost (no heartbeat) — detected on dashboard rejoin.",
+                SeverityScore = 0,
+                Timestamp = DateTime.UtcNow
             });
+            await _context.SaveChangesAsync();
         }
 
         // ============================================================
@@ -1857,33 +1991,20 @@ public class RoomsController : ControllerBase
             .Where(u => instructorIds.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id, u => !string.IsNullOrWhiteSpace(u.FullName) ? u.FullName : u.Email);
 
-        // Run the canonical helper per room. HasActiveSession below is
-        // derived from the latest session — orphan rows from older
-        // sessions can never make the tile say "Joinable" again.
+        // Run the canonical helper per room. HasActiveSession is derived
+        // from the latest session (orphan rows from older sessions can
+        // never make the tile say "Joinable" again), and the per-room
+        // student state comes from the SINGLE canonical classifier so the
+        // card CTA, the rejoin gate, and reconnect messaging all agree.
         var activeSessionsByRoom = new Dictionary<int, ExamSession>();
+        var roomStateByRoom = new Dictionary<int, StudentRoomState>();
         foreach (var room in rooms)
         {
             var state = await GetLatestSessionStateAsync(room.Id);
             if (state.CanStudentsJoin && state.Latest != null)
                 activeSessionsByRoom[room.Id] = state.Latest;
-        }
 
-        var disconnectedByRoom = new Dictionary<int, bool>();
-        foreach (var room in rooms)
-        {
-            if (!activeSessionsByRoom.TryGetValue(room.Id, out var activeSession))
-            {
-                disconnectedByRoom[room.Id] = false;
-                continue;
-            }
-            var participant = await _context.SessionParticipants
-                .Where(p => p.RoomId == room.Id
-                            && p.StudentId == studentId
-                            && p.JoinedAt >= activeSession.StartTime)
-                .OrderByDescending(p => p.JoinedAt)
-                .FirstOrDefaultAsync();
-            disconnectedByRoom[room.Id] = participant != null
-                && string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase);
+            roomStateByRoom[room.Id] = await ComputeStudentRoomStateAsync(room.Id, studentId, state);
         }
 
         var result = rooms.Select(r =>
@@ -1902,7 +2023,13 @@ public class RoomsController : ControllerBase
             }
 
             bool hasActiveSession = activeSessionsByRoom.ContainsKey(r.Id);
-            bool studentWasDisconnected = disconnectedByRoom.TryGetValue(r.Id, out var d) && d;
+            var roomState = roomStateByRoom.TryGetValue(r.Id, out var rs) ? rs : StudentRoomState.NotJoinable;
+
+            // "Reconnect Now" is shown whenever the canonical state is
+            // ReconnectAvailable — this includes a stale "Connected" row
+            // with no live heartbeat, which previously left the card stuck
+            // on the generic "Joinable Now".
+            bool studentWasDisconnected = roomState == StudentRoomState.ReconnectAvailable;
 
             return new
             {
@@ -1915,7 +2042,10 @@ public class RoomsController : ControllerBase
                 RoomDescription = r.SubjectName,
                 CreatedBy = instructors.TryGetValue(r.InstructorId, out var creator) ? creator : "Unknown Instructor",
                 HasActiveSession = hasActiveSession,
-                StudentWasDisconnected = studentWasDisconnected
+                StudentWasDisconnected = studentWasDisconnected,
+                // Canonical state string for clients that want to drive
+                // richer CTA logic without re-deriving from booleans.
+                RoomState = roomState.ToString()
             };
         })
             .ToList();

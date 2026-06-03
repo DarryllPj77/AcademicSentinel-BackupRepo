@@ -586,10 +586,33 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <Border Grid.Row="0"
+                    <!-- Connection-recovery banner. Hidden normally; shows
+                         "No connection" while the dashboard poll is failing
+                         and "Connection restored — you can rejoin..." once
+                         the network returns. Colours set in code-behind. -->
+                    <Border x:Name="ConnectionBanner" Grid.Row="0"
+                            Visibility="Collapsed"
+                            CornerRadius="10"
+                            Padding="16,10"
+                            Margin="0,0,0,16">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <materialDesign:PackIcon x:Name="ConnectionBannerIcon"
+                                                     Kind="WifiOff"
+                                                     Width="20" Height="20"
+                                                     VerticalAlignment="Center"
+                                                     Margin="0,0,10,0"/>
+                            <TextBlock x:Name="TxtConnectionBanner"
+                                       VerticalAlignment="Center"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1"
                             Background="White"
                             CornerRadius="12"
                             Padding="20,14"
@@ -646,7 +669,7 @@
                          so the underlying ObservableCollection is never
                          mutated — joinable cards keep their state and
                          position when the filter is applied or cleared. -->
-                    <Border Grid.Row="1"
+                    <Border Grid.Row="2"
                             Background="White"
                             CornerRadius="12"
                             Padding="14,10"
@@ -689,7 +712,7 @@
                         </Grid>
                     </Border>
 
-                    <ScrollViewer Grid.Row="2"
+                    <ScrollViewer Grid.Row="3"
                                   VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="StudentCoursesControl">

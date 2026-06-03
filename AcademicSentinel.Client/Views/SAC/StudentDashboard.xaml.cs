@@ -40,6 +40,13 @@ namespace AcademicSentinel.Client.Views.SAC
         private System.ComponentModel.ICollectionView _coursesView;
         private string _courseSearchTerm = string.Empty;
 
+        // Connection-recovery banner state. null = unknown (first load),
+        // true = last poll succeeded, false = last poll failed (offline).
+        // Used to detect the offline→online edge so we can surface the
+        // "Connection restored — you can rejoin" message exactly once.
+        private bool? _lastSyncSucceeded;
+        private DispatcherTimer _connectionBannerHideTimer;
+
         // Single-window recovery helper. Reuses the existing StudentDashboard
         // in Application.Current.Windows if one is already open; otherwise
         // creates a new instance. Used by SAC's disconnect/teardown paths so
@@ -624,6 +631,9 @@ namespace AcademicSentinel.Client.Views.SAC
                     // server data AND the current search term.
                     _coursesView?.Refresh();
 
+                    // Connectivity edge: poll just succeeded.
+                    NotifyConnectionRestored();
+
                     if (WaitingRoomPanel.Visibility == Visibility.Visible)
                     {
                         var activeRoom = StudentCourses.FirstOrDefault(c => c.Id == _activeRoomId);
@@ -660,6 +670,12 @@ namespace AcademicSentinel.Client.Views.SAC
             }
             catch
             {
+                // Network/connection failure — surface the persistent
+                // "No connection" banner. The student stays on the
+                // dashboard (the recovery surface) and the next successful
+                // 8 s poll flips this to "Connection restored".
+                NotifyConnectionLost();
+
                 if (showErrors)
                 {
                     MessageBox.Show("Connection error while refreshing courses.", "Connection Error", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -670,6 +686,100 @@ namespace AcademicSentinel.Client.Views.SAC
                 _isSyncInProgress = false;
                 UpdateEmptyState();
             }
+        }
+
+        // ============================================================
+        // CONNECTION-RECOVERY BANNER
+        // ============================================================
+        // Driven purely by the real outcome of the periodic course poll,
+        // so the messaging is always tied to actual connectivity:
+        //   • poll fails        → red "No connection" (persistent)
+        //   • poll succeeds again after a failure → green
+        //     "Connection restored — you can rejoin the in-progress
+        //     session now" (auto-hides after a few seconds)
+        private void NotifyConnectionLost()
+        {
+            if (_lastSyncSucceeded == false)
+                return; // already showing the offline banner
+
+            _lastSyncSucceeded = false;
+            ShowConnectionBanner(
+                "No connection. Trying to reconnect…",
+                isError: true,
+                autoHide: false);
+        }
+
+        private void NotifyConnectionRestored()
+        {
+            bool wasOffline = _lastSyncSucceeded == false;
+            _lastSyncSucceeded = true;
+
+            if (!wasOffline)
+            {
+                // Steady-state success — make sure no stale offline banner
+                // lingers, but don't pop the "restored" toast on every poll.
+                HideConnectionBanner();
+                return;
+            }
+
+            // Offline→online edge. If a session is in progress the student
+            // can rejoin; tailor the copy accordingly.
+            bool hasJoinableSession = StudentCourses.Any(c => c.HasActiveSession);
+            string message = hasJoinableSession
+                ? "Connection restored — you can rejoin the in-progress session now."
+                : "Connection restored.";
+            ShowConnectionBanner(message, isError: false, autoHide: true);
+        }
+
+        private void ShowConnectionBanner(string message, bool isError, bool autoHide)
+        {
+            _connectionBannerHideTimer?.Stop();
+
+            if (FindName("ConnectionBanner") is Border banner)
+            {
+                banner.Visibility = Visibility.Visible;
+                banner.Background = isError
+                    ? new SolidColorBrush(Color.FromRgb(0xFD, 0xEC, 0xEA))  // soft red
+                    : new SolidColorBrush(Color.FromRgb(0xE8, 0xF5, 0xE9)); // soft green
+                banner.BorderBrush = isError
+                    ? new SolidColorBrush(Color.FromRgb(0xD3, 0x2F, 0x2F))
+                    : new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
+                banner.BorderThickness = new Thickness(1);
+            }
+            if (FindName("ConnectionBannerIcon") is MaterialDesignThemes.Wpf.PackIcon icon)
+            {
+                icon.Kind = isError
+                    ? MaterialDesignThemes.Wpf.PackIconKind.WifiOff
+                    : MaterialDesignThemes.Wpf.PackIconKind.Wifi;
+                icon.Foreground = new SolidColorBrush(isError
+                    ? Color.FromRgb(0xC6, 0x28, 0x28)
+                    : Color.FromRgb(0x1B, 0x5E, 0x20));
+            }
+            if (FindName("TxtConnectionBanner") is TextBlock txt)
+            {
+                txt.Text = message;
+                txt.Foreground = new SolidColorBrush(isError
+                    ? Color.FromRgb(0xC6, 0x28, 0x28)
+                    : Color.FromRgb(0x1B, 0x5E, 0x20));
+            }
+
+            if (autoHide)
+            {
+                _connectionBannerHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+                _connectionBannerHideTimer.Tick += (_, __) =>
+                {
+                    _connectionBannerHideTimer?.Stop();
+                    HideConnectionBanner();
+                };
+                _connectionBannerHideTimer.Start();
+            }
+        }
+
+        private void HideConnectionBanner()
+        {
+            _connectionBannerHideTimer?.Stop();
+            if (FindName("ConnectionBanner") is Border banner)
+                banner.Visibility = Visibility.Collapsed;
         }
 
         private async void BtnUpdateProfile_Click(object sender, RoutedEventArgs e)
@@ -812,6 +922,12 @@ namespace AcademicSentinel.Client.Views.SAC
         public string CourseImagePath { get; set; } = string.Empty;
         public string RoomDescription { get; set; } = string.Empty;
         public string CreatedBy { get; set; } = string.Empty;
+        // Canonical server-computed state string (NotJoinable / Joinable /
+        // PendingApproval / ReconnectAvailable / Connected / Finished).
+        // Captured for clients that want richer CTA logic; the existing
+        // HasActiveSession + StudentWasDisconnected flags already drive the
+        // card text and are derived server-side from this same state.
+        public string RoomState { get; set; } = string.Empty;
         // Server-derived state — IsJoinable, HasActiveSession,
         // StudentWasDisconnected all raise PropertyChanged on the
         // computed tile labels (JoinStatusText / JoinStatusColor) so the
