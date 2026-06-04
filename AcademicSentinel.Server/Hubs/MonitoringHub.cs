@@ -814,19 +814,49 @@ public class MonitoringHub : Hub
             userIdString ?? "(null)", role ?? "(null)", Context.ConnectionId,
             exception?.GetType().Name ?? "(none)");
 
-        if (string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase)
-            && userIdString != null
-            && int.TryParse(userIdString, out var instructorId))
+        // ROBUST INSTRUCTOR DETECTION.
+        //
+        // On an ABRUPT drop (internet loss, power loss, force-close) SignalR
+        // often delivers OnDisconnectedAsync with an EMPTY Context.User — the
+        // JWT claims aren't available — so gating purely on the Role claim
+        // silently skipped the entire teacher-disconnect path. That is why a
+        // real teacher internet drop produced NO student notification, NO
+        // rejoin banner, and NO "IN PROGRESS" pill: the room was never flagged.
+        //
+        // Fallback: the JoinRoom-populated _activeInstructorConnections map
+        // (ConnectionId → roomId) reliably identifies an instructor connection
+        // regardless of claim availability — mirroring the student branch's
+        // _activeStudentConnections fallback.
+        bool connIsInstructor = _activeInstructorConnections.TryGetValue(Context.ConnectionId, out var mappedInstructorRoomId);
+        bool roleIsInstructor = string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase);
+
+        if (roleIsInstructor || connIsInstructor)
         {
+            // Drain this connection from the presence map up-front.
+            _activeInstructorConnections.TryRemove(Context.ConnectionId, out _);
+
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
             try
             {
-                var activeRoom = await db.Rooms
-                    .Where(r => r.InstructorId == instructorId && r.Status == "Active")
-                    .OrderByDescending(r => r.Id)
-                    .FirstOrDefaultAsync();
+                // Resolve the room. Prefer the connection map (reliable on
+                // abrupt drops); fall back to the instructor's active room via
+                // claims when available.
+                Room activeRoom = null;
+                if (connIsInstructor)
+                {
+                    activeRoom = await db.Rooms.FindAsync(mappedInstructorRoomId);
+                }
+                if (activeRoom == null
+                    && userIdString != null
+                    && int.TryParse(userIdString, out var instructorId))
+                {
+                    activeRoom = await db.Rooms
+                        .Where(r => r.InstructorId == instructorId && r.Status == "Active")
+                        .OrderByDescending(r => r.Id)
+                        .FirstOrDefaultAsync();
+                }
 
                 if (activeRoom != null)
                 {
@@ -874,8 +904,9 @@ public class MonitoringHub : Hub
                     // gone after InstructorDisconnectGrace (no reconnecting
                     // JoinRoom cancelled it and no live connection remains) do
                     // we flag the room and tell students. A reconnect within
-                    // the window means students never see anything.
-                    _activeInstructorConnections.TryRemove(Context.ConnectionId, out _);
+                    // the window means students never see anything. (The
+                    // connection was already removed from the presence map at
+                    // the top of this branch.)
                     ScheduleInstructorDisconnectGraceCheck(activeRoom.Id);
                 }
             }

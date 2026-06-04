@@ -3081,8 +3081,9 @@ namespace AcademicSentinel.Client.Views.IMC
                 return;
             }
 
-            if (!_isEndingFromTimer && _currentSessionId > 0 && _isMonitoringStarted)
+            if (!_isEndingFromTimer && !_instructorDisconnectHandled && _currentSessionId > 0 && _isMonitoringStarted)
             {
+                // Normal teacher-initiated close: pause monitoring server-side.
                 try
                 {
                     if (_hubConnection != null)
@@ -3094,6 +3095,16 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 if (_hubConnection != null) await _hubConnection.StopAsync();
                 _sessionTimer?.Stop(); // Stop timer
+            }
+            else if (_instructorDisconnectHandled)
+            {
+                // Terminal-disconnect close: the teacher dropped mid-session.
+                // Do NOT set IsMonitoringActive=false — monitoring must stay
+                // live server-side so the room remains rejoinable (the grace
+                // check flags it for the "Rejoin Session" banner + IN PROGRESS
+                // pill, and students keep being monitored). Just stop locally.
+                if (_hubConnection != null) { try { await _hubConnection.StopAsync(); } catch { } }
+                _sessionTimer?.Stop();
             }
             else if (_hubConnection != null)
             {
