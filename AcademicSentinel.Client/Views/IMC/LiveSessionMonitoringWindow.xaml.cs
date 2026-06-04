@@ -59,6 +59,14 @@ namespace AcademicSentinel.Client.Views.IMC
         // hub StopAsync we issue during clean End-Session teardown.
         private bool _instructorDisconnectHandled;
 
+        // Debounce for the teacher-side "reconnecting" banner. WithAutomatic-
+        // Reconnect fires Reconnecting on every tiny transport blip; showing
+        // the banner instantly flickered it for sub-second recoveries. We only
+        // paint the banner if the connection is STILL reconnecting after this
+        // grace, and clear it the moment Reconnected/Closed fires.
+        private DispatcherTimer _reconnectBannerDebounce;
+        private static readonly TimeSpan ReconnectBannerDebounceDelay = TimeSpan.FromSeconds(2.5);
+
         private ICollectionView _studentsView;
         private ICollectionView _logsView;
         private LiveStudentStatus _selectedStudent;
@@ -1236,8 +1244,8 @@ namespace AcademicSentinel.Client.Views.IMC
             //     return-to-dashboard flow (still pre-start gated).
             _hubConnection.Reconnecting += error =>
             {
-                System.Diagnostics.Debug.WriteLine("[IMC] SignalR Reconnecting — showing transient banner (no teardown).");
-                Application.Current?.Dispatcher.InvokeAsync(ShowInstructorReconnectBanner);
+                System.Diagnostics.Debug.WriteLine("[IMC] SignalR Reconnecting — arming debounce (banner only if it persists).");
+                Application.Current?.Dispatcher.InvokeAsync(StartReconnectBannerDebounce);
                 return Task.CompletedTask;
             };
             _hubConnection.Reconnected += connectionId =>
@@ -1245,6 +1253,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 System.Diagnostics.Debug.WriteLine($"[IMC] SignalR Reconnected (connId={connectionId}) — rejoining room + clearing banner.");
                 Application.Current?.Dispatcher.InvokeAsync(async () =>
                 {
+                    CancelReconnectBannerDebounce();
                     HideInstructorReconnectBanner();
                     try
                     {
@@ -1270,6 +1279,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 System.Diagnostics.Debug.WriteLine("[IMC] SignalR Closed — terminal disconnect path.");
                 Application.Current?.Dispatcher.InvokeAsync(() =>
                 {
+                    CancelReconnectBannerDebounce();
                     HideInstructorReconnectBanner();
                     HandleInstructorDisconnect();
                 });
@@ -1953,6 +1963,34 @@ namespace AcademicSentinel.Client.Views.IMC
         // this: when set, RoomDetail closes itself instead of re-showing,
         // so we never end up with RoomDetail + TeacherDashboard both open.
         public bool RoutedToDashboard { get; private set; }
+
+        // Debounce: arm a one-shot timer on Reconnecting. The banner is only
+        // painted if the connection is STILL reconnecting when it fires, so a
+        // quick blip that recovers first never flickers a banner.
+        private void StartReconnectBannerDebounce()
+        {
+            if (_isSessionEnded) return;
+            if (_monitoringControlState == MonitoringControlState.NotStarted) return;
+            if (_reconnectBannerDebounce != null) return; // already armed
+
+            _reconnectBannerDebounce = new DispatcherTimer { Interval = ReconnectBannerDebounceDelay };
+            _reconnectBannerDebounce.Tick += (_, __) =>
+            {
+                CancelReconnectBannerDebounce();
+                System.Diagnostics.Debug.WriteLine("[IMC] Reconnect persisted past debounce — showing banner.");
+                ShowInstructorReconnectBanner();
+            };
+            _reconnectBannerDebounce.Start();
+        }
+
+        private void CancelReconnectBannerDebounce()
+        {
+            if (_reconnectBannerDebounce != null)
+            {
+                _reconnectBannerDebounce.Stop();
+                _reconnectBannerDebounce = null;
+            }
+        }
 
         // Transient-reconnect banner (non-terminal). Shown while
         // WithAutomaticReconnect is retrying during an active session.

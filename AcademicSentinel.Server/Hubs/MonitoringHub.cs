@@ -53,6 +53,27 @@ public class MonitoringHub : Hub
     internal static readonly ConcurrentDictionary<int, bool> _roomsWithDisconnectedInstructor = new();
 
     // ============================================================
+    // INSTRUCTOR PRESENCE + DISCONNECT DEBOUNCE (grace period).
+    // ============================================================
+    // Live instructor hub connections (ConnectionId → roomId). Populated by
+    // JoinRoom, drained by OnDisconnectedAsync. Lets a delayed grace check
+    // tell whether the instructor reconnected with a fresh connection.
+    internal static readonly ConcurrentDictionary<string, int> _activeInstructorConnections = new();
+
+    // Per-room cancellation for a PENDING instructor-disconnect grace check.
+    // OnDisconnectedAsync schedules a delayed confirmation instead of
+    // broadcasting TeacherDisconnected immediately; a reconnect (JoinRoom)
+    // within the window cancels it. This is what stops a transient transport
+    // blip — which fires OnDisconnectedAsync then auto-reconnects in a second
+    // or two — from surfacing a false disconnect/reconnect cycle to students.
+    private static readonly ConcurrentDictionary<int, CancellationTokenSource> _instructorDisconnectGrace = new();
+
+    // How long the instructor may be gone before students are told. Covers
+    // WithAutomaticReconnect's 0s/2s retries; a drop that outlasts this is a
+    // genuine interruption worth surfacing.
+    private static readonly TimeSpan InstructorDisconnectGrace = TimeSpan.FromSeconds(6);
+
+    // ============================================================
     // RAISED-HAND STATE (process-local; resets on server restart).
     // ============================================================
     // Key   = studentId
@@ -185,6 +206,19 @@ public class MonitoringHub : Hub
         if (string.Equals(roleNow, "Instructor", StringComparison.OrdinalIgnoreCase)
             && int.TryParse(roomId, out int rId))
         {
+            // Register this live instructor connection.
+            _activeInstructorConnections[Context.ConnectionId] = rId;
+
+            // Cancel any PENDING disconnect grace check — the instructor is
+            // back within the window, so a transient drop must NOT surface a
+            // TeacherDisconnected to students at all.
+            if (_instructorDisconnectGrace.TryRemove(rId, out var graceCts))
+            {
+                _logger.LogInformation("JoinRoom: cancelling pending instructor-disconnect grace for room {RoomId} (reconnected in time).", rId);
+                graceCts.Cancel();
+                graceCts.Dispose();
+            }
+
             wasFlaggedDisconnected = _roomsWithDisconnectedInstructor.TryRemove(rId, out _);
         }
 
@@ -223,6 +257,109 @@ public class MonitoringHub : Hub
                 await Clients.Group(roomId).SendAsync("TeacherReconnected", parsedRoomId);
             }
         }
+    }
+
+    // ============================================================
+    // INSTRUCTOR-DISCONNECT GRACE CHECK (debounce)
+    // ============================================================
+    // Scheduled from OnDisconnectedAsync. Waits InstructorDisconnectGrace; if
+    // the instructor is STILL gone (no reconnect cancelled this and no live
+    // connection remains for the room), flags the room and broadcasts
+    // TeacherDisconnected. A reconnect within the window suppresses it
+    // entirely, so transient blips never reach students.
+    private void ScheduleInstructorDisconnectGraceCheck(int roomId)
+    {
+        var cts = new CancellationTokenSource();
+        if (_instructorDisconnectGrace.TryRemove(roomId, out var oldCts))
+        {
+            oldCts.Cancel();
+            oldCts.Dispose();
+        }
+        _instructorDisconnectGrace[roomId] = cts;
+        var token = cts.Token;
+
+        _logger.LogInformation(
+            "OnDisconnectedAsync: instructor dropped from room {RoomId} — starting {Grace}s grace before surfacing TeacherDisconnected.",
+            roomId, InstructorDisconnectGrace.TotalSeconds);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(InstructorDisconnectGrace, token);
+            }
+            catch (TaskCanceledException)
+            {
+                return; // reconnected within grace — nothing to surface
+            }
+
+            if (token.IsCancellationRequested) return;
+
+            // Belt-and-suspenders: if any live instructor connection exists
+            // for this room, they reconnected — suppress.
+            bool stillConnected = false;
+            foreach (var kv in _activeInstructorConnections)
+            {
+                if (kv.Value == roomId) { stillConnected = true; break; }
+            }
+            if (stillConnected)
+            {
+                _instructorDisconnectGrace.TryRemove(roomId, out _);
+                return;
+            }
+
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db  = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var hub = scope.ServiceProvider.GetRequiredService<IHubContext<MonitoringHub>>();
+
+                // Re-confirm canonical truth in a fresh scope: latest session
+                // Active AND monitoring genuinely live.
+                var room = await db.Rooms.FindAsync(roomId);
+                if (room == null || !room.IsMonitoringActive)
+                {
+                    _instructorDisconnectGrace.TryRemove(roomId, out _);
+                    return;
+                }
+                var latest = await db.ExamSessions
+                    .Where(s => s.RoomId == roomId)
+                    .OrderByDescending(s => s.StartTime)
+                    .FirstOrDefaultAsync();
+                bool active = latest != null
+                    && string.Equals(latest.Status, "Active", StringComparison.OrdinalIgnoreCase);
+                if (!active)
+                {
+                    _instructorDisconnectGrace.TryRemove(roomId, out _);
+                    return;
+                }
+
+                db.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    RoomId = roomId,
+                    StudentId = 0,
+                    EventType = "TEACHER_DISCONNECTED",
+                    Description = "Instructor lost connection mid-session — session stays Active, monitoring continues.",
+                    SeverityScore = 0,
+                    Timestamp = DateTime.UtcNow
+                });
+                _roomsWithDisconnectedInstructor[roomId] = true;
+                await db.SaveChangesAsync();
+
+                _logger.LogInformation(
+                    "Instructor still gone after {Grace}s grace — flagging room {RoomId} + broadcasting TeacherDisconnected.",
+                    InstructorDisconnectGrace.TotalSeconds, roomId);
+                await hub.Clients.Group(roomId.ToString()).SendAsync("TeacherDisconnected", roomId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Instructor-disconnect grace check failed for room {RoomId}.", roomId);
+            }
+            finally
+            {
+                _instructorDisconnectGrace.TryRemove(roomId, out _);
+            }
+        }, token);
     }
 
     // Bug fix: Bug2
@@ -728,28 +865,18 @@ public class MonitoringHub : Hub
                         return;
                     }
 
-                    db.MonitoringEvents.Add(new MonitoringEvent
-                    {
-                        RoomId = activeRoom.Id,
-                        StudentId = 0,
-                        EventType = "TEACHER_DISCONNECTED",
-                        Description = "Instructor lost connection mid-session — session stays Active, monitoring continues.",
-                        SeverityScore = 0,
-                        Timestamp = DateTime.UtcNow
-                    });
-
-                    // Flag this room as having a dropped instructor. Only
-                    // fires when canonical latest-session truth confirms
-                    // the session is genuinely Active.
-                    _roomsWithDisconnectedInstructor[activeRoom.Id] = true;
-
-                    await db.SaveChangesAsync();
-
-                    // SAC renders the yellow "Connection to Instructor Lost"
-                    // banner on this event and keeps detecting. IMC instances
-                    // (if any other instructor consoles share the room) can
-                    // also surface a warning.
-                    await Clients.Group(activeRoom.Id.ToString()).SendAsync("TeacherDisconnected", activeRoom.Id);
+                    // DEBOUNCE — do NOT flag/broadcast immediately. A transient
+                    // transport blip fires OnDisconnectedAsync then auto-
+                    // reconnects within a second or two; surfacing
+                    // TeacherDisconnected here produced a false
+                    // disconnect→reconnect flicker on every blip. Instead,
+                    // schedule a grace check: only if the instructor is STILL
+                    // gone after InstructorDisconnectGrace (no reconnecting
+                    // JoinRoom cancelled it and no live connection remains) do
+                    // we flag the room and tell students. A reconnect within
+                    // the window means students never see anything.
+                    _activeInstructorConnections.TryRemove(Context.ConnectionId, out _);
+                    ScheduleInstructorDisconnectGraceCheck(activeRoom.Id);
                 }
             }
             catch (DbUpdateConcurrencyException)
