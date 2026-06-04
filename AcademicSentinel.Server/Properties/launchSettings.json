@@ -1,4 +1,5 @@
-﻿{
+﻿// For Deployment
+{
   "$schema": "https://json.schemastore.org/launchsettings.json",
   "profiles": {
     "http": {
@@ -21,3 +22,28 @@
     }
   }
 }
+
+// For testing with Virtual Machine
+//{
+//  "$schema": "https://json.schemastore.org/launchsettings.json",
+//  "profiles": {
+//    "http": {
+//      "commandName": "Project",
+//      "dotnetRunMessages": true,
+//      "launchBrowser": false,
+//      "applicationUrl": "http://0.0.0.0:5264",
+//      "environmentVariables": {
+//        "ASPNETCORE_ENVIRONMENT": "Development"
+//      }
+//    },
+//    "https": {
+//      "commandName": "Project",
+//      "dotnetRunMessages": true,
+//      "launchBrowser": false,
+//      "applicationUrl": "https://0.0.0.0:7236;http://0.0.0.0:5264",
+//      "environmentVariables": {
+//        "ASPNETCORE_ENVIRONMENT": "Development"
+//      }
+//    }
+//  }
+//}
