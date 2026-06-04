@@ -72,6 +72,16 @@ namespace AcademicSentinel.Client.Views.SAC
         // Closed event (which can fire more than once during teardown)
         // can't pop a second dialog or open a second dashboard window.
         private bool _disconnectRouted;
+
+        // SINGLE terminal-exit guard shared by EVERY path that ends the live
+        // exam window (terminal disconnect, ForceDashboardReturn, SessionEnded,
+        // SessionEndedForcedExit). The first path to claim it wins; all others
+        // bail. This is what makes recovery single-path and deterministic:
+        // it prevents (a) a second handler running inside a modal MessageBox's
+        // nested message loop and painting a ghost UI / second dialog, and
+        // (b) "Reconnect Required" and "SESSION ENDED" rendering at the same
+        // time. Must be claimed SYNCHRONOUSLY before any modal/await.
+        private bool _terminalHandled;
         private bool _isPermanentlyDone;
         private bool _isLeaveApproved;
         private bool _isHandlingFailure = false;
@@ -1646,13 +1656,10 @@ namespace AcademicSentinel.Client.Views.SAC
                     if (endedRoomId != _roomId) return;
                     _ = Dispatcher.InvokeAsync(() =>
                     {
-                        if (_sessionEnded) return; // already torn down
-                        _sessionEnded = true;
-                        try { _detectorRuntime?.Stop(); } catch { }
-                        _allowClose = true;
+                        if (!BeginTerminalReturn("SessionEndedForcedExit", hideWindow: true))
+                            return;
                         _isLeaveApproved = true;
-                        try { StudentDashboard.ShowSingleInstance(); } catch { }
-                        Close();
+                        CompleteTerminalReturn();
                     });
                 });
 
@@ -1667,12 +1674,14 @@ namespace AcademicSentinel.Client.Views.SAC
                 {
                     _ = Dispatcher.InvokeAsync(() =>
                     {
-                        if (_sessionEnded) return;
-                        _sessionEnded = true;
-                        try { if (_detectorRuntime != null) _detectorRuntime.IsPaused = true; } catch { }
-                        try { _detectorRuntime?.Stop(); } catch { }
-                        _detectorsRunning = false;
-                        _allowClose = true;
+                        // Single terminal path. If a SessionEnded (or any other
+                        // terminal handler) already claimed, bail — this prevents
+                        // the "Reconnect Required" dialog from rendering on top of
+                        // a "SESSION ENDED" teardown (Case B). Hide first so no
+                        // softlock UI shows behind the dialog.
+                        if (!BeginTerminalReturn("ForceDashboardReturn", hideWindow: true))
+                            return;
+
                         _isDenied = true;
                         _awaitingJoinApproval = false;
 
@@ -1684,7 +1693,7 @@ namespace AcademicSentinel.Client.Views.SAC
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
 
-                        ReturnToStudentDashboard();
+                        CompleteTerminalReturn();
                     });
                 });
 
@@ -1692,6 +1701,13 @@ namespace AcademicSentinel.Client.Views.SAC
                 {
                     _ = Dispatcher.InvokeAsync(async () =>
                     {
+                        // Graceful end. Claim the single terminal guard FIRST
+                        // (window stays visible for the 3-2-1 countdown). If a
+                        // disconnect/force-return path already claimed, bail so
+                        // we don't paint "SESSION ENDED" under its dialog.
+                        if (!BeginTerminalReturn("SessionEnded", hideWindow: false))
+                            return;
+
                         // Stop the hardware detector immediately — no further
                         // polls or violations after the session ends.
                         if (_detectorRuntime != null) _detectorRuntime.IsPaused = true;
@@ -1750,11 +1766,9 @@ namespace AcademicSentinel.Client.Views.SAC
                         }
 
                         // Bypass OnClosing's softlock guard and exit cleanly.
-                        _allowClose = true;
                         _isPermanentlyDone = true;
                         _isLeaveApproved = true;
-                        try { StudentDashboard.ShowSingleInstance(); } catch { }
-                        Close();
+                        CompleteTerminalReturn();
                     });
                 });
 
@@ -2249,6 +2263,7 @@ namespace AcademicSentinel.Client.Views.SAC
             // ForceDashboardReturn, SessionEnded) race against each other.
             try
             {
+                System.Diagnostics.Debug.WriteLine("[SAC recovery] Navigating to single StudentDashboard.");
                 StudentDashboard.ShowSingleInstance();
             }
             catch
@@ -2257,6 +2272,70 @@ namespace AcademicSentinel.Client.Views.SAC
             }
 
             this.Close();
+        }
+
+        // ============================================================
+        // SINGLE-PATH TERMINAL TEARDOWN
+        // ============================================================
+        // Every terminal exit (terminal disconnect, ForceDashboardReturn,
+        // SessionEnded, SessionEndedForcedExit) calls BeginTerminalReturn
+        // FIRST. It claims the shared guard synchronously — before any modal
+        // dialog or await — so a second terminal handler queued on the
+        // dispatcher (which can run inside a MessageBox's nested message
+        // loop) bails instead of rendering a contradictory state.
+        //
+        // hideWindow=true tears the live window out of view immediately so no
+        // ghost softlock UI is visible underneath a dialog (Case A). The
+        // graceful SessionEnded countdown passes hideWindow=false because it
+        // intentionally keeps the window visible to show its 3-2-1 banner.
+        //
+        // Returns false if a terminal path already ran — caller must bail.
+        private bool BeginTerminalReturn(string source, bool hideWindow)
+        {
+            if (_terminalHandled)
+            {
+                System.Diagnostics.Debug.WriteLine($"[SAC terminal] '{source}' ignored — terminal state already handled.");
+                return false;
+            }
+            _terminalHandled = true;
+            // Commit ALL terminal guards up-front so no other handler (which
+            // historically keyed off _sessionEnded / _allowClose / _disconnectRouted
+            // individually) can proceed concurrently.
+            _sessionEnded = true;
+            _allowClose = true;
+            _disconnectRouted = true;
+            System.Diagnostics.Debug.WriteLine($"[SAC terminal] '{source}' claimed terminal state (hideWindow={hideWindow}).");
+
+            // Halt detector + timers so nothing is evaluated, queued, or
+            // rendered while we tear down.
+            try { if (_detectorRuntime != null) _detectorRuntime.IsPaused = true; } catch { }
+            try { _detectorRuntime?.Stop(); } catch { }
+            _detectorsRunning = false;
+            _statusTimer?.Stop();
+            _compactCountdownTimer?.Stop();
+            _detectorPollTimer?.Stop();
+            _heartbeatTimer?.Stop();
+
+            // Offline-window detections must never reach the server.
+            try { DiscardPendingViolations(); } catch { }
+
+            if (hideWindow)
+            {
+                // Remove the live window from view BEFORE any dialog so the
+                // dashboard is the only visible surface and no softlock UI
+                // shows underneath.
+                try { this.Hide(); } catch { }
+            }
+
+            return true;
+        }
+
+        // Completes a terminal return: stop SignalR, navigate to the single
+        // dashboard, and close this window. Safe to call once per teardown.
+        private void CompleteTerminalReturn()
+        {
+            try { _ = ForceStopSignalRAsync(); } catch { }
+            ReturnToStudentDashboard();
         }
 
         // Terminal-disconnect bailout for the student softlock. Invoked
@@ -2271,18 +2350,14 @@ namespace AcademicSentinel.Client.Views.SAC
         // normal REST /request-join instructor-approval gate.
         private void HandleTerminalDisconnect()
         {
-            if (_disconnectRouted) return;
-            if (_sessionEnded || _allowClose) return;
-            _disconnectRouted = true;
-
-            // Halt the detector first so no further behaviour is evaluated
-            // or buffered while we tear the window down.
-            try { if (_detectorRuntime != null) _detectorRuntime.IsPaused = true; } catch { }
-            try { _detectorRuntime?.Stop(); } catch { }
-            _detectorsRunning = false;
-
-            // Offline-window detections must never reach the server.
-            DiscardPendingViolations();
+            // Claim the single terminal guard and hide the window BEFORE the
+            // dialog. Setting the guard first means a ForceDashboardReturn /
+            // SessionEnded queued on the dispatcher (and able to run inside
+            // this MessageBox's nested message loop) bails instead of popping
+            // a second dialog; hiding first means no softlock UI shows behind
+            // the dialog (Case A fix).
+            if (!BeginTerminalReturn("Closed/terminal-disconnect", hideWindow: true))
+                return;
 
             MessageBox.Show(
                 "Connection to the server was lost and could not be restored.\n\n" +
@@ -2291,10 +2366,7 @@ namespace AcademicSentinel.Client.Views.SAC
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
 
-            // Bypass the OnClosing softlock guard — the session is
-            // unreachable, so trapping the student in the window is the bug.
-            _allowClose = true;
-            ReturnToStudentDashboard();
+            CompleteTerminalReturn();
         }
 
         private void UpdateCompactCountdown()
