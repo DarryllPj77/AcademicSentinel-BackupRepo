@@ -34,11 +34,14 @@ namespace AcademicSentinel.Client.Views.SAC
         private int _roomId;
         private readonly DispatcherTimer _statusTimer;
         private readonly DispatcherTimer _compactCountdownTimer;
-        // Heartbeat ping to the server every 5s. The server's
+        // Heartbeat ping to the server every 3s. The server's
         // DisconnectSweeperService treats absence of heartbeats for
-        // >= 15s as a disconnect — that's how force-close / no internet
+        // >= 10s as a disconnect — that's how force-close / no internet
         // / power loss is detected reliably, without depending on
-        // SignalR's transport-level timeout.
+        // SignalR's transport-level timeout. The 3s cadence (down from 5s)
+        // lets the server flag a real disconnect in ~10s instead of
+        // ~15-30s, so the instructor's IMC moves the student to the
+        // Disconnected tab in near real time.
         private readonly DispatcherTimer _heartbeatTimer;
         private readonly DispatcherTimer _detectorPollTimer;
         private HubConnection _hubConnection;
@@ -174,7 +177,7 @@ namespace AcademicSentinel.Client.Views.SAC
             // sweeper will simply detect the absence on its next tick.
             _heartbeatTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromSeconds(5)
+                Interval = TimeSpan.FromSeconds(3)
             };
             _heartbeatTimer.Tick += async (_, __) =>
             {

@@ -19,8 +19,14 @@ namespace AcademicSentinel.Server.Services;
 /// </summary>
 public sealed class DisconnectSweeperService : BackgroundService
 {
-    private static readonly TimeSpan SweepInterval    = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(15);
+    // Tuned for near-real-time disconnect detection. The SAC heartbeats
+    // every 3s, so a 10s timeout tolerates ~3 missed beats (jitter / a brief
+    // UI-thread stall) before flagging a drop, and a 2s sweep means the
+    // instructor's IMC is notified ~10-12s after a real disconnect instead
+    // of the previous ~15-30s. A false positive is self-healing (the student
+    // simply rejoins), so we bias toward fast detection.
+    private static readonly TimeSpan SweepInterval    = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(10);
 
     private readonly DisconnectService _disconnectService;
     private readonly ILogger<DisconnectSweeperService> _logger;

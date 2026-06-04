@@ -142,7 +142,16 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+    // Tighten transport liveness so a hard network drop surfaces through
+    // OnDisconnectedAsync in ~12s instead of the 30s default — this is the
+    // SignalR-level companion to the heartbeat sweeper (10s) and makes the
+    // instructor's IMC reflect a student disconnect in near real time.
+    // ClientTimeoutInterval must be >= 2x KeepAliveInterval (SignalR rule).
+    options.KeepAliveInterval     = TimeSpan.FromSeconds(5);
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(12);
+});
 
 // Single master for student-disconnect handling.  Used by both
 // MonitoringHub.OnDisconnectedAsync (SignalR transport drop) and

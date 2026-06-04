@@ -1399,7 +1399,10 @@ public class RoomsController : ControllerBase
         // The IMC's 4 s participant poll drives this lazily, with
         // TryRemove on the hub dictionary acting as the idempotency gate
         // — only one IMC's poll wins per stale entry, no double-fires.
-        var liveCutoff = DateTime.UtcNow.AddSeconds(-15);
+        // 10s cutoff aligns with the DisconnectSweeperService timeout so the
+        // poll-based backup path detects a drop on the same ~10s window the
+        // real-time sweeper push uses.
+        var liveCutoff = DateTime.UtcNow.AddSeconds(-10);
         var aliveStudentIds = new HashSet<int>();
         var staleConnectionsToFlush = new List<KeyValuePair<string, AcademicSentinel.Server.Hubs.MonitoringHub.ActiveStudentConnection>>();
         foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)

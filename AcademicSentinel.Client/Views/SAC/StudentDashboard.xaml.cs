@@ -578,9 +578,13 @@ namespace AcademicSentinel.Client.Views.SAC
 
                 // Volatile session state — assigned through observable
                 // setters so the joinable label / colour repaints without
-                // removing the card from the WrapPanel.
+                // removing the card from the WrapPanel. RoomState is the
+                // canonical driver and must be copied too, otherwise the
+                // card label would never leave its initial value while the
+                // banner moved on (the banner/card mismatch bug).
                 existing.HasActiveSession        = fresh.HasActiveSession;
                 existing.StudentWasDisconnected  = fresh.StudentWasDisconnected;
+                existing.RoomState               = fresh.RoomState;
                 existing.UpdateJoinStatus();
             }
         }
@@ -722,14 +726,28 @@ namespace AcademicSentinel.Client.Views.SAC
                 return;
             }
 
-            // Offline→online edge. If a session is in progress the student
-            // can rejoin; tailor the copy accordingly.
-            bool hasJoinableSession = StudentCourses.Any(c => c.HasActiveSession);
-            string message = hasJoinableSession
+            // Offline→online edge. Derive the copy from the SAME canonical
+            // signal the course card uses (RoomState == ReconnectAvailable),
+            // NOT merely "an active session exists". This is what keeps the
+            // banner and the card in lock-step: the banner only promises a
+            // rejoin when a card is actually showing "Reconnect Now".
+            bool hasReconnectable = HasReconnectableSession();
+            System.Diagnostics.Debug.WriteLine($"[Dashboard recovery] Restored edge. reconnectable={hasReconnectable}.");
+            string message = hasReconnectable
                 ? "Connection restored — you can rejoin the in-progress session now."
                 : "Connection restored.";
             ShowConnectionBanner(message, isError: false, autoHide: true);
         }
+
+        // SINGLE canonical predicate for "the student dropped from a still-
+        // active session and may rejoin". Both the banner copy and (via
+        // RoomState) the course card derive from this same truth, so they
+        // never contradict each other. Uses the server's canonical RoomState
+        // and falls back to the legacy booleans for older servers.
+        private bool HasReconnectableSession()
+            => StudentCourses.Any(c =>
+                   string.Equals(c.RoomState, "ReconnectAvailable", StringComparison.OrdinalIgnoreCase)
+                   || (string.IsNullOrEmpty(c.RoomState) && c.HasActiveSession && c.StudentWasDisconnected));
 
         private void ShowConnectionBanner(string message, bool isError, bool autoHide)
         {
@@ -924,10 +942,17 @@ namespace AcademicSentinel.Client.Views.SAC
         public string CreatedBy { get; set; } = string.Empty;
         // Canonical server-computed state string (NotJoinable / Joinable /
         // PendingApproval / ReconnectAvailable / Connected / Finished).
-        // Captured for clients that want richer CTA logic; the existing
-        // HasActiveSession + StudentWasDisconnected flags already drive the
-        // card text and are derived server-side from this same state.
-        public string RoomState { get; set; } = string.Empty;
+        // This is THE single source of truth for the card label/colour and,
+        // aggregated across courses, for the dashboard recovery banner — so
+        // banner and card can never disagree. Falls back to the older
+        // HasActiveSession/StudentWasDisconnected booleans only when an
+        // older server omits it.
+        private string _roomState = string.Empty;
+        public string RoomState
+        {
+            get => _roomState;
+            set { _roomState = value ?? string.Empty; OnPropertyChanged(); OnPropertyChanged(nameof(JoinStatusText)); OnPropertyChanged(nameof(JoinStatusColor)); }
+        }
         // Server-derived state — IsJoinable, HasActiveSession,
         // StudentWasDisconnected all raise PropertyChanged on the
         // computed tile labels (JoinStatusText / JoinStatusColor) so the
@@ -954,28 +979,37 @@ namespace AcademicSentinel.Client.Views.SAC
             set { _studentWasDisconnected = value; OnPropertyChanged(); OnPropertyChanged(nameof(JoinStatusText)); OnPropertyChanged(nameof(JoinStatusColor)); }
         }
 
-        // Status text precedence:
-        //   1. Student was disconnected from a still-active session →
-        //      orange "In Progress, Reconnect NOW!" so they know to
-        //      rejoin immediately (subject to instructor approval).
-        //   2. Active session exists and student is fresh → green
-        //      "Joinable Now".
-        //   3. No active session → red "Not Joinable Yet" (this also
-        //      covers the case where the teacher already ended the
-        //      session — the room is no longer joinable even if
-        //      room.Status happens to still say "Active" briefly).
-        public string JoinStatusText =>
-            HasActiveSession && StudentWasDisconnected
-                ? "In Progress, Reconnect NOW!"
-                : HasActiveSession
-                    ? "Joinable Now"
-                    : "Not Joinable Yet";
-        public string JoinStatusColor =>
-            HasActiveSession && StudentWasDisconnected
-                ? "#E65100"
-                : HasActiveSession
-                    ? "#2E7D32"
-                    : "#D32F2F";
+        // Label + colour come from ONE canonical source: the server's
+        // RoomState. The dashboard banner reads the same RoomState, so the
+        // two surfaces always agree (e.g. a reconnect-eligible student sees
+        // "Reconnect Now" on BOTH the banner and the card — never a banner
+        // that says "rejoin" beside a card that says "Joinable Now").
+        // Falls back to the legacy booleans only when RoomState is absent.
+        public string JoinStatusText => RoomState switch
+        {
+            "ReconnectAvailable" => "Reconnect Now",
+            "PendingApproval"    => "Waiting for Approval",
+            "Connected"          => "In Session",
+            "Finished"           => "Completed",
+            "Joinable"           => "Joinable Now",
+            "NotJoinable"        => "Not Joinable Yet",
+            // Legacy fallback (older server with no RoomState field).
+            _ => HasActiveSession && StudentWasDisconnected ? "Reconnect Now"
+               : HasActiveSession ? "Joinable Now"
+               : "Not Joinable Yet"
+        };
+        public string JoinStatusColor => RoomState switch
+        {
+            "ReconnectAvailable" => "#E65100", // orange
+            "PendingApproval"    => "#FF9800", // amber
+            "Connected"          => "#2E7D32", // green
+            "Finished"           => "#9E9E9E", // grey
+            "Joinable"           => "#2E7D32", // green
+            "NotJoinable"        => "#D32F2F", // red
+            _ => HasActiveSession && StudentWasDisconnected ? "#E65100"
+               : HasActiveSession ? "#2E7D32"
+               : "#D32F2F"
+        };
 
         public Visibility HasNoImageVisibility => string.IsNullOrWhiteSpace(CourseImagePath) ? Visibility.Visible : Visibility.Collapsed;
         public Visibility HasImageVisibility => string.IsNullOrWhiteSpace(CourseImagePath) ? Visibility.Collapsed : Visibility.Visible;
