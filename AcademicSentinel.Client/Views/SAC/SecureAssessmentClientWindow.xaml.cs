@@ -999,31 +999,34 @@ namespace AcademicSentinel.Client.Views.SAC
                     .WithAutomaticReconnect()
                     .Build();
 
-                // PROACTIVE TRANSIENT-DROP HANDLER.
+                // IMMEDIATE DASHBOARD RETURN ON ANY DROP (product decision).
                 //
-                // WithAutomaticReconnect() polls at 0 / 2 / 10 / 30s and
-                // only fires Closed after ~45s of consecutive failures.
-                // During that window the connection state is
-                // HubConnectionState.Reconnecting — the SAC was previously
-                // staring at "Monitoring: ACTIVE" while every button silently
-                // refused to fire because the per-click guard noticed the
-                // hub wasn't Connected.
-                //
-                // Hooking Reconnecting flips the overlay the SECOND the line
-                // goes down, so the user has visible feedback during the
-                // entire 45-second window. If the connection comes back, the
-                // Reconnected handler restores the buttons + status; if it
-                // fails permanently, the Closed handler keeps the overlay up
-                // (overwriting is harmless and idempotent).
+                // Reconnecting fires the instant WithAutomaticReconnect detects
+                // the line is down. Rather than keep the student staring at the
+                // softlock with an "Attempting to reconnect" overlay (and then
+                // bouncing them through a separate "Reconnect Required" dialog
+                // when the server's rejoin gate rejects the silent re-admit),
+                // we tear the live window down NOW and return to the single
+                // Student Dashboard — no popup. The dashboard's
+                // "No internet" → "Connection restored" banner and the
+                // "Reconnect to In-Progress Session" card own recovery, and the
+                // student requests rejoin from there (instructor-approval gate
+                // intact). This makes a 20s and a 50s outage produce the EXACT
+                // same recovery experience — the only difference is how long
+                // "No internet" stays up, which reflects real connectivity.
                 _hubConnection.Reconnecting += _ =>
                 {
-                    if (!_sessionEnded)
-                        ShowOwnDisconnectOverlay();
+                    if (!_sessionEnded && !_allowClose)
+                        Dispatcher.InvokeAsync(HandleTerminalDisconnect);
                     return Task.CompletedTask;
                 };
 
                 _hubConnection.Reconnected += async _ =>
                 {
+                    // We return to the dashboard the moment a drop is detected,
+                    // so a late "Reconnected" must NOT silently re-admit the
+                    // student in place — recovery is dashboard-driven now.
+                    if (_terminalHandled || _sessionEnded || _allowClose) return;
                     // Bug fix: Bug1 - block zombie reconnect after denial
                     if (_isDenied) return;
                     try
@@ -1095,23 +1098,15 @@ namespace AcademicSentinel.Client.Views.SAC
                     // connection was down.
                     Dispatcher.InvokeAsync(DiscardPendingViolations);
 
-                    // `Closed` fires from WithAutomaticReconnect ONLY after
-                    // the full reconnect window (~45s) is exhausted, so it
-                    // is the terminal "connection truly lost" signal — not a
-                    // transient blip (those surface as Reconnecting and are
-                    // handled by ShowOwnDisconnectOverlay, keeping the
-                    // softlock armed so a momentary drop can't be abused).
-                    // On a genuine terminal drop, stop monitoring, notify
-                    // the student, and route them to the Student Dashboard
-                    // for a clean, instructor-approved manual rejoin instead
-                    // of leaving them trapped behind a frozen softlock.
-                    // Skipped when the close was intentional (session ended
-                    // or an explicit exit path already set _allowClose) —
-                    // those flows own their own teardown + navigation.
+                    // Closed is the other drop signal (fires if Reconnecting
+                    // didn't already claim the teardown, or on an immediate
+                    // non-recoverable close). Route to the dashboard via the
+                    // same no-popup path. HandleTerminalDisconnect is one-shot
+                    // (guarded by _terminalHandled), so if Reconnecting already
+                    // routed, this is a no-op. Skipped when the close was
+                    // intentional (session ended, Done/leave set _allowClose).
                     if (!_sessionEnded && !_allowClose)
                         Dispatcher.InvokeAsync(HandleTerminalDisconnect);
-                    else if (!_sessionEnded)
-                        ShowOwnDisconnectOverlay();
 
                     return Task.CompletedTask;
                 };
@@ -1718,14 +1713,10 @@ namespace AcademicSentinel.Client.Views.SAC
                         _isDenied = true;
                         _awaitingJoinApproval = false;
 
-                        MessageBox.Show(
-                            string.IsNullOrWhiteSpace(reason)
-                                ? "Connection lost. Please rejoin manually from the Student Dashboard."
-                                : reason,
-                            "Reconnect Required",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Information);
-
+                        // No popup — consistent with the disconnect→dashboard
+                        // flow. The dashboard banner + "Reconnect to In-Progress
+                        // Session" card explain the state and drive rejoin.
+                        System.Diagnostics.Debug.WriteLine("[SAC] ForceDashboardReturn — returning to dashboard (no popup).");
                         CompleteTerminalReturn();
                     });
                 });
@@ -2371,34 +2362,25 @@ namespace AcademicSentinel.Client.Views.SAC
             ReturnToStudentDashboard();
         }
 
-        // Terminal-disconnect bailout for the student softlock. Invoked
-        // (UI thread only) from the hub `Closed` event once
-        // WithAutomaticReconnect has exhausted its retry window — i.e. the
-        // internet is genuinely gone. One-shot via _disconnectRouted.
-        // Stops the detector runtime so nothing else is evaluated or
-        // queued, drops any offline-window detections, notifies the
-        // student, and routes them to the Student Dashboard. The
-        // participant row is already flipped to Disconnected server-side by
-        // DisconnectService, so the subsequent rejoin runs through the
-        // normal REST /request-join instructor-approval gate.
+        // Student disconnect → dashboard. Invoked (UI thread only) the moment
+        // the hub connection drops (Reconnecting or Closed). Per product
+        // decision: ANY disconnect immediately and silently returns the
+        // student to the single Student Dashboard — NO popup. The dashboard's
+        // "No internet" → "Connection restored" banner and the
+        // "Reconnect to In-Progress Session" card own recovery, and the
+        // student requests rejoin from there (the participant row is flipped
+        // to Disconnected server-side, so the rejoin runs through the normal
+        // REST /request-join instructor-approval gate). One-shot via
+        // BeginTerminalReturn's _terminalHandled guard, so Reconnecting and a
+        // later Closed can't both fire it.
         private void HandleTerminalDisconnect()
         {
-            // Claim the single terminal guard and hide the window BEFORE the
-            // dialog. Setting the guard first means a ForceDashboardReturn /
-            // SessionEnded queued on the dispatcher (and able to run inside
-            // this MessageBox's nested message loop) bails instead of popping
-            // a second dialog; hiding first means no softlock UI shows behind
-            // the dialog (Case A fix).
-            if (!BeginTerminalReturn("Closed/terminal-disconnect", hideWindow: true))
+            // Claim the single terminal guard and hide the window. hideWindow
+            // means no softlock UI lingers underneath while we navigate.
+            if (!BeginTerminalReturn("Disconnect→dashboard", hideWindow: true))
                 return;
 
-            MessageBox.Show(
-                "Connection to the server was lost and could not be restored.\n\n" +
-                "You will be returned to your dashboard. Re-open the course to rejoin the session.",
-                "Connection Lost",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-
+            System.Diagnostics.Debug.WriteLine("[SAC] Disconnect detected — returning to dashboard (no popup).");
             CompleteTerminalReturn();
         }
 
