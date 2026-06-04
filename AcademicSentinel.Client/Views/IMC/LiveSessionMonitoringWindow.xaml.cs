@@ -1219,21 +1219,60 @@ namespace AcademicSentinel.Client.Views.IMC
             // ============================================================
             // INSTRUCTOR CONNECTION-LIFECYCLE HOOKS
             // ============================================================
-            // Without these the IMC freezes silently when the instructor's
-            // internet drops — WithAutomaticReconnect retries in the
-            // background but the UI has no idea the pipe is broken. Hook
-            // both Reconnecting (transient drop) and Closed (terminal drop)
-            // and route the instructor back to TeacherDashboard via the
-            // UI thread so a background SignalR worker doesn't try to
-            // construct WPF objects off-thread.
+            // Mirror the student SAC's model so a TRANSIENT drop during an
+            // active session does NOT collapse the IMC:
+            //   • Reconnecting → WithAutomaticReconnect is retrying. Show a
+            //     non-terminal "reconnecting" banner; DO NOT tear down or
+            //     navigate. (The old code called HandleInstructorDisconnect
+            //     here, which kicked the teacher to the dashboard on every
+            //     recoverable blip — and because the teacher never rejoined,
+            //     the student's "Connection to Instructor Lost" banner stuck.)
+            //   • Reconnected → recovered. Re-invoke JoinRoom so the server
+            //     re-adds us to the room group, clears the instructor-drop
+            //     flag, and broadcasts TeacherReconnected (which clears the
+            //     student banner). Then hide the reconnect banner.
+            //   • Closed → terminal (WithAutomaticReconnect exhausted, or a
+            //     non-recoverable close). ONLY here do we run the terminal
+            //     return-to-dashboard flow (still pre-start gated).
             _hubConnection.Reconnecting += error =>
             {
-                Application.Current?.Dispatcher.InvokeAsync(HandleInstructorDisconnect);
+                System.Diagnostics.Debug.WriteLine("[IMC] SignalR Reconnecting — showing transient banner (no teardown).");
+                Application.Current?.Dispatcher.InvokeAsync(ShowInstructorReconnectBanner);
+                return Task.CompletedTask;
+            };
+            _hubConnection.Reconnected += connectionId =>
+            {
+                System.Diagnostics.Debug.WriteLine($"[IMC] SignalR Reconnected (connId={connectionId}) — rejoining room + clearing banner.");
+                Application.Current?.Dispatcher.InvokeAsync(async () =>
+                {
+                    HideInstructorReconnectBanner();
+                    try
+                    {
+                        // Group membership is lost on reconnect (new
+                        // ConnectionId). Re-join so the server clears the
+                        // instructor-drop flag and broadcasts
+                        // TeacherReconnected to clear the student banner.
+                        if (_hubConnection != null
+                            && _hubConnection.State == HubConnectionState.Connected)
+                        {
+                            await _hubConnection.InvokeAsync("JoinRoom", _roomId.ToString());
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[IMC] Reconnected JoinRoom failed: {ex.Message}");
+                    }
+                });
                 return Task.CompletedTask;
             };
             _hubConnection.Closed += error =>
             {
-                Application.Current?.Dispatcher.InvokeAsync(HandleInstructorDisconnect);
+                System.Diagnostics.Debug.WriteLine("[IMC] SignalR Closed — terminal disconnect path.");
+                Application.Current?.Dispatcher.InvokeAsync(() =>
+                {
+                    HideInstructorReconnectBanner();
+                    HandleInstructorDisconnect();
+                });
                 return Task.CompletedTask;
             };
 
@@ -1914,6 +1953,24 @@ namespace AcademicSentinel.Client.Views.IMC
         // this: when set, RoomDetail closes itself instead of re-showing,
         // so we never end up with RoomDetail + TeacherDashboard both open.
         public bool RoutedToDashboard { get; private set; }
+
+        // Transient-reconnect banner (non-terminal). Shown while
+        // WithAutomaticReconnect is retrying during an active session.
+        private void ShowInstructorReconnectBanner()
+        {
+            if (_isSessionEnded) return;
+            // Keep the pre-start experience clean — only surface the
+            // reconnect banner once monitoring has actually started.
+            if (_monitoringControlState == MonitoringControlState.NotStarted) return;
+            if (FindName("InstructorReconnectBanner") is Border banner)
+                banner.Visibility = Visibility.Visible;
+        }
+
+        private void HideInstructorReconnectBanner()
+        {
+            if (FindName("InstructorReconnectBanner") is Border banner)
+                banner.Visibility = Visibility.Collapsed;
+        }
 
         private void HandleInstructorDisconnect()
         {

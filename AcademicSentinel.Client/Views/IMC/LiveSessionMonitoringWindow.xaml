@@ -849,11 +849,36 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <Border x:Name="CriticalAlertBanner"
+                    <!-- Transient instructor reconnect banner. Shown while
+                         the IMC's SignalR connection is auto-reconnecting
+                         (WithAutomaticReconnect) during an ACTIVE session —
+                         NOT a terminal teardown. Cleared on Reconnected. -->
+                    <Border x:Name="InstructorReconnectBanner"
                             Grid.Row="0"
+                            Background="#FFF8E1"
+                            BorderBrush="#FFB300"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="10,8"
+                            Margin="0,0,0,12"
+                            Visibility="Collapsed">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <materialDesign:PackIcon Kind="Sync" Width="18" Height="18"
+                                                     Foreground="#E65100"
+                                                     VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBlock x:Name="TxtInstructorReconnectBanner"
+                                       Foreground="#E65100" FontWeight="SemiBold" FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Text="Connection interrupted — reconnecting to the server…"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border x:Name="CriticalAlertBanner"
+                            Grid.Row="1"
                             Background="#D32F2F"
                             CornerRadius="8"
                             Padding="10,8"
@@ -885,7 +910,7 @@
                         </Grid>
                     </Border>
 
-                    <Grid Grid.Row="1" Margin="0,0,0,16">
+                    <Grid Grid.Row="2" Margin="0,0,0,16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
@@ -909,7 +934,7 @@
                         </ComboBox>
                     </Grid>
 
-                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
                         <Grid>
                             <StackPanel x:Name="EmptyLogFeedState" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,60" Visibility="Visible">
                                 <materialDesign:PackIcon Kind="TextBoxOutline" Width="48" Height="48" Foreground="#E0E0E0" HorizontalAlignment="Center"/>

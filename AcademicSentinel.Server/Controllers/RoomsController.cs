@@ -1204,33 +1204,29 @@ public class RoomsController : ControllerBase
     [HttpPut("{roomId}/settings")]
     public async Task<ActionResult<RoomDetectionSettings>> SaveRoomSettings(int roomId, [FromBody] RoomSetupDto setupRequest)
     {
-        // Heal first so any orphan rows get closed in the DB.
+        // Heal first so any orphan rows get closed in the DB and Room.Status
+        // is reconciled to the canonical latest-session state.
         await EnsureRoomConsistencyAsync(roomId);
-
-        // CANONICAL TRUTH CHECK: skip Room.Status entirely (it's a cache
-        // that can lag if a save was swallowed). Look directly at the
-        // latest session by StartTime — that's the only source of truth.
-        var latestSession = await _context.ExamSessions
-            .AsNoTracking()
-            .Where(s => s.RoomId == roomId)
-            .OrderByDescending(s => s.StartTime)
-            .FirstOrDefaultAsync();
-
-        bool isReallyActive = latestSession != null
-            && string.Equals(latestSession.Status, "Active", StringComparison.OrdinalIgnoreCase);
-
-        if (isReallyActive)
-            return BadRequest("Cannot modify settings while an exam is running.");
 
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
 
-        // Defensive: if Room.Status was stale Active despite no active
-        // session, force-flip it now so the next request reads cleanly.
-        if (string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase))
+        // BLOCK EDITS ONLY WHILE MONITORING IS GENUINELY LIVE.
+        //
+        // An ExamSession row is Status="Active" from the instant it is
+        // CREATED (CreateSession) — before the teacher presses "Start
+        // Session Monitoring". Gating on session-active therefore blocked
+        // the normal pre-start setup/creation flow with "Cannot modify
+        // settings while an exam is running", even though nothing was
+        // actually running. IsMonitoringActive is the canonical "monitoring
+        // is truly in progress" flag (true only after Start, kept in
+        // lockstep by the hub), so it is the correct — and only — condition
+        // that should lock settings.
+        if (room.IsMonitoringActive)
         {
-            room.Status = "Pending";
-            room.IsMonitoringActive = false;
+            _logger.LogInformation(
+                "SaveRoomSettings: blocked for room {RoomId} — monitoring is actively running.", roomId);
+            return BadRequest("Cannot modify settings while an exam is running.");
         }
 
         // REQUIRED — LMS Exam URL must be a valid HTTPS absolute URL with
