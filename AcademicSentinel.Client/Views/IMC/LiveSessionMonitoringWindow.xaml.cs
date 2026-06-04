@@ -50,6 +50,7 @@ namespace AcademicSentinel.Client.Views.IMC
         // Timer Variables
         private DispatcherTimer _sessionTimer;
         private DispatcherTimer _participantsRefreshTimer;
+        private DispatcherTimer _teacherHeartbeatTimer;
         private DateTime _sessionStartTime;
         private bool _isSessionEnded;
 
@@ -258,6 +259,30 @@ namespace AcademicSentinel.Client.Views.IMC
             };
             _participantsRefreshTimer.Tick += async (_, __) => await LoadParticipantsFromServerAsync();
             _participantsRefreshTimer.Start();
+
+            // Teacher heartbeat — proves the instructor is still present every
+            // 3s. The server's DisconnectSweeperService flags a TeacherDisconnect
+            // (and notifies students) within ~10s of these stopping, instead of
+            // the ~20-30s SignalR transport timeout. Best-effort: any failure is
+            // swallowed — silence IS the disconnect signal the sweeper detects.
+            _teacherHeartbeatTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(3)
+            };
+            _teacherHeartbeatTimer.Tick += async (_, __) =>
+            {
+                try
+                {
+                    if (_hubConnection != null
+                        && _hubConnection.State == HubConnectionState.Connected
+                        && _roomId > 0)
+                    {
+                        await _hubConnection.InvokeAsync("TeacherHeartbeat", _roomId);
+                    }
+                }
+                catch { /* silence = the disconnect signal */ }
+            };
+            _teacherHeartbeatTimer.Start();
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -3111,6 +3136,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 await _hubConnection.StopAsync();
             }
             _participantsRefreshTimer?.Stop();
+            _teacherHeartbeatTimer?.Stop();
             base.OnClosing(e);
         }
 

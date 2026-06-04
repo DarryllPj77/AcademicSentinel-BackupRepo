@@ -65,6 +65,31 @@ public sealed class DisconnectSweeperService : BackgroundService
     {
         var cutoff = DateTime.UtcNow.Subtract(HeartbeatTimeout);
 
+        // ----------------------------------------------------------------
+        // TEACHER heartbeat sweep — the fast, deterministic detector for an
+        // instructor drop (~10s) that replaces waiting on SignalR's slow
+        // transport timeout (~20-30s). Mirror of the student sweep below.
+        // ----------------------------------------------------------------
+        var teacherCutoff = DateTime.UtcNow.Subtract(MonitoringHub.TeacherHeartbeatTimeout);
+        var staleTeachers = MonitoringHub._activeInstructorConnections
+            .Where(kv => kv.Value.LastBeat < teacherCutoff)
+            .Select(kv => (ConnectionId: kv.Key, Ctx: kv.Value))
+            .ToList();
+
+        foreach (var (connectionId, ctx) in staleTeachers)
+        {
+            // Drain first so a subsequent tick won't re-pick the same room.
+            MonitoringHub._activeInstructorConnections.TryRemove(connectionId, out _);
+
+            // Idempotent: HandleInstructorDisconnectAsync no-ops if the room
+            // is already flagged or another live instructor heartbeat exists.
+            await _disconnectService.HandleInstructorDisconnectAsync(ctx.RoomId);
+
+            _logger.LogInformation(
+                "[Sweeper] Instructor roomId={RoomId} silent for {Age:F1}s — handed to DisconnectService.",
+                ctx.RoomId, (DateTime.UtcNow - ctx.LastBeat).TotalSeconds);
+        }
+
         // Snapshot stale entries so we don't iterate while mutating the map.
         var stale = MonitoringHub._activeStudentConnections
             .Where(kv => kv.Value.LastBeat < cutoff)

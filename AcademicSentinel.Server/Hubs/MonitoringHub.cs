@@ -53,25 +53,26 @@ public class MonitoringHub : Hub
     internal static readonly ConcurrentDictionary<int, bool> _roomsWithDisconnectedInstructor = new();
 
     // ============================================================
-    // INSTRUCTOR PRESENCE + DISCONNECT DEBOUNCE (grace period).
+    // INSTRUCTOR PRESENCE + HEARTBEAT (fast disconnect detection).
     // ============================================================
-    // Live instructor hub connections (ConnectionId → roomId). Populated by
-    // JoinRoom, drained by OnDisconnectedAsync. Lets a delayed grace check
-    // tell whether the instructor reconnected with a fresh connection.
-    internal static readonly ConcurrentDictionary<string, int> _activeInstructorConnections = new();
+    // Mirrors the student heartbeat model so a teacher drop is detected just
+    // as fast (~10s) instead of waiting on SignalR's transport timeout
+    // (~20-30s). The IMC invokes TeacherHeartbeat(roomId) every 3s; the
+    // DisconnectSweeperService scans this map every 2s and treats any entry
+    // whose LastBeat is older than TeacherHeartbeatTimeout as a real drop,
+    // flagging the room + broadcasting TeacherDisconnected. JoinRoom populates
+    // and refreshes the entry; OnDisconnectedAsync drains it.
+    internal sealed class ActiveInstructorConnection
+    {
+        public int RoomId { get; init; }
+        public DateTime LastBeat { get; set; }
+    }
+    internal static readonly ConcurrentDictionary<string, ActiveInstructorConnection> _activeInstructorConnections = new();
 
-    // Per-room cancellation for a PENDING instructor-disconnect grace check.
-    // OnDisconnectedAsync schedules a delayed confirmation instead of
-    // broadcasting TeacherDisconnected immediately; a reconnect (JoinRoom)
-    // within the window cancels it. This is what stops a transient transport
-    // blip — which fires OnDisconnectedAsync then auto-reconnects in a second
-    // or two — from surfacing a false disconnect/reconnect cycle to students.
-    private static readonly ConcurrentDictionary<int, CancellationTokenSource> _instructorDisconnectGrace = new();
-
-    // How long the instructor may be gone before students are told. Covers
-    // WithAutomaticReconnect's 0s/2s retries; a drop that outlasts this is a
-    // genuine interruption worth surfacing.
-    private static readonly TimeSpan InstructorDisconnectGrace = TimeSpan.FromSeconds(6);
+    // Absence threshold. The 3s heartbeat + 8s timeout tolerates ~2 missed
+    // beats (jitter) before flagging, and doubles as the debounce: a blip
+    // shorter than this never surfaces, and a reconnect refreshes LastBeat.
+    internal static readonly TimeSpan TeacherHeartbeatTimeout = TimeSpan.FromSeconds(8);
 
     // ============================================================
     // RAISED-HAND STATE (process-local; resets on server restart).
@@ -206,18 +207,13 @@ public class MonitoringHub : Hub
         if (string.Equals(roleNow, "Instructor", StringComparison.OrdinalIgnoreCase)
             && int.TryParse(roomId, out int rId))
         {
-            // Register this live instructor connection.
-            _activeInstructorConnections[Context.ConnectionId] = rId;
-
-            // Cancel any PENDING disconnect grace check — the instructor is
-            // back within the window, so a transient drop must NOT surface a
-            // TeacherDisconnected to students at all.
-            if (_instructorDisconnectGrace.TryRemove(rId, out var graceCts))
+            // Register / refresh this live instructor connection (seeds the
+            // first heartbeat so the sweeper doesn't immediately flag it).
+            _activeInstructorConnections[Context.ConnectionId] = new ActiveInstructorConnection
             {
-                _logger.LogInformation("JoinRoom: cancelling pending instructor-disconnect grace for room {RoomId} (reconnected in time).", rId);
-                graceCts.Cancel();
-                graceCts.Dispose();
-            }
+                RoomId = rId,
+                LastBeat = DateTime.UtcNow
+            };
 
             wasFlaggedDisconnected = _roomsWithDisconnectedInstructor.TryRemove(rId, out _);
         }
@@ -259,107 +255,31 @@ public class MonitoringHub : Hub
         }
     }
 
-    // ============================================================
-    // INSTRUCTOR-DISCONNECT GRACE CHECK (debounce)
-    // ============================================================
-    // Scheduled from OnDisconnectedAsync. Waits InstructorDisconnectGrace; if
-    // the instructor is STILL gone (no reconnect cancelled this and no live
-    // connection remains for the room), flags the room and broadcasts
-    // TeacherDisconnected. A reconnect within the window suppresses it
-    // entirely, so transient blips never reach students.
-    private void ScheduleInstructorDisconnectGraceCheck(int roomId)
+    // IMC invokes this every ~3s while in the room. Refreshes LastBeat so the
+    // DisconnectSweeperService can tell a live instructor from a dropped one
+    // (mirrors the student Heartbeat). Frequent invocation also keeps SignalR's
+    // server-side client timeout from firing on a healthy teacher.
+    public Task TeacherHeartbeat(int roomId)
     {
-        var cts = new CancellationTokenSource();
-        if (_instructorDisconnectGrace.TryRemove(roomId, out var oldCts))
+        if (_activeInstructorConnections.TryGetValue(Context.ConnectionId, out var conn))
         {
-            oldCts.Cancel();
-            oldCts.Dispose();
+            conn.LastBeat = DateTime.UtcNow;
         }
-        _instructorDisconnectGrace[roomId] = cts;
-        var token = cts.Token;
-
-        _logger.LogInformation(
-            "OnDisconnectedAsync: instructor dropped from room {RoomId} — starting {Grace}s grace before surfacing TeacherDisconnected.",
-            roomId, InstructorDisconnectGrace.TotalSeconds);
-
-        _ = Task.Run(async () =>
+        else
         {
-            try
+            // First beat before a JoinRoom registration (or after a reconnect
+            // race) — register it so liveness is tracked immediately.
+            var roleNow = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+            if (string.Equals(roleNow, "Instructor", StringComparison.OrdinalIgnoreCase))
             {
-                await Task.Delay(InstructorDisconnectGrace, token);
-            }
-            catch (TaskCanceledException)
-            {
-                return; // reconnected within grace — nothing to surface
-            }
-
-            if (token.IsCancellationRequested) return;
-
-            // Belt-and-suspenders: if any live instructor connection exists
-            // for this room, they reconnected — suppress.
-            bool stillConnected = false;
-            foreach (var kv in _activeInstructorConnections)
-            {
-                if (kv.Value == roomId) { stillConnected = true; break; }
-            }
-            if (stillConnected)
-            {
-                _instructorDisconnectGrace.TryRemove(roomId, out _);
-                return;
-            }
-
-            try
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var db  = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var hub = scope.ServiceProvider.GetRequiredService<IHubContext<MonitoringHub>>();
-
-                // Re-confirm canonical truth in a fresh scope: latest session
-                // Active AND monitoring genuinely live.
-                var room = await db.Rooms.FindAsync(roomId);
-                if (room == null || !room.IsMonitoringActive)
-                {
-                    _instructorDisconnectGrace.TryRemove(roomId, out _);
-                    return;
-                }
-                var latest = await db.ExamSessions
-                    .Where(s => s.RoomId == roomId)
-                    .OrderByDescending(s => s.StartTime)
-                    .FirstOrDefaultAsync();
-                bool active = latest != null
-                    && string.Equals(latest.Status, "Active", StringComparison.OrdinalIgnoreCase);
-                if (!active)
-                {
-                    _instructorDisconnectGrace.TryRemove(roomId, out _);
-                    return;
-                }
-
-                db.MonitoringEvents.Add(new MonitoringEvent
+                _activeInstructorConnections[Context.ConnectionId] = new ActiveInstructorConnection
                 {
                     RoomId = roomId,
-                    StudentId = 0,
-                    EventType = "TEACHER_DISCONNECTED",
-                    Description = "Instructor lost connection mid-session — session stays Active, monitoring continues.",
-                    SeverityScore = 0,
-                    Timestamp = DateTime.UtcNow
-                });
-                _roomsWithDisconnectedInstructor[roomId] = true;
-                await db.SaveChangesAsync();
-
-                _logger.LogInformation(
-                    "Instructor still gone after {Grace}s grace — flagging room {RoomId} + broadcasting TeacherDisconnected.",
-                    InstructorDisconnectGrace.TotalSeconds, roomId);
-                await hub.Clients.Group(roomId.ToString()).SendAsync("TeacherDisconnected", roomId);
+                    LastBeat = DateTime.UtcNow
+                };
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Instructor-disconnect grace check failed for room {RoomId}.", roomId);
-            }
-            finally
-            {
-                _instructorDisconnectGrace.TryRemove(roomId, out _);
-            }
-        }, token);
+        }
+        return Task.CompletedTask;
     }
 
     // Bug fix: Bug2
@@ -844,9 +764,9 @@ public class MonitoringHub : Hub
                 // abrupt drops); fall back to the instructor's active room via
                 // claims when available.
                 Room activeRoom = null;
-                if (connIsInstructor)
+                if (connIsInstructor && mappedInstructorRoomId != null)
                 {
-                    activeRoom = await db.Rooms.FindAsync(mappedInstructorRoomId);
+                    activeRoom = await db.Rooms.FindAsync(mappedInstructorRoomId.RoomId);
                 }
                 if (activeRoom == null
                     && userIdString != null
@@ -895,19 +815,16 @@ public class MonitoringHub : Hub
                         return;
                     }
 
-                    // DEBOUNCE — do NOT flag/broadcast immediately. A transient
-                    // transport blip fires OnDisconnectedAsync then auto-
-                    // reconnects within a second or two; surfacing
-                    // TeacherDisconnected here produced a false
-                    // disconnect→reconnect flicker on every blip. Instead,
-                    // schedule a grace check: only if the instructor is STILL
-                    // gone after InstructorDisconnectGrace (no reconnecting
-                    // JoinRoom cancelled it and no live connection remains) do
-                    // we flag the room and tell students. A reconnect within
-                    // the window means students never see anything. (The
-                    // connection was already removed from the presence map at
-                    // the top of this branch.)
-                    ScheduleInstructorDisconnectGraceCheck(activeRoom.Id);
+                    // Hand off to the single master. HandleInstructorDisconnect
+                    // is idempotent (TryAdd on the flag) and re-checks for a
+                    // fresh teacher heartbeat, so it's safe even though the
+                    // heartbeat sweeper is the PRIMARY fast detector (~10s).
+                    // This OnDisconnectedAsync path is a backstop for a clean
+                    // transport close. The connection was already removed from
+                    // the presence map above, so the heartbeat check won't see
+                    // this dying connection.
+                    var disconnectService = scope.ServiceProvider.GetRequiredService<DisconnectService>();
+                    await disconnectService.HandleInstructorDisconnectAsync(activeRoom.Id);
                 }
             }
             catch (DbUpdateConcurrencyException)

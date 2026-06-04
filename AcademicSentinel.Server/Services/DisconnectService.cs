@@ -69,6 +69,73 @@ public sealed class DisconnectService
     }
 
     /// <summary>
+    /// Idempotently flag a room as "instructor disconnected" and broadcast
+    /// <c>TeacherDisconnected</c> — the single source for the student banner,
+    /// the teacher's "Rejoin Session" panel, and the course-tile "IN PROGRESS"
+    /// pill. Called by BOTH the heartbeat sweeper (the primary ~10s detector)
+    /// and the hub's OnDisconnectedAsync backstop, so it must be safe to call
+    /// repeatedly and from a stale path.
+    ///
+    /// Guards:
+    ///   • a FRESH teacher heartbeat for the room ⇒ the instructor is present
+    ///     (or reconnected) ⇒ skip — this absorbs transient blips and the
+    ///     late OnDisconnectedAsync of an already-reconnected teacher;
+    ///   • monitoring must be genuinely live (room.IsMonitoringActive) and the
+    ///     latest session Active — a pre-start / ended session is never flagged;
+    ///   • TryAdd on the flag ⇒ only the FIRST observer writes the audit row
+    ///     and broadcasts, so the sweeper + OnDisconnectedAsync never double-fire.
+    /// </summary>
+    public async Task HandleInstructorDisconnectAsync(int roomId)
+    {
+        // Already flagged? Nothing to do (JoinRoom clears it on reconnect).
+        if (MonitoringHub._roomsWithDisconnectedInstructor.ContainsKey(roomId))
+            return;
+
+        // A fresh teacher heartbeat means the instructor is still present.
+        var cutoff = DateTime.UtcNow.Subtract(MonitoringHub.TeacherHeartbeatTimeout);
+        foreach (var kv in MonitoringHub._activeInstructorConnections)
+        {
+            if (kv.Value.RoomId == roomId && kv.Value.LastBeat >= cutoff)
+                return;
+        }
+
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // Canonical truth: monitoring genuinely live + latest session Active.
+        var room = await db.Rooms.FindAsync(roomId);
+        if (room == null || !room.IsMonitoringActive) return;
+
+        var latest = await db.ExamSessions
+            .Where(s => s.RoomId == roomId)
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        bool active = latest != null
+            && string.Equals(latest.Status, "Active", StringComparison.OrdinalIgnoreCase);
+        if (!active) return;
+
+        // Idempotent: only the first observer broadcasts.
+        if (!MonitoringHub._roomsWithDisconnectedInstructor.TryAdd(roomId, true))
+            return;
+
+        db.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId        = roomId,
+            StudentId     = 0,
+            EventType     = "TEACHER_DISCONNECTED",
+            Description   = "Instructor lost connection mid-session — session stays Active, monitoring continues.",
+            SeverityScore = 0,
+            Timestamp     = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "[DisconnectService] Instructor disconnected from room {RoomId} — flagged + broadcasting TeacherDisconnected.",
+            roomId);
+        await _hubContext.Clients.Group(roomId.ToString()).SendAsync("TeacherDisconnected", roomId);
+    }
+
+    /// <summary>
     /// Idempotently transition the student's participant row to
     /// <c>Disconnected</c> AND write a <c>STUDENT_DISCONNECTED</c> audit
     /// event AND broadcast — only when:
