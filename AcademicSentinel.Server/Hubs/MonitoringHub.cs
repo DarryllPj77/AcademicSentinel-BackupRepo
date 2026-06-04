@@ -871,17 +871,58 @@ public class MonitoringHub : Hub
         if (room == null)
             return;
 
-        var isSessionEnded = !string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
+        // CANONICAL TRUTH — never gate on room.Status (a derived cache that
+        // lags / flips to "Pending" during disconnect bookkeeping). Use the
+        // latest ExamSession by StartTime, the same rule JoinLiveExam uses.
+        var latestSession = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId)
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        bool sessionIsActive = latestSession != null
+            && string.Equals(latestSession.Status, "Active", StringComparison.OrdinalIgnoreCase);
 
-        var leaveAlreadyGranted = await _context.MonitoringEvents
+        // A GENUINE prior completion for THIS student in the current active
+        // session — the only thing that legitimately means "you already
+        // exited properly". Scoped to the active session so a grant from an
+        // earlier session can't resurrect a completion here.
+        bool leaveAlreadyGranted = latestSession != null && await _context.MonitoringEvents
             .AnyAsync(e => e.RoomId == roomId
                         && e.StudentId == studentId
-                        && e.EventType == "LEAVE_GRANTED");
+                        && e.EventType == "LEAVE_GRANTED"
+                        && e.Timestamp >= latestSession.StartTime);
 
-        if (isSessionEnded || leaveAlreadyGranted)
+        // ============================================================
+        // PRECEDENCE (explicit, state-based — NOT timeout-based):
+        //   1. Real completion (LEAVE_GRANTED) → re-assert LeaveGranted.
+        //   2. Session genuinely ended → SessionEnded (clean teardown).
+        //   3. Otherwise (still active, no completion) → DO NOTHING.
+        // ============================================================
+        // The previous code sent "LeaveGranted" whenever room.Status wasn't
+        // "Active". On a reconnect that fired the SAC's proper-exit flow
+        // (NotifyStudentLeftSafely → ConnectionStatus="Completed" +
+        // StudentLeftSession → IMC "EXAM COMPLETED. Student exited
+        // properly."), turning an unexpected disconnect into a false
+        // completion. A disconnect must NEVER imply a proper exit.
+        if (leaveAlreadyGranted)
         {
+            // Student truly completed before dropping — restore that state.
             await Clients.Client(Context.ConnectionId).SendAsync("LeaveGranted", studentId);
+            return;
         }
+
+        if (!sessionIsActive)
+        {
+            // The session ended while the student was away. This is a
+            // session-end, NOT a "you exited properly" completion — route
+            // the SAC through its SessionEnded teardown (which does not
+            // mark the participant Completed via the leave path).
+            await Clients.Client(Context.ConnectionId).SendAsync("SessionEnded");
+            return;
+        }
+
+        // Session still active and no legitimate completion on record: the
+        // student remains disconnected / reconnect-eligible and recovers via
+        // the normal dashboard rejoin-approval flow. Nothing to assert here.
     }
 
     /// <summary>
@@ -1191,6 +1232,34 @@ public class MonitoringHub : Hub
         int authenticatedStudentId = int.Parse(userIdString);
         if (authenticatedStudentId != studentId)
             return;
+
+        // DEFENSE-IN-DEPTH: "left safely" must correspond to a REAL approved
+        // exit. The instructor's GrantLeave writes a LEAVE_GRANTED event
+        // before it broadcasts LeaveApproved/LeaveGranted, so a legitimate
+        // call always has one on record. Without this guard, any spurious
+        // LeaveGranted reaching the SAC (e.g. a reconnect/resync path) would
+        // flip the participant to "Completed" and broadcast StudentLeftSession,
+        // turning an unexpected disconnect into a false "exited properly".
+        // If no LEAVE_GRANTED exists, this is NOT a completion — no-op so the
+        // participant stays in its disconnected / reconnect-eligible state.
+        var latestSession = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId)
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+
+        bool hasApprovedExit = latestSession != null && await _context.MonitoringEvents
+            .AnyAsync(e => e.RoomId == roomId
+                        && e.StudentId == studentId
+                        && e.EventType == "LEAVE_GRANTED"
+                        && e.Timestamp >= latestSession.StartTime);
+
+        if (!hasApprovedExit)
+        {
+            _logger.LogWarning(
+                "NotifyStudentLeftSafely: ignoring spurious 'left safely' for student {StudentId} in room {RoomId} — no LEAVE_GRANTED on record (not a real completion).",
+                studentId, roomId);
+            return;
+        }
 
         var participant = await _context.SessionParticipants
             .Where(p => p.RoomId == roomId && p.StudentId == studentId)
