@@ -175,30 +175,40 @@ public class MonitoringHub : Hub
         // Adds the teacher to the SignalR group for this specific exam
         await Groups.AddToGroupAsync(Context.ConnectionId, roomId);
 
-        // Clear any "instructor dropped" flag for this room — they're
-        // back in session. This keeps the dashboard banner / IN PROGRESS
-        // pill in sync without waiting for an additional poll.
+        // Clear any "instructor dropped" flag for this room — they're back
+        // in session. TryRemove returns TRUE only if the flag actually
+        // existed, i.e. a REAL instructor disconnect had been recorded.
+        // Capture that so we only announce a reconnect when one genuinely
+        // happened.
         var roleNow = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        bool wasFlaggedDisconnected = false;
         if (string.Equals(roleNow, "Instructor", StringComparison.OrdinalIgnoreCase)
             && int.TryParse(roomId, out int rId))
         {
-            _roomsWithDisconnectedInstructor.TryRemove(rId, out _);
+            wasFlaggedDisconnected = _roomsWithDisconnectedInstructor.TryRemove(rId, out _);
         }
 
-        // If an Instructor is rejoining a room whose session is still
-        // Active (typical scenario: their previous connection dropped and
-        // students kept being monitored), broadcast TeacherReconnected so
-        // every SAC in the room can clear / replace the yellow
-        // "Connection to Instructor Lost" banner with a positive
-        // reconnect notice.
+        // Broadcast TeacherReconnected ONLY when the instructor had
+        // genuinely been flagged disconnected. JoinRoom is called on EVERY
+        // routine connect — IMC open (Window_Loaded), monitoring start, and
+        // SignalR auto-reconnect re-join — so broadcasting unconditionally
+        // told students "Instructor reconnected to the session" (and
+        // flickered the banner) even though the instructor never dropped.
+        // Gating on wasFlaggedDisconnected makes the notification truthful:
+        // no prior TeacherDisconnected → no TeacherReconnected.
         var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
-        if (string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase)
+        if (wasFlaggedDisconnected
+            && string.Equals(role, "Instructor", StringComparison.OrdinalIgnoreCase)
             && int.TryParse(roomId, out int parsedRoomId))
         {
             var room = await _context.Rooms.FindAsync(parsedRoomId);
             if (room != null
                 && string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase))
             {
+                _logger.LogInformation(
+                    "JoinRoom: instructor genuinely reconnected to active room {RoomId} — broadcasting TeacherReconnected.",
+                    parsedRoomId);
+
                 _context.MonitoringEvents.Add(new MonitoringEvent
                 {
                     RoomId = parsedRoomId,

@@ -987,14 +987,14 @@ namespace AcademicSentinel.Client.Views.SAC
         // Falls back to the legacy booleans only when RoomState is absent.
         public string JoinStatusText => RoomState switch
         {
-            "ReconnectAvailable" => "Reconnect Now",
+            "ReconnectAvailable" => "Reconnect to In-Progress Session",
             "PendingApproval"    => "Waiting for Approval",
             "Connected"          => "In Session",
             "Finished"           => "Completed",
             "Joinable"           => "Joinable Now",
             "NotJoinable"        => "Not Joinable Yet",
             // Legacy fallback (older server with no RoomState field).
-            _ => HasActiveSession && StudentWasDisconnected ? "Reconnect Now"
+            _ => HasActiveSession && StudentWasDisconnected ? "Reconnect to In-Progress Session"
                : HasActiveSession ? "Joinable Now"
                : "Not Joinable Yet"
         };

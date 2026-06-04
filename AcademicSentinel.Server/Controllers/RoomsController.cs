@@ -300,10 +300,47 @@ public class RoomsController : ControllerBase
         if (participant == null)
             return StudentRoomState.Joinable; // active session, never joined yet
 
-        if (string.Equals(participant.JoinApprovalStatus, "Pending", StringComparison.OrdinalIgnoreCase))
-            return StudentRoomState.PendingApproval;
+        // Did this student actually connect to THIS active session and then
+        // drop? A STUDENT_DISCONNECTED event means they were a live
+        // participant who lost connection — a RECONNECTABLE prior
+        // participant, NOT a fresh join-approval case. This is the canonical
+        // signal that distinguishes the two: DisconnectService sets
+        // JoinApprovalStatus="Pending" on every disconnect purely to re-arm
+        // the rejoin gate, so "Pending" ALONE must not be read as "waiting
+        // for approval" (that mislabeled a merely-disconnected student).
+        bool droppedFromSession = await _context.MonitoringEvents.AnyAsync(e =>
+            e.RoomId == roomId
+            && e.StudentId == studentId
+            && e.EventType == "STUDENT_DISCONNECTED"
+            && e.Timestamp >= activeSession.StartTime);
 
-        if (string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase))
+        bool isPending = string.Equals(participant.JoinApprovalStatus, "Pending", StringComparison.OrdinalIgnoreCase);
+        bool isDisconnected = string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase);
+        // "Completed" with no LEAVE_GRANTED (checked above) is a stale write
+        // from a prior teardown — treat it like a disconnect for recovery.
+        bool isStaleCompleted = string.Equals(participant.ConnectionStatus, "Completed", StringComparison.OrdinalIgnoreCase);
+
+        // PRECEDENCE — Disconnected prior participant outranks the bare
+        // "Pending" flag so a reconnectable student is never mislabeled
+        // "Waiting for Approval".
+        if (droppedFromSession && (isDisconnected || isStaleCompleted))
+        {
+            _logger.LogInformation(
+                "RoomState: student {StudentId} room {RoomId} → ReconnectAvailable (prior participant dropped).", studentId, roomId);
+            return StudentRoomState.ReconnectAvailable;
+        }
+
+        // Genuine fresh join/rejoin awaiting instructor approval — a row that
+        // is Pending but was NOT a connected-then-dropped participant (e.g.
+        // a brand-new late joiner who has never been in this session).
+        if (isPending)
+        {
+            _logger.LogInformation(
+                "RoomState: student {StudentId} room {RoomId} → PendingApproval (fresh join awaiting approval).", studentId, roomId);
+            return StudentRoomState.PendingApproval;
+        }
+
+        if (isDisconnected || isStaleCompleted)
             return StudentRoomState.ReconnectAvailable;
 
         if (string.Equals(participant.ConnectionStatus, "Connected", StringComparison.OrdinalIgnoreCase))
@@ -315,11 +352,6 @@ public class RoomsController : ControllerBase
                 ? StudentRoomState.Connected
                 : StudentRoomState.ReconnectAvailable;
         }
-
-        // ConnectionStatus="Completed" but no LEAVE_GRANTED → stale write,
-        // treat as reconnect-eligible (matches MonitoringHub normalization).
-        if (string.Equals(participant.ConnectionStatus, "Completed", StringComparison.OrdinalIgnoreCase))
-            return StudentRoomState.ReconnectAvailable;
 
         return StudentRoomState.Joinable;
     }

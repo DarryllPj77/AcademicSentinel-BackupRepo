@@ -93,6 +93,14 @@ namespace AcademicSentinel.Client.Views.SAC
         private bool _awaitingJoinApproval;
         private int _pendingParticipantId;
         private bool _isDenied = false; // Bug fix: Bug1
+
+        // Last-known instructor connectivity state for THIS student session.
+        // True only after a real TeacherDisconnected was surfaced; the
+        // TeacherReconnected banner is shown ONLY when this was true, so a
+        // routine instructor re-join (which the server no longer broadcasts
+        // for, but might in a duplicate/late case) can't flicker a false
+        // "Instructor reconnected" notice.
+        private bool _instructorDisconnectActive = false;
         private readonly Queue<MonitoringEventDto> _pendingViolationQueue = new Queue<MonitoringEventDto>();
         private readonly object _joinLiveExamLock = new object();
         private bool _hasJoinedLiveExam;
@@ -1382,8 +1390,15 @@ namespace AcademicSentinel.Client.Views.SAC
                 _hubConnection.On<int>("TeacherDisconnected", droppedRoomId =>
                 {
                     if (droppedRoomId != _roomId) return;
-                    Dispatcher.Invoke(() => ShowTeacherDisconnectedBanner(
-                        "Connection to Instructor Lost. Reconnecting..."));
+                    Dispatcher.Invoke(() =>
+                    {
+                        // Dedup: ignore a repeated disconnect broadcast while
+                        // the banner is already up (state unchanged).
+                        if (_instructorDisconnectActive) return;
+                        _instructorDisconnectActive = true;
+                        System.Diagnostics.Debug.WriteLine("[SAC] TeacherDisconnected — showing instructor-lost banner.");
+                        ShowTeacherDisconnectedBanner("Connection to Instructor Lost. Reconnecting...");
+                    });
                 });
 
                 // Hub fires TeacherReconnected when the instructor's
@@ -1393,8 +1408,23 @@ namespace AcademicSentinel.Client.Views.SAC
                 _hubConnection.On<int>("TeacherReconnected", reconnectedRoomId =>
                 {
                     if (reconnectedRoomId != _roomId) return;
-                    Dispatcher.Invoke(() => ShowTeacherReconnectedBanner(
-                        "Instructor reconnected to the session. Monitoring continues normally."));
+                    Dispatcher.Invoke(() =>
+                    {
+                        // Defense-in-depth dedup: only announce a reconnect
+                        // if THIS student actually saw the instructor drop.
+                        // The server now only broadcasts on a real
+                        // disconnect, but this guard also absorbs any
+                        // duplicate/late broadcast so the banner can't
+                        // flicker on routine instructor re-joins.
+                        if (!_instructorDisconnectActive)
+                        {
+                            System.Diagnostics.Debug.WriteLine("[SAC] TeacherReconnected ignored — no prior instructor disconnect.");
+                            return;
+                        }
+                        _instructorDisconnectActive = false;
+                        System.Diagnostics.Debug.WriteLine("[SAC] TeacherReconnected — clearing instructor-lost banner.");
+                        ShowTeacherReconnectedBanner("Instructor reconnected to the session. Monitoring continues normally.");
+                    });
                 });
 
                 // Reconnect attempt got rerouted through the approval gate.
