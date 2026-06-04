@@ -195,7 +195,19 @@ public class RoomsController : ControllerBase
         if (changed) await SaveSilentlyAsync();
 
         bool canStudentsJoin = latestIsActive;
+
+        // CANONICAL "teacher has an active rejoinable monitoring session".
+        // A session row exists as Status="Active" the instant it is CREATED
+        // (CreateSession), BEFORE the teacher presses "Start Session
+        // Monitoring". So latestIsActive alone is NOT enough — it would mark
+        // a pre-start session as rejoinable and surface a false "Monitoring
+        // Session In Progress / Rejoin Session" banner while the IMC still
+        // shows NOT ACTIVE. Require room.IsMonitoringActive (the canonical
+        // "monitoring is actually live" flag, set true only once monitoring
+        // starts and kept in lockstep by the hub) so rejoin/disconnect UI is
+        // eligible ONLY after monitoring has genuinely started.
         bool canTeacherRejoin = latestIsActive
+            && room.IsMonitoringActive
             && AcademicSentinel.Server.Hubs.MonitoringHub
                 ._roomsWithDisconnectedInstructor.ContainsKey(roomId);
 

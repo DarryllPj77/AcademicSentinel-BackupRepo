@@ -697,11 +697,21 @@ public class MonitoringHub : Hub
                         .FirstOrDefaultAsync();
                     bool latestIsActive = latestForCheck != null
                         && string.Equals(latestForCheck.Status, "Active", StringComparison.OrdinalIgnoreCase);
-                    if (!latestIsActive)
+
+                    // A session row is Status="Active" from the moment it is
+                    // CREATED — before the teacher presses Start. A teacher
+                    // socket drop in that pre-start window is NOT a
+                    // "disconnected from an active monitoring session" event,
+                    // so require room.IsMonitoringActive too. Without this,
+                    // creating a session then dropping (or a transient blip on
+                    // the freshly-opened, not-yet-started IMC) flagged the room
+                    // and produced a false "Rejoin Session" banner while the
+                    // IMC still showed NOT ACTIVE.
+                    bool monitoringActuallyLive = latestIsActive && activeRoom.IsMonitoringActive;
+                    if (!monitoringActuallyLive)
                     {
-                        // Session was already cleanly ended. Don't flag the
-                        // room — and proactively drain any leftover flag in
-                        // case a prior path set one. Then bail.
+                        // Session ended, or monitoring never started. Don't
+                        // flag the room — drain any leftover flag and bail.
                         _roomsWithDisconnectedInstructor.TryRemove(activeRoom.Id, out _);
                         await db.SaveChangesAsync();
                         await base.OnDisconnectedAsync(exception);

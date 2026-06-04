@@ -1919,6 +1919,21 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (_isSessionEnded) return;
             if (_instructorDisconnectHandled) return;
+
+            // PRE-START GATE — the disconnect-to-dashboard experience only
+            // makes sense once monitoring has actually started. SignalR
+            // connects on Window_Loaded (before "Start Session Monitoring"),
+            // so a transient blip while the IMC still shows NOT ACTIVE would
+            // otherwise pop "Connection lost — returned to dashboard" for a
+            // session the teacher never started. In the NotStarted state let
+            // WithAutomaticReconnect recover silently instead.
+            if (_monitoringControlState == MonitoringControlState.NotStarted)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    "[IMC] HandleInstructorDisconnect suppressed — monitoring not started yet (pre-start state).");
+                return;
+            }
+
             _instructorDisconnectHandled = true;
 
             MessageBox.Show(
