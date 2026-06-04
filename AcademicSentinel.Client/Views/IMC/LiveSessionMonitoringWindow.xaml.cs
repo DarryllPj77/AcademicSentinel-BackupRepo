@@ -68,6 +68,14 @@ namespace AcademicSentinel.Client.Views.IMC
         private DispatcherTimer _reconnectBannerDebounce;
         private static readonly TimeSpan ReconnectBannerDebounceDelay = TimeSpan.FromSeconds(2.5);
 
+        // If the IMC is still disconnected this long after a drop, return the
+        // teacher to the dashboard (so they get the connection-status banner
+        // there, even offline) instead of waiting the full ~45s for SignalR's
+        // Closed event. Cancelled if the connection recovers first, so a brief
+        // blip keeps the teacher in the live session.
+        private DispatcherTimer _disconnectConfirmTimer;
+        private static readonly TimeSpan DisconnectConfirmDelay = TimeSpan.FromSeconds(10);
+
         private ICollectionView _studentsView;
         private ICollectionView _logsView;
         private LiveStudentStatus _selectedStudent;
@@ -1996,16 +2004,39 @@ namespace AcademicSentinel.Client.Views.IMC
         {
             if (_isSessionEnded) return;
             if (_monitoringControlState == MonitoringControlState.NotStarted) return;
-            if (_reconnectBannerDebounce != null) return; // already armed
 
-            _reconnectBannerDebounce = new DispatcherTimer { Interval = ReconnectBannerDebounceDelay };
-            _reconnectBannerDebounce.Tick += (_, __) =>
+            // 1) Banner debounce (~2.5s) — brief in-IMC feedback if the drop
+            //    persists. Stops itself inline so it never cancels the
+            //    dashboard-return timer below.
+            if (_reconnectBannerDebounce == null)
             {
-                CancelReconnectBannerDebounce();
-                System.Diagnostics.Debug.WriteLine("[IMC] Reconnect persisted past debounce — showing banner.");
-                ShowInstructorReconnectBanner();
-            };
-            _reconnectBannerDebounce.Start();
+                _reconnectBannerDebounce = new DispatcherTimer { Interval = ReconnectBannerDebounceDelay };
+                _reconnectBannerDebounce.Tick += (_, __) =>
+                {
+                    _reconnectBannerDebounce?.Stop();
+                    _reconnectBannerDebounce = null;
+                    System.Diagnostics.Debug.WriteLine("[IMC] Reconnect persisted past debounce — showing banner.");
+                    ShowInstructorReconnectBanner();
+                };
+                _reconnectBannerDebounce.Start();
+            }
+
+            // 2) Dashboard-return confirm (~10s) — if still disconnected, send
+            //    the teacher back to the dashboard so they see the
+            //    connection-status banner there quickly (even offline), instead
+            //    of waiting ~45s for SignalR's Closed. Cancelled on Reconnected.
+            if (_disconnectConfirmTimer == null)
+            {
+                _disconnectConfirmTimer = new DispatcherTimer { Interval = DisconnectConfirmDelay };
+                _disconnectConfirmTimer.Tick += (_, __) =>
+                {
+                    System.Diagnostics.Debug.WriteLine("[IMC] Disconnect persisted past confirm window — returning to dashboard.");
+                    CancelReconnectBannerDebounce();
+                    HideInstructorReconnectBanner();
+                    HandleInstructorDisconnect();
+                };
+                _disconnectConfirmTimer.Start();
+            }
         }
 
         private void CancelReconnectBannerDebounce()
@@ -2014,6 +2045,11 @@ namespace AcademicSentinel.Client.Views.IMC
             {
                 _reconnectBannerDebounce.Stop();
                 _reconnectBannerDebounce = null;
+            }
+            if (_disconnectConfirmTimer != null)
+            {
+                _disconnectConfirmTimer.Stop();
+                _disconnectConfirmTimer = null;
             }
         }
 
@@ -3137,6 +3173,7 @@ namespace AcademicSentinel.Client.Views.IMC
             }
             _participantsRefreshTimer?.Stop();
             _teacherHeartbeatTimer?.Stop();
+            CancelReconnectBannerDebounce();
             base.OnClosing(e);
         }
 
