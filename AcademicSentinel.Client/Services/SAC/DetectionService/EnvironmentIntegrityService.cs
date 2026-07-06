@@ -55,6 +55,22 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
             });
         }
 
+        public int GetConnectedDisplayCount()
+        {
+            try
+            {
+                const int SM_CMONITORS = 80;
+                var count = GetSystemMetrics(SM_CMONITORS);
+                return count > 0 ? count : 1;
+            }
+            catch
+            {
+                return 1;
+            }
+        }
+
+        public bool HasMultipleMonitors() => GetConnectedDisplayCount() > 1;
+
         private static bool DetectVmFromComputerSystemWmi()
         {
             try

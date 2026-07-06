@@ -15,6 +15,7 @@ public class SessionParticipant
 
     public string ConnectionStatus { get; set; } = "Connected";
     public string? FinalRiskLevel { get; set; } // "Safe", "Suspicious", or "Possible Dishonesty"
+    public bool HasMultipleMonitors { get; set; }
 
     // Join/Rejoin approval state machine. "Approved" by default so existing
     // join paths and backfilled rows behave as before; flipped to "Pending"

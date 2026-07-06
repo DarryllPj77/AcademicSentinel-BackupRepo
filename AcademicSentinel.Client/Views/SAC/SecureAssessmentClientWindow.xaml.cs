@@ -290,7 +290,7 @@ namespace AcademicSentinel.Client.Views.SAC
                 LmsExamUrl = _roomDetectionSettings.LmsExamUrl ?? string.Empty,
                 AllowedAppsCsv = _roomDetectionSettings.AllowedAppsCsv ?? string.Empty,
                 BlacklistedProcessNames = new HashSet<string>(ProcessBlacklist, StringComparer.OrdinalIgnoreCase),
-                OnHardwareStateDetected = async (isVm, isRemote) =>
+                OnHardwareStateDetected = async (isVm, isRemote, monitorCount) =>
                 {
                     try
                     {
@@ -301,7 +301,7 @@ namespace AcademicSentinel.Client.Views.SAC
                         if (studentId <= 0)
                             return;
 
-                        await _hubConnection.InvokeAsync("UpdateHardwareState", _roomId, studentId, isVm, isRemote);
+                        await _hubConnection.InvokeAsync("UpdateHardwareState", _roomId, studentId, isVm, isRemote, monitorCount);
                     }
                     catch
                     {
@@ -2675,6 +2675,7 @@ namespace AcademicSentinel.Client.Views.SAC
         {
             public string Status { get; set; } = string.Empty;
             public int ParticipantId { get; set; }
+            public bool HasMultipleMonitors { get; set; }
             public bool IsRejoin { get; set; }
             public bool IsLate { get; set; }
         }

@@ -1044,7 +1044,7 @@
                                     </TextBlock>
                                 </StackPanel>
 
-                                <StackPanel Orientation="Horizontal">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                     <TextBlock Text="Remote Access: " FontSize="11" Foreground="{StaticResource FEUSubTextBrush}"/>
                                     <TextBlock FontSize="11" FontWeight="SemiBold">
                                         <TextBlock.Style>
@@ -1054,6 +1054,24 @@
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding IsRemoteDesktop}" Value="True">
                                                         <Setter Property="Text" Value="Active"/>
+                                                        <Setter Property="Foreground" Value="#D32F2F"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Multiple Monitors: " FontSize="11" Foreground="{StaticResource FEUSubTextBrush}"/>
+                                    <TextBlock FontSize="11" FontWeight="SemiBold">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="No"/>
+                                                <Setter Property="Foreground" Value="#2E7D32"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasMultipleMonitors}" Value="True">
+                                                        <Setter Property="Text" Value="Yes"/>
                                                         <Setter Property="Foreground" Value="#D32F2F"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>

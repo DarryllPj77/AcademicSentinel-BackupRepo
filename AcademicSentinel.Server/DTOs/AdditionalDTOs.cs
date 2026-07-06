@@ -73,6 +73,7 @@ public class ParticipantDto
     public string ParticipationStatus { get; set; } = string.Empty; // "Joined", "NotJoined", "Disconnected"
     public string ConnectionStatus { get; set; } = string.Empty; // "Connected", "Disconnected"
     public DateTime? DisconnectedAt { get; set; }
+    public bool HasMultipleMonitors { get; set; }
 }
 
 /// <summary>

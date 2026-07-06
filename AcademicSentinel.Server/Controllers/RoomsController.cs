@@ -1561,7 +1561,9 @@ public class RoomsController : ControllerBase
                         : participationStatus,
                 ConnectionStatus = participantDictionary.TryGetValue(enrollment.StudentId, out var latestParticipant)
                     ? latestParticipant.ConnectionStatus
-                    : "Disconnected"
+                    : "Disconnected",
+                HasMultipleMonitors = participantDictionary.TryGetValue(enrollment.StudentId, out var latestMonitorParticipant)
+                    && latestMonitorParticipant.HasMultipleMonitors
             };
         }).ToList();
 
@@ -1812,6 +1814,7 @@ public class RoomsController : ControllerBase
             {
                 status = "Pending",
                 participantId = latestParticipant.Id,
+                hasMultipleMonitors = latestParticipant.HasMultipleMonitors,
                 isRejoin = true,
                 isLate = false,
                 message = "Rejoin request submitted successfully."
@@ -1953,6 +1956,7 @@ public class RoomsController : ControllerBase
             {
                 status = "Pending",
                 participantId = participant.Id,
+                hasMultipleMonitors = participant.HasMultipleMonitors,
                 isRejoin,
                 isLate
             });
@@ -1968,6 +1972,7 @@ public class RoomsController : ControllerBase
         {
             status = "Approved",
             participantId = participant.Id,
+            hasMultipleMonitors = participant.HasMultipleMonitors,
             isRejoin,
             isLate
         });

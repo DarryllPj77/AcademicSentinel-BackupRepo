@@ -1160,9 +1160,65 @@ public class MonitoringHub : Hub
         });
     }
 
-    public async Task UpdateHardwareState(int roomId, int studentId, bool isVm, bool isRemote)
+    public async Task UpdateHardwareState(int roomId, int studentId, bool isVm, bool isRemote, int monitorCount)
     {
-        await Clients.Group(roomId.ToString()).SendAsync("ReceiveHardwareStateUpdate", studentId, isVm, isRemote);
+        var role = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+        if (!string.Equals(role, "Student", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdString == null) return;
+
+        int authenticatedStudentId = int.Parse(userIdString);
+        if (authenticatedStudentId != studentId) return;
+
+        monitorCount = Math.Max(1, monitorCount);
+        var hasMultipleMonitors = monitorCount > 1;
+
+        var participant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+
+        if (participant != null)
+            participant.HasMultipleMonitors = hasMultipleMonitors;
+
+        var nowUtc = DateTime.UtcNow;
+        var eventType = hasMultipleMonitors ? "MULTIPLE_MONITORS" : "MONITOR_COUNT";
+        var description = hasMultipleMonitors
+            ? "Multiple monitors detected."
+            : $"Monitor count verified: {monitorCount}.";
+
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId = roomId,
+            StudentId = studentId,
+            EventType = eventType,
+            Description = description,
+            SeverityScore = hasMultipleMonitors ? 5 : 0,
+            Timestamp = nowUtc
+        });
+
+        await _context.SaveChangesAsync();
+
+        await Clients.Group(roomId.ToString()).SendAsync(
+            "ReceiveHardwareStateUpdate",
+            studentId,
+            isVm,
+            isRemote,
+            hasMultipleMonitors);
+
+        if (hasMultipleMonitors)
+        {
+            await Clients.Group(roomId.ToString()).SendAsync("ReceiveViolationAlert", new
+            {
+                studentId,
+                eventType,
+                severityScore = 5,
+                description,
+                timestamp = nowUtc
+            });
+        }
     }
 
     public async Task RequestLeave(int roomId, int studentId)

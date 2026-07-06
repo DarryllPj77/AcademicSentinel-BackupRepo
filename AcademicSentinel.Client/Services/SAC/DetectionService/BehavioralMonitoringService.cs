@@ -305,6 +305,7 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         [DllImport("user32.dll")]
         private static extern int GetSystemMetrics(int nIndex);
         private const int SM_CMONITORS = 80;
+        private bool _hasLoggedMultipleMonitors;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct LASTINPUTINFO
@@ -1449,6 +1450,8 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
         /// </summary>
         private void DetectMultiMonitor(ICollection<MonitoringDetectionEvent> findings)
         {
+            if (_hasLoggedMultipleMonitors) return;
+
             int monitorCount;
             try
             {
@@ -1463,9 +1466,10 @@ namespace AcademicSentinel.Client.Services.SAC.DetectionService
 
             if (monitorCount <= 1) return;
 
-            AddEvent(findings, DetectionConstants.EventMultiMonitor, 3,
-                $"Multiple displays attached ({monitorCount}). External monitors must be disconnected before the exam.",
+            AddEvent(findings, DetectionConstants.EventMultiMonitor, 5,
+                "Multiple monitors detected.",
                 cooldownSeconds: 60);
+            _hasLoggedMultipleMonitors = true;
         }
 
         // ============================================================

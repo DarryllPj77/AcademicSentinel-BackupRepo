@@ -1945,7 +1945,7 @@ namespace AcademicSentinel.Client.Views.IMC
                 }
             })));
 
-            _hubSubscriptions.Add(_hubConnection.On<int, bool, bool>("ReceiveHardwareStateUpdate", (studentId, isVm, isRemote) => Dispatcher.Invoke(() =>
+            _hubSubscriptions.Add(_hubConnection.On<int, bool, bool, bool>("ReceiveHardwareStateUpdate", (studentId, isVm, isRemote, hasMultipleMonitors) => Dispatcher.Invoke(() =>
             {
                 var targetStudent = ActiveStudents.FirstOrDefault(s => s.StudentId == studentId);
                 if (targetStudent == null)
@@ -1953,8 +1953,15 @@ namespace AcademicSentinel.Client.Views.IMC
 
                 targetStudent.IsUsingVM = isVm;
                 targetStudent.IsRemoteDesktop = isRemote;
+                targetStudent.HasMultipleMonitors = hasMultipleMonitors;
+                if (_selectedStudentId == studentId)
+                {
+                    _selectedStudent = targetStudent;
+                    StudentDetailPanel.DataContext = null;
+                    StudentDetailPanel.DataContext = targetStudent;
+                }
 
-                var hasHardwareViolation = isVm || isRemote;
+                var hasHardwareViolation = isVm || isRemote || hasMultipleMonitors;
                 targetStudent.HasHardwareViolation = hasHardwareViolation;
                 if (hasHardwareViolation)
                 {
@@ -2476,6 +2483,7 @@ namespace AcademicSentinel.Client.Views.IMC
                         IsDoneRequested = isDoneRequested,
                         IsHandRaisePending = isHandRaisePending,
                         IsHandRaiseActive  = isHandRaiseActive,
+                        HasMultipleMonitors = p.HasMultipleMonitors,
                         IsOffline = isDisconnected,
                         Status = statusText,
                         StatusColor = statusColor
@@ -2523,6 +2531,7 @@ namespace AcademicSentinel.Client.Views.IMC
                                 : $"{ApiEndpoints.BaseUrl}{p.ProfileImageUrl}"),
                         ViolationCount = seededDisconnectedViolations,
                         HasViolation   = seededDisconnectedViolations > 0 || _studentsWithViolations.Contains(p.StudentId),
+                        HasMultipleMonitors = p.HasMultipleMonitors,
                         IsDisconnected = true,
                         IsOffline      = true,
                         Status         = "Disconnected",
@@ -3256,6 +3265,7 @@ namespace AcademicSentinel.Client.Views.IMC
         private bool _hasHardwareViolation;
         private bool _isUsingVm;
         private bool _isRemoteDesktop;
+        private bool _hasMultipleMonitors;
         private bool _isOffline;
         public string Email { get; set; }
         public string ProfileImageUrl { get; set; } = string.Empty;
@@ -3380,6 +3390,16 @@ namespace AcademicSentinel.Client.Views.IMC
         public bool HasHardwareViolation { get => _hasHardwareViolation; set { _hasHardwareViolation = value; OnPropertyChanged(); } }
         public bool IsUsingVM { get => _isUsingVm; set { _isUsingVm = value; OnPropertyChanged(); } }
         public bool IsRemoteDesktop { get => _isRemoteDesktop; set { _isRemoteDesktop = value; OnPropertyChanged(); } }
+        public bool HasMultipleMonitors
+        {
+            get => _hasMultipleMonitors;
+            set
+            {
+                if (_hasMultipleMonitors == value) return;
+                _hasMultipleMonitors = value;
+                OnPropertyChanged();
+            }
+        }
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged([System.Runtime.CompilerServices.CallerMemberName] string n = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
@@ -3393,6 +3413,7 @@ namespace AcademicSentinel.Client.Views.IMC
         public string EnrollmentSource { get; set; } = string.Empty;
         public string ParticipationStatus { get; set; } = string.Empty;
         public string ConnectionStatus { get; set; } = string.Empty;
+        public bool HasMultipleMonitors { get; set; }
     }
 
     public class ParticipantOverviewRow

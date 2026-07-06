@@ -353,10 +353,11 @@ namespace AcademicSentinel.Client.Services.SAC
                 _hardwareSoftwareArtifactService.Start();
 
                 var hardwareState = await _environmentIntegrityService.PerformFullScanAsync();
+                var monitorCount = _environmentIntegrityService.GetConnectedDisplayCount();
 
                 if (_options.OnHardwareStateDetected != null)
                 {
-                    await _options.OnHardwareStateDetected(hardwareState.IsVm, hardwareState.IsRemote);
+                    await _options.OnHardwareStateDetected(hardwareState.IsVm, hardwareState.IsRemote, monitorCount);
                 }
 
                 if (hardwareState.IsVm || hardwareState.IsRemote)
@@ -513,7 +514,7 @@ namespace AcademicSentinel.Client.Services.SAC
         // being handed to BehavioralMonitoringService. Empty / null
         // means the feature is disabled and behaviour is unchanged.
         public string AllowedAppsCsv { get; set; } = string.Empty;
-        public Func<bool, bool, Task> OnHardwareStateDetected { get; set; }
+        public Func<bool, bool, int, Task> OnHardwareStateDetected { get; set; }
         public Action<DetectorFinding> OnPreFlightViolationDetected { get; set; }
     }
 
