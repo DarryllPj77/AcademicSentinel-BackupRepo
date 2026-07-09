@@ -1967,12 +1967,6 @@ namespace AcademicSentinel.Client.Views.IMC
                 {
                     targetStudent.HasViolation = true;
                     _studentsWithViolations.Add(studentId);
-
-                    if (FindName("CriticalAlertBanner") is Border criticalAlertBanner)
-                        criticalAlertBanner.Visibility = Visibility.Visible;
-
-                    if (FindName("TxtCriticalAlertMessage") is TextBlock criticalAlertMessage)
-                        criticalAlertMessage.Text = $"🚨 CRITICAL SECURITY ALERT: {targetStudent.Name} is using a restricted hardware environment!";
                 }
 
                 _studentsView.Refresh();

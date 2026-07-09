@@ -104,6 +104,7 @@ namespace AcademicSentinel.Client.Views.SAC
         private readonly Queue<MonitoringEventDto> _pendingViolationQueue = new Queue<MonitoringEventDto>();
         private readonly object _joinLiveExamLock = new object();
         private bool _hasJoinedLiveExam;
+        private int _hasReportedMultipleMonitorViolation;
 
         /// <summary>
         /// Per-room custom blacklist sent to the BehavioralMonitoringService.
@@ -699,6 +700,9 @@ namespace AcademicSentinel.Client.Views.SAC
                     return;
 
                 var now = DateTime.UtcNow;
+                bool isMultipleMonitorEvent =
+                    string.Equals(eventType, "MULTI_MONITOR", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(eventType, "MULTIPLE_MONITORS", StringComparison.OrdinalIgnoreCase);
 
                 // 2-second per-event-type cooldown removed deliberately.
                 // The runtime + BehavioralMonitoringService.AddEvent already
@@ -737,6 +741,12 @@ namespace AcademicSentinel.Client.Views.SAC
                 int studentId = SessionManager.CurrentUser?.Id ?? 0;
                 if (studentId <= 0)
                     return;
+
+                if (isMultipleMonitorEvent
+                    && System.Threading.Interlocked.Exchange(ref _hasReportedMultipleMonitorViolation, 1) == 1)
+                {
+                    return;
+                }
 
                 await _hubConnection.InvokeAsync("SendMonitoringEvent", _roomId, studentId, payload);
 

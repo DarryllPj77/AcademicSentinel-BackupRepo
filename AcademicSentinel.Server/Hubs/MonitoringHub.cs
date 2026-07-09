@@ -1184,20 +1184,18 @@ public class MonitoringHub : Hub
             participant.HasMultipleMonitors = hasMultipleMonitors;
 
         var nowUtc = DateTime.UtcNow;
-        var eventType = hasMultipleMonitors ? "MULTIPLE_MONITORS" : "MONITOR_COUNT";
-        var description = hasMultipleMonitors
-            ? "Multiple monitors detected."
-            : $"Monitor count verified: {monitorCount}.";
-
-        _context.MonitoringEvents.Add(new MonitoringEvent
+        if (!hasMultipleMonitors)
         {
-            RoomId = roomId,
-            StudentId = studentId,
-            EventType = eventType,
-            Description = description,
-            SeverityScore = hasMultipleMonitors ? 5 : 0,
-            Timestamp = nowUtc
-        });
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                RoomId = roomId,
+                StudentId = studentId,
+                EventType = "MONITOR_COUNT",
+                Description = $"Monitor count verified: {monitorCount}.",
+                SeverityScore = 0,
+                Timestamp = nowUtc
+            });
+        }
 
         await _context.SaveChangesAsync();
 
@@ -1208,17 +1206,6 @@ public class MonitoringHub : Hub
             isRemote,
             hasMultipleMonitors);
 
-        if (hasMultipleMonitors)
-        {
-            await Clients.Group(roomId.ToString()).SendAsync("ReceiveViolationAlert", new
-            {
-                studentId,
-                eventType,
-                severityScore = 5,
-                description,
-                timestamp = nowUtc
-            });
-        }
     }
 
     public async Task RequestLeave(int roomId, int studentId)
