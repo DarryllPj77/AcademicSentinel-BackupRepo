@@ -18,11 +18,354 @@ public class RoomsController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IHubContext<MonitoringHub> _hubContext;
+    private readonly ILogger<RoomsController> _logger;
 
-    public RoomsController(AppDbContext context, IHubContext<MonitoringHub> hubContext)
+    // ==========================================================
+    // CANONICAL SOURCE OF TRUTH for session activity.
+    //
+    // Rule (exclusive): the LATEST ExamSession (ORDER BY StartTime DESC)
+    // is the only state that matters.
+    //   * latest.Status == "Active"       → room is active.
+    //   * latest is null OR not Active    → room is not active.
+    //
+    // Side effects (idempotent self-heal):
+    //   • Older Active sessions are closed (Status="Completed",
+    //     EndTime=now) — they are orphans from crashes / partial ends.
+    //   • Stale "Connected"/"Pending" participant rows belonging to
+    //     orphan sessions get finalized so they can never re-appear
+    //     as live.
+    //   • Room.Status is set to "Active"/"Pending" to mirror the
+    //     latest session — Room.Status becomes a derived cache, NOT
+    //     a separate truth source.
+    //   • In-memory hub maps (_roomsWithDisconnectedInstructor and
+    //     _activeStudentConnections) are drained when canonical state
+    //     resolves to inactive.
+    //
+    // Returned record contains every field the API + UI need so no
+    // call site has to re-derive these flags independently.
+    // ==========================================================
+    public sealed record LatestSessionState(
+        ExamSession? Latest,
+        bool IsActive,
+        int? ActiveSessionId,
+        bool CanStudentsJoin,
+        bool CanTeacherRejoin);
+
+    private async Task<LatestSessionState> GetLatestSessionStateAsync(int roomId)
+    {
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null)
+            return new LatestSessionState(null, false, null, false, false);
+
+        // Single canonical query — order by StartTime DESC. Tracked so
+        // the loop below can mutate orphan rows in the same SaveChanges.
+        var sessions = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId)
+            .OrderByDescending(s => s.StartTime)
+            .ToListAsync();
+
+        var latest = sessions.FirstOrDefault();
+        bool latestIsActive = latest != null
+            && string.Equals(latest.Status, "Active", StringComparison.OrdinalIgnoreCase);
+        bool changed = false;
+
+        // PHANTOM-ACTIVE DETECTION.
+        //
+        // A session can be Status="Active" in the DB but functionally
+        // dead — IMC was force-closed mid-setup before any student
+        // joined and never came back. The teacher dashboard then shows a
+        // phantom "Monitoring Session In Progress" banner that never
+        // goes away.
+        //
+        // Criterion (tightened): the session is only "phantom" when
+        //   (a) it has been Active for ≥30 s, AND
+        //   (b) NO student has a live heartbeat in
+        //       _activeStudentConnections for this room, AND
+        //   (c) NO SessionParticipant row exists for this session at all.
+        //
+        // (c) is the rejoin-safety guard. Without it, the moment the
+        // last connected student dropped, the next /api/rooms/student
+        // poll would see an empty heartbeat map, kill the session, and
+        // strand the disconnected student on a "Not Joinable Yet" tile
+        // even though the instructor still believes the session is
+        // running. Closing a session that has real participants is the
+        // job of EndExamSession / EndSessionOnDisconnect — not this
+        // best-effort phantom sweep.
+        if (latestIsActive && latest != null
+            && (DateTime.UtcNow - latest.StartTime).TotalSeconds > 30)
+        {
+            bool anyLiveStudent = false;
+            foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+            {
+                if (kv.Value.RoomId == roomId)
+                {
+                    anyLiveStudent = true;
+                    break;
+                }
+            }
+
+            bool anySessionParticipant = !anyLiveStudent && await _context.SessionParticipants
+                .AnyAsync(p => p.RoomId == roomId && p.JoinedAt >= latest.StartTime);
+
+            if (!anyLiveStudent && !anySessionParticipant)
+            {
+                latest.Status = "Completed";
+                latest.EndTime ??= DateTime.UtcNow;
+                latestIsActive = false;
+                // Drain the instructor flag — no live students AND no
+                // participant rows means the session never really
+                // started; teacher can't "rejoin" something dead.
+                AcademicSentinel.Server.Hubs.MonitoringHub
+                    ._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+                changed = true;
+            }
+        }
+
+        // Close every Active session that is NOT the latest. Capture
+        // their ids so we can finalize their stale participants too.
+        var orphanIds = new HashSet<int>();
+        foreach (var s in sessions)
+        {
+            if (latest != null && s.Id == latest.Id) continue;
+            if (string.Equals(s.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                s.Status = "Completed";
+                s.EndTime ??= DateTime.UtcNow;
+                orphanIds.Add(s.Id);
+                changed = true;
+            }
+        }
+
+        // Finalize stale participants tied to those orphan sessions.
+        if (orphanIds.Count > 0)
+        {
+            var orphanStartTimes = sessions
+                .Where(s => orphanIds.Contains(s.Id))
+                .ToDictionary(s => s.Id, s => s.StartTime);
+
+            var staleParticipants = await _context.SessionParticipants
+                .Where(p => p.RoomId == roomId
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected"
+                            && p.JoinedAt >= orphanStartTimes.Values.Min())
+                .ToListAsync();
+            foreach (var p in staleParticipants)
+            {
+                // Only finalize participants whose joinedAt falls inside
+                // one of the orphan windows — leaves the latest session's
+                // live participants alone.
+                bool isOrphanParticipant = orphanStartTimes.Any(kv =>
+                    p.JoinedAt >= kv.Value
+                    && (latest == null || p.JoinedAt < latest.StartTime));
+                if (!isOrphanParticipant) continue;
+
+                p.ConnectionStatus = "Disconnected";
+                p.DisconnectedAt = DateTime.UtcNow;
+                p.JoinApprovalStatus = null;
+                p.IsCurrentlyActive = false;
+                changed = true;
+            }
+        }
+
+        // Mirror canonical state into Room.Status (derived cache only).
+        bool roomIsActive = string.Equals(room.Status, "Active", StringComparison.OrdinalIgnoreCase);
+        if (latestIsActive && !roomIsActive)
+        {
+            room.Status = "Active";
+            changed = true;
+        }
+        else if (!latestIsActive && roomIsActive)
+        {
+            room.Status = "Pending";
+            room.IsMonitoringActive = false;
+            changed = true;
+        }
+
+        // Drain in-memory maps when state is inactive.
+        if (!latestIsActive)
+        {
+            AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+            foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+            {
+                if (kv.Value.RoomId == roomId)
+                    AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+            }
+        }
+
+        if (changed) await SaveSilentlyAsync();
+
+        bool canStudentsJoin = latestIsActive;
+
+        // CANONICAL "teacher has an active rejoinable monitoring session".
+        // A session row exists as Status="Active" the instant it is CREATED
+        // (CreateSession), BEFORE the teacher presses "Start Session
+        // Monitoring". So latestIsActive alone is NOT enough — it would mark
+        // a pre-start session as rejoinable and surface a false "Monitoring
+        // Session In Progress / Rejoin Session" banner while the IMC still
+        // shows NOT ACTIVE. Require room.IsMonitoringActive (the canonical
+        // "monitoring is actually live" flag, set true only once monitoring
+        // starts and kept in lockstep by the hub) so rejoin/disconnect UI is
+        // eligible ONLY after monitoring has genuinely started.
+        bool canTeacherRejoin = latestIsActive
+            && room.IsMonitoringActive
+            && AcademicSentinel.Server.Hubs.MonitoringHub
+                ._roomsWithDisconnectedInstructor.ContainsKey(roomId);
+
+        return new LatestSessionState(
+            Latest: latest,
+            IsActive: latestIsActive,
+            ActiveSessionId: latestIsActive ? latest!.Id : (int?)null,
+            CanStudentsJoin: canStudentsJoin,
+            CanTeacherRejoin: canTeacherRejoin);
+    }
+
+    // Back-compat wrapper for old call sites that still reference the
+    // previous name. Returns the bool the legacy code expected.
+    private async Task<bool> EnsureRoomConsistencyAsync(int roomId)
+        => (await GetLatestSessionStateAsync(roomId)).IsActive;
+
+    // ==========================================================
+    // CANONICAL STUDENT-FACING ROOM STATE
+    // ==========================================================
+    // One source of truth for "what should the student see / be allowed
+    // to do for this room right now". Every student-facing surface (the
+    // dashboard room card, the rejoin gate's ALREADY_CONNECTED guard,
+    // reconnect messaging) derives from this so they can never disagree.
+    //
+    //   NotJoinable        — no active session
+    //   Finished           — student completed this session (LEAVE_GRANTED)
+    //   PendingApproval    — a join/rejoin request is awaiting the teacher
+    //   ReconnectAvailable — student dropped (or their socket is dead) and
+    //                        may rejoin the still-active session
+    //   Connected          — student is genuinely live (fresh heartbeat)
+    //   Joinable           — active session, student has not joined yet
+    public enum StudentRoomState
+    {
+        NotJoinable,
+        Joinable,
+        PendingApproval,
+        ReconnectAvailable,
+        Connected,
+        Finished
+    }
+
+    // Heartbeat liveness is the AUTHORITATIVE "is the student actually in
+    // the live session right now" signal — the DB ConnectionStatus column
+    // lags by up to ~15 s (sweeper) / ~45 s (SignalR transport timeout).
+    // A student sitting on the dashboard has no live SAC, so no fresh
+    // heartbeat exists even if the DB still says "Connected".
+    private static bool IsStudentHeartbeatLive(int roomId, int studentId)
+    {
+        var cutoff = DateTime.UtcNow.AddSeconds(-15);
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId == roomId
+                && kv.Value.StudentId == studentId
+                && kv.Value.LastBeat >= cutoff)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Maps participant + session + heartbeat into the canonical state.
+    // Read-only (no DB writes) so it is safe to call from any GET.
+    private async Task<StudentRoomState> ComputeStudentRoomStateAsync(int roomId, int studentId, LatestSessionState state)
+    {
+        if (!state.IsActive || state.Latest == null)
+            return StudentRoomState.NotJoinable;
+
+        var activeSession = state.Latest;
+
+        // True completion is an explicit LEAVE_GRANTED in THIS session —
+        // the same canonical rule the rejoin gate uses. A bare
+        // ConnectionStatus="Completed" without this event is a stale
+        // write and must NOT count as Finished (it reconciles to
+        // ReconnectAvailable below).
+        bool finished = await _context.MonitoringEvents.AnyAsync(e =>
+            e.RoomId == roomId
+            && e.StudentId == studentId
+            && e.EventType == "LEAVE_GRANTED"
+            && e.Timestamp >= activeSession.StartTime);
+        if (finished) return StudentRoomState.Finished;
+
+        var participant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId
+                        && p.StudentId == studentId
+                        && p.JoinedAt >= activeSession.StartTime)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+
+        if (participant == null)
+            return StudentRoomState.Joinable; // active session, never joined yet
+
+        // Did this student actually connect to THIS active session and then
+        // drop? A STUDENT_DISCONNECTED event means they were a live
+        // participant who lost connection — a RECONNECTABLE prior
+        // participant, NOT a fresh join-approval case. This is the canonical
+        // signal that distinguishes the two: DisconnectService sets
+        // JoinApprovalStatus="Pending" on every disconnect purely to re-arm
+        // the rejoin gate, so "Pending" ALONE must not be read as "waiting
+        // for approval" (that mislabeled a merely-disconnected student).
+        bool droppedFromSession = await _context.MonitoringEvents.AnyAsync(e =>
+            e.RoomId == roomId
+            && e.StudentId == studentId
+            && e.EventType == "STUDENT_DISCONNECTED"
+            && e.Timestamp >= activeSession.StartTime);
+
+        bool isPending = string.Equals(participant.JoinApprovalStatus, "Pending", StringComparison.OrdinalIgnoreCase);
+        bool isDisconnected = string.Equals(participant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase);
+        // "Completed" with no LEAVE_GRANTED (checked above) is a stale write
+        // from a prior teardown — treat it like a disconnect for recovery.
+        bool isStaleCompleted = string.Equals(participant.ConnectionStatus, "Completed", StringComparison.OrdinalIgnoreCase);
+
+        // PRECEDENCE — Disconnected prior participant outranks the bare
+        // "Pending" flag so a reconnectable student is never mislabeled
+        // "Waiting for Approval".
+        if (droppedFromSession && (isDisconnected || isStaleCompleted))
+        {
+            _logger.LogInformation(
+                "RoomState: student {StudentId} room {RoomId} → ReconnectAvailable (prior participant dropped).", studentId, roomId);
+            return StudentRoomState.ReconnectAvailable;
+        }
+
+        // Genuine fresh join/rejoin awaiting instructor approval — a row that
+        // is Pending but was NOT a connected-then-dropped participant (e.g.
+        // a brand-new late joiner who has never been in this session).
+        if (isPending)
+        {
+            _logger.LogInformation(
+                "RoomState: student {StudentId} room {RoomId} → PendingApproval (fresh join awaiting approval).", studentId, roomId);
+            return StudentRoomState.PendingApproval;
+        }
+
+        if (isDisconnected || isStaleCompleted)
+            return StudentRoomState.ReconnectAvailable;
+
+        if (string.Equals(participant.ConnectionStatus, "Connected", StringComparison.OrdinalIgnoreCase))
+        {
+            // Reconcile stale "Connected": no live heartbeat means the SAC
+            // is gone, so the student is reconnect-eligible — never
+            // "Connected" and never ALREADY_CONNECTED.
+            return IsStudentHeartbeatLive(roomId, studentId)
+                ? StudentRoomState.Connected
+                : StudentRoomState.ReconnectAvailable;
+        }
+
+        return StudentRoomState.Joinable;
+    }
+
+    private async Task SaveSilentlyAsync()
+    {
+        try { await _context.SaveChangesAsync(); } catch { /* best-effort heal */ }
+    }
+
+    public RoomsController(AppDbContext context, IHubContext<MonitoringHub> hubContext, ILogger<RoomsController> logger)
     {
         _context = context;
         _hubContext = hubContext;
+        _logger = logger;
     }
 
     // ==========================================
@@ -53,6 +396,39 @@ public class RoomsController : ControllerBase
         var room = await _context.Rooms.FindAsync(id);
         if (room == null) return NotFound("Room not found.");
         return room;
+    }
+
+    // PUT: api/rooms/{id}
+    // Lets an instructor rename / re-tag a room they own. Used by the Edit Course
+    // dialog. Image edits go through ImagesController.
+    [HttpPut("{id}")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> UpdateRoom(int id, [FromBody] RoomUpdateDto update)
+    {
+        var room = await _context.Rooms.FindAsync(id);
+        if (room == null) return NotFound("Room not found.");
+
+        var instructorIdString = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (instructorIdString == null || !int.TryParse(instructorIdString, out var instructorId))
+            return Unauthorized();
+
+        if (room.InstructorId != instructorId)
+            return StatusCode(403, "You can only edit rooms you created.");
+
+        if (!string.IsNullOrWhiteSpace(update.SubjectName))
+            room.SubjectName = update.SubjectName.Trim();
+
+        if (!string.IsNullOrWhiteSpace(update.EnrollmentCode))
+            room.EnrollmentCode = update.EnrollmentCode.Trim();
+
+        await _context.SaveChangesAsync();
+        return Ok(new { room.Id, room.SubjectName, room.EnrollmentCode });
+    }
+
+    public class RoomUpdateDto
+    {
+        public string? SubjectName { get; set; }
+        public string? EnrollmentCode { get; set; }
     }
 
     [HttpDelete("{id}")]
@@ -100,21 +476,33 @@ public class RoomsController : ControllerBase
     // ==========================================
 
     // POST: api/rooms/{roomId}/start-session
-    // This creates a NEW session record every time an exam starts
+    // This creates a NEW session record every time an exam starts.
+    // Spec v3/v4 alias: POST /api/rooms/{roomId}/start
     [HttpPost("{roomId}/start-session")]
+    [HttpPost("{roomId}/start")]
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> StartExamSession(int roomId, [FromBody] StartSessionDto? request)
     {
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
 
-        // Check if there is already an active session for this room
-        var activeSession = await _context.ExamSessions
-            .FirstOrDefaultAsync(s => s.RoomId == roomId && s.Status == "Active");
-
-        if (activeSession != null)
+        // REQUIRED — block start if the LMS Exam URL has not been configured.
+        // The SAC's anchored focus detection cannot function without it.
+        var roomSettings = await _context.RoomDetectionSettings
+            .FirstOrDefaultAsync(s => s.RoomId == roomId);
+        if (roomSettings == null || string.IsNullOrWhiteSpace(roomSettings.LmsExamUrl))
         {
-            return Ok(new { message = "Session already running", sessionId = activeSession.Id });
+            return BadRequest("Session cannot be started without a valid LMS Exam URL.");
+        }
+
+        // Check if there is already an active session for this room — via
+        // canonical latest-session rule. EnsureRoomConsistencyAsync closes
+        // any orphan Active sessions that aren't the latest before we
+        // make the decision, so we can never reuse an orphan id here.
+        var preStartState = await GetLatestSessionStateAsync(roomId);
+        if (preStartState.IsActive && preStartState.Latest != null)
+        {
+            return Ok(new { message = "Session already running", sessionId = preStartState.Latest.Id });
         }
 
         var examType = string.IsNullOrWhiteSpace(request?.ExamType) ? "Summative" : request.ExamType;
@@ -135,8 +523,21 @@ public class RoomsController : ControllerBase
 
         _context.ExamSessions.Add(newSession);
 
-        // Update Room Status to Active
+        // Update Room Status to Active.
         room.Status = "Active";
+
+        // Bug fix — explicitly reset IsMonitoringActive to false at session
+        // creation. A previous session that ended ungracefully (instructor
+        // force-quit, network drop before EndExamSession ran) could leave
+        // this flag stuck on `true`, which made:
+        //   1. RequestJoinSession think monitoring was already running →
+        //      forced first-time joiners through approval needlessly.
+        //   2. GetMonitoringState return true to the SAC the moment a
+        //      student joined → detectors fired violations on a session
+        //      that hadn't actually been started yet.
+        // Monitoring only goes live when the instructor presses "Start
+        // Session Monitoring" → BeginMonitoringCountdown sets the flag.
+        room.IsMonitoringActive = false;
 
         await _context.SaveChangesAsync();
 
@@ -147,39 +548,384 @@ public class RoomsController : ControllerBase
     }
 
     // PUT: api/rooms/sessions/{sessionId}/end
-    // This marks a specific session as finished
+    // This marks a specific session as finished.
+    // Spec v3/v4 aliases: POST /api/rooms/{sessionId}/end (POST verb to match spec).
     [HttpPut("sessions/{sessionId}/end")]
+    [HttpPost("{sessionId}/end")]
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> EndExamSession(int sessionId)
     {
         var session = await _context.ExamSessions.FindAsync(sessionId);
-        if (session == null) return NotFound("Session not found.");
+        if (session == null)
+        {
+            // Idempotent fallback: even when the session row is missing,
+            // we still try to fully reset the room. Without this branch,
+            // a 404 here would leave Room.Status="Active" stuck because
+            // the caller's End-Session click never reached the room save.
+            // We can't know the roomId without the session, so the client
+            // must call /force-reset when this returns 404 (handled in
+            // the IMC's BtnEndSession_Click).
+            return NotFound("Session not found.");
+        }
 
-        session.EndTime = DateTime.UtcNow;
-        session.Status = "Completed";
+        // -------------------------------------------------------------
+        // FINAL DISCONNECT FLUSH.
+        //
+        // Before we mark the session Completed, sweep any participant
+        // that is still on paper "Connected" but whose ConnectionId has
+        // already vanished from the hub's heartbeat map (or whose last
+        // heartbeat is stale). The instructor often clicks End Session
+        // within seconds of a student dropping — faster than the 15 s
+        // heartbeat-timeout window — so without this flush the
+        // STUDENT_DISCONNECTED event never lands in the audit trail and
+        // Session Archive falls back to "Clean Connection".
+        //
+        // This is the same DB transition + broadcast as the lazy commit
+        // in GetRoomParticipants, just triggered at end-of-session time.
+        // -------------------------------------------------------------
+        // Best-effort flush. Any exception here MUST NOT prevent the
+        // session from being marked Completed below — the End Session
+        // request should always succeed for the teacher.
+        try
+        {
+            var liveCutoff = DateTime.UtcNow.AddSeconds(-15);
+            var aliveStudentIdsAtEnd = new HashSet<int>();
+            foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+            {
+                if (kv.Value.RoomId == session.RoomId && kv.Value.LastBeat >= liveCutoff)
+                    aliveStudentIdsAtEnd.Add(kv.Value.StudentId);
+            }
 
-        // Also update the Room status back to Pending so it can be reused
+            var participantsToFlush = await _context.SessionParticipants
+                .Where(p => p.RoomId == session.RoomId
+                            && p.JoinedAt >= session.StartTime
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected")
+                .ToListAsync();
+
+            foreach (var p in participantsToFlush)
+            {
+                if (aliveStudentIdsAtEnd.Contains(p.StudentId))
+                    continue;
+
+                p.ConnectionStatus = "Disconnected";
+                p.DisconnectedAt = DateTime.UtcNow;
+                p.JoinApprovalStatus = null;
+                p.IsCurrentlyActive = false;
+
+                _context.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    EventType = "STUDENT_DISCONNECTED",
+                    Description = "Student was offline when the instructor ended the session.",
+                    SeverityScore = 0,
+                    RoomId = p.RoomId,
+                    StudentId = p.StudentId,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+                {
+                    if (kv.Value.StudentId == p.StudentId && kv.Value.RoomId == session.RoomId)
+                        AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+                }
+
+                try
+                {
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentDisconnected", p.StudentId);
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentConnectionLost", p.StudentId);
+                }
+                catch { /* broadcast best-effort */ }
+            }
+        }
+        catch
+        {
+            // Swallow — the only critical work is below (session.Status =
+            // "Completed" + room.Status = "Pending"). Disconnect bookkeeping
+            // can be cleaned up later by the IMC's poll-driven lazy commit.
+        }
+
+        // ============================================================
+        // ATOMIC, IDEMPOTENT END-SESSION TRANSACTION
+        //
+        // Six steps, all in one SaveChangesAsync so partial failure
+        // can't leave inconsistent state behind. Every step is a no-op
+        // if the state has already been transitioned — safe to call
+        // multiple times.
+        //
+        // (1) The clicked session → Completed.
+        // (2) ALL other Active sessions in this room → Completed
+        //     (kills orphans from crashes / half-closes / etc.).
+        // (3) Final disconnect flush — best-effort heartbeat-based
+        //     bookkeeping for participants who didn't return.
+        // (4) Room → Pending, IsMonitoringActive=false.
+        // (5) Clear the in-memory instructor-disconnect flag AND drain
+        //     every heartbeat entry for this room so the sweeper /
+        //     status endpoints can't resurrect Active state.
+        // (6) Broadcast SessionEnded to the room group AND to each
+        //     enrolled student individually (covers students who left
+        //     the SignalR group / aren't in any group right now).
+        // ============================================================
+
+        // (1) + (2)
+        var allActiveInRoom = await _context.ExamSessions
+            .Where(s => s.RoomId == session.RoomId && s.Status == "Active")
+            .ToListAsync();
+        foreach (var s in allActiveInRoom)
+        {
+            s.Status = "Completed";
+            s.EndTime ??= DateTime.UtcNow;
+        }
+        // Idempotency safety: if the clicked session wasn't in the active
+        // set (already Completed), still ensure its EndTime is populated.
+        if (!string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+        {
+            session.Status = "Completed";
+            session.EndTime ??= DateTime.UtcNow;
+        }
+
+        // (3) Disconnect flush — best-effort, fully isolated from the
+        //     critical close path.
+        try
+        {
+            var liveCutoff = DateTime.UtcNow.AddSeconds(-15);
+            var aliveStudentIdsAtEnd = new HashSet<int>();
+            foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+            {
+                if (kv.Value.RoomId == session.RoomId && kv.Value.LastBeat >= liveCutoff)
+                    aliveStudentIdsAtEnd.Add(kv.Value.StudentId);
+            }
+
+            var participantsToFlush = await _context.SessionParticipants
+                .Where(p => p.RoomId == session.RoomId
+                            && p.JoinedAt >= session.StartTime
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected")
+                .ToListAsync();
+
+            foreach (var p in participantsToFlush)
+            {
+                if (aliveStudentIdsAtEnd.Contains(p.StudentId)) continue;
+
+                p.ConnectionStatus = "Disconnected";
+                p.DisconnectedAt = DateTime.UtcNow;
+                p.JoinApprovalStatus = null;
+                p.IsCurrentlyActive = false;
+
+                _context.MonitoringEvents.Add(new MonitoringEvent
+                {
+                    EventType = "STUDENT_DISCONNECTED",
+                    Description = "Student was offline when the instructor ended the session.",
+                    SeverityScore = 0,
+                    RoomId = p.RoomId,
+                    StudentId = p.StudentId,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                try
+                {
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentDisconnected", p.StudentId);
+                    await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("StudentConnectionLost", p.StudentId);
+                }
+                catch { /* broadcast best-effort */ }
+            }
+        }
+        catch { /* flush is best-effort — close path proceeds */ }
+
+        // (4)
         var room = await _context.Rooms.FindAsync(session.RoomId);
-        if (room != null) room.Status = "Pending";
+        if (room != null)
+        {
+            room.Status = "Pending";
+            room.IsMonitoringActive = false;
+        }
+
+        // (5) In-memory state.
+        AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(session.RoomId, out _);
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId == session.RoomId)
+                AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+        }
 
         await _context.SaveChangesAsync();
 
-        // Broadcast to SignalR that the session is over and force-release soft lock states.
+        // (6) Broadcasts — group AND per-user. The per-user broadcast is
+        //     critical: students on the dashboard / waiting room aren't
+        //     in the SignalR room group, so they'd otherwise miss the
+        //     SessionEnded signal entirely.
         await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("MonitoringStateChanged", false);
         await _hubContext.Clients.Group(session.RoomId.ToString()).SendAsync("SessionEnded");
+
+        var enrolledStudentIds = await _context.RoomEnrollments
+            .Where(e => e.RoomId == session.RoomId)
+            .Select(e => e.StudentId)
+            .ToListAsync();
+        foreach (var sid in enrolledStudentIds)
+        {
+            try
+            {
+                await _hubContext.Clients.User(sid.ToString())
+                    .SendAsync("SessionEndedForcedExit", session.RoomId);
+            }
+            catch { /* per-user broadcast best-effort */ }
+        }
 
         return Ok(new { message = "Session officially ended and logged in history." });
     }
 
+    // ==============================================================
+    // FORCE-RESET ENDPOINT — server-authoritative, idempotent, by ROOM.
+    //
+    // Use case: teacher clicks End Session but the sessionId tracked on
+    // the client is stale / 0 / belongs to a session that's already
+    // Completed. We still need to be able to clear Room.Status from
+    // "Active" → "Pending", flush participants, drain in-memory state,
+    // and broadcast SessionEnded. This endpoint does ALL of that
+    // unconditionally, in a single SaveChangesAsync.
+    //
+    // Safe to call multiple times. Always returns 200.
+    // ==============================================================
+    [HttpPost("{roomId}/force-reset")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> ForceResetRoom(int roomId)
+    {
+        var room = await _context.Rooms.FindAsync(roomId);
+        if (room == null) return NotFound("Room not found.");
+
+        // 1. Close every Active session in the room.
+        var activeSessions = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.Status == "Active")
+            .ToListAsync();
+        foreach (var s in activeSessions)
+        {
+            s.Status = "Completed";
+            s.EndTime ??= DateTime.UtcNow;
+        }
+
+        // 2. Reset room.
+        room.Status = "Pending";
+        room.IsMonitoringActive = false;
+
+        // 3. Flush non-finalized participants — but only those in the
+        //    window of any session we just closed (most recent
+        //    session's StartTime as cutoff).
+        var cutoff = activeSessions
+            .OrderByDescending(s => s.StartTime)
+            .Select(s => (DateTime?)s.StartTime)
+            .FirstOrDefault() ?? DateTime.UtcNow.AddHours(-24);
+
+        var participantsToFlush = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId
+                        && p.JoinedAt >= cutoff
+                        && p.ConnectionStatus != "Completed"
+                        && p.ConnectionStatus != "Disconnected")
+            .ToListAsync();
+        foreach (var p in participantsToFlush)
+        {
+            p.ConnectionStatus = "Disconnected";
+            p.DisconnectedAt = DateTime.UtcNow;
+            p.JoinApprovalStatus = null;
+            p.IsCurrentlyActive = false;
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                EventType = "STUDENT_DISCONNECTED",
+                Description = "Session was force-ended by the instructor.",
+                SeverityScore = 0,
+                RoomId = roomId,
+                StudentId = p.StudentId,
+                Timestamp = DateTime.UtcNow
+            });
+        }
+
+        // 4. Drain in-memory state.
+        AcademicSentinel.Server.Hubs.MonitoringHub._roomsWithDisconnectedInstructor.TryRemove(roomId, out _);
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId == roomId)
+                AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(kv.Key, out _);
+        }
+
+        await _context.SaveChangesAsync();
+
+        // 5. Broadcasts — room group + per-user.
+        try
+        {
+            await _hubContext.Clients.Group(roomId.ToString()).SendAsync("MonitoringStateChanged", false);
+            await _hubContext.Clients.Group(roomId.ToString()).SendAsync("SessionEnded");
+
+            var enrolledStudentIds = await _context.RoomEnrollments
+                .Where(e => e.RoomId == roomId)
+                .Select(e => e.StudentId)
+                .ToListAsync();
+            foreach (var sid in enrolledStudentIds)
+            {
+                try { await _hubContext.Clients.User(sid.ToString()).SendAsync("SessionEndedForcedExit", roomId); }
+                catch { }
+            }
+        }
+        catch { /* broadcasts best-effort */ }
+
+        return Ok(new
+        {
+            message = "Room force-reset complete.",
+            closedSessions = activeSessions.Count,
+            flushedParticipants = participantsToFlush.Count
+        });
+    }
+
+    // Spec v3/v4: GET /api/rooms/{sessionId}/status — returns the room's
+    // current lifecycle state (Pending / Countdown / Active / Ended) and
+    // whether monitoring is currently engaged. Useful for SAC clients that
+    // want to query state without holding a SignalR connection.
+    [HttpGet("{roomId}/status")]
+    public async Task<IActionResult> GetRoomStatus(int roomId)
+    {
+        // ONE canonical helper — latest session by StartTime is the truth.
+        var state = await GetLatestSessionStateAsync(roomId);
+
+        // Re-read room fresh (no-tracking) in case the helper modified it.
+        var room = await _context.Rooms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == roomId);
+        if (room == null) return NotFound("Room not found.");
+
+        return Ok(new
+        {
+            roomId = room.Id,
+            status = room.Status,
+            isMonitoringActive = room.IsMonitoringActive,
+            subjectName = room.SubjectName,
+            activeSessionId = state.ActiveSessionId,
+            isActive = state.IsActive,
+            canStudentsJoin = state.CanStudentsJoin,
+            canTeacherRejoin = state.CanTeacherRejoin,
+            // Back-compat alias — old client builds key off this name.
+            instructorDisconnected = state.CanTeacherRejoin
+        });
+    }
+
     // GET: api/rooms/{roomId}/history
-    // Fetches all past completed sessions for this specific room
+    // Fetches all past sessions for this room — both cleanly Completed
+    // sessions AND sessions Interrupted by a teacher disconnect. The
+    // Interrupted status is what OnDisconnectedAsync writes when the
+    // instructor drops mid-session; without including it here, those
+    // sessions would vanish from the Past Sessions table (Ghost Sessions).
     [HttpGet("{roomId}/history")]
     public async Task<IActionResult> GetRoomHistory(int roomId)
     {
         var history = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Completed")
+            .Where(s => s.RoomId == roomId
+                        && (s.Status == "Completed" || s.Status == "Interrupted")
+                        // Past Sessions Trash: soft-deleted rows
+                        // (DeletedAt != null) are hidden here and
+                        // hard-deleted later by ArchiveCleanupService.
+                        && s.DeletedAt == null)
             .OrderByDescending(s => s.StartTime)
             .ToListAsync();
+
+        // Total students enrolled in the room — used to render the
+        // "attended/enrolled" ratio (e.g. 2/5) on the past-sessions table.
+        var enrolledCount = await _context.RoomEnrollments
+            .Where(e => e.RoomId == roomId)
+            .CountAsync();
 
         var result = history.Select(session =>
         {
@@ -200,7 +946,272 @@ public class RoomsController : ControllerBase
                 session.EndTime,
                 session.Status,
                 session.ExamType,
-                ParticipantCount = participantCount
+                ParticipantCount = participantCount,
+                EnrolledCount = enrolledCount
+            };
+        }).ToList();
+
+        return Ok(result);
+    }
+
+    // DELETE: api/rooms/sessions/{sessionId}
+    // Soft-deletes (Trashes) a Past Session archive. The row is
+    // hidden from history immediately but kept in the table until
+    // ArchiveCleanupService hard-deletes it after the configured
+    // retention window (Archive:RetentionDays in appsettings.json).
+    //
+    // Only terminal sessions (Completed / Interrupted) may be
+    // trashed — refusing live sessions (Active / Pending /
+    // Countdown) prevents the user from accidentally hiding a
+    // running monitoring session, which would also confuse
+    // GetLatestSessionStateAsync's "latest session" lookup.
+    [HttpDelete("sessions/{sessionId}")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> SoftDeleteSession(int sessionId)
+    {
+        var session = await _context.ExamSessions.FirstOrDefaultAsync(s => s.Id == sessionId);
+        if (session == null)
+            return NotFound(new { message = "Session not found." });
+
+        if (session.DeletedAt != null)
+            return Ok(new { message = "Session already trashed.", deletedAt = session.DeletedAt });
+
+        var isTerminal = string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(session.Status, "Interrupted", StringComparison.OrdinalIgnoreCase);
+        if (!isTerminal)
+            return Conflict(new
+            {
+                code    = "SESSION_NOT_TERMINAL",
+                message = $"Only Completed or Interrupted sessions can be deleted. Current status: {session.Status}."
+            });
+
+        session.DeletedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "SoftDeleteSession: sessionId={SessionId} roomId={RoomId} status={Status} trashed at {DeletedAt:O}; will be hard-deleted by ArchiveCleanupService after retention window.",
+            session.Id, session.RoomId, session.Status, session.DeletedAt);
+
+        return NoContent();
+    }
+
+    // POST: api/rooms/sessions/bulk-delete
+    // Soft-deletes multiple Past Session archives in a single
+    // round-trip. Per-item terminal-status guard mirrors the
+    // single-row endpoint: live sessions (Active / Pending /
+    // Countdown) are skipped, not failed, so a mixed selection
+    // partially succeeds rather than aborting the whole batch.
+    // Response separates softDeleted from skipped so the client
+    // can remove exactly the rows that actually got trashed.
+    [HttpPost("sessions/bulk-delete")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> BulkSoftDeleteSessions([FromBody] BulkSessionIdsDto body)
+    {
+        if (body?.Ids == null || body.Ids.Count == 0)
+            return BadRequest(new { message = "No session IDs provided." });
+
+        var ids = body.Ids.Distinct().ToList();
+        var sessions = await _context.ExamSessions
+            .Where(s => ids.Contains(s.Id))
+            .ToListAsync();
+
+        var softDeleted = new List<int>();
+        var skipped     = new List<object>();
+        var now         = DateTime.UtcNow;
+
+        foreach (var session in sessions)
+        {
+            if (session.DeletedAt != null)
+            {
+                // Already trashed — treat as success so the client
+                // can still remove it from its in-memory grid.
+                softDeleted.Add(session.Id);
+                continue;
+            }
+
+            bool isTerminal = string.Equals(session.Status, "Completed",   StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(session.Status, "Interrupted", StringComparison.OrdinalIgnoreCase);
+            if (!isTerminal)
+            {
+                skipped.Add(new { id = session.Id, reason = "SESSION_NOT_TERMINAL", status = session.Status });
+                continue;
+            }
+
+            session.DeletedAt = now;
+            softDeleted.Add(session.Id);
+        }
+
+        var foundIds = sessions.Select(s => s.Id).ToHashSet();
+        foreach (var id in ids.Where(i => !foundIds.Contains(i)))
+            skipped.Add(new { id, reason = "NOT_FOUND" });
+
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "BulkSoftDeleteSessions: requested={Requested} softDeleted={Deleted} skipped={Skipped}",
+            ids.Count, softDeleted.Count, skipped.Count);
+
+        return Ok(new { softDeleted, skipped });
+    }
+
+    // POST: api/rooms/sessions/{sessionId}/restore
+    // Pulls a soft-deleted Past Session archive back out of Trash
+    // by clearing DeletedAt. Idempotent — restoring a session
+    // that's not in trash returns 200 with an explanatory message
+    // rather than failing.
+    [HttpPost("sessions/{sessionId}/restore")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> RestoreSession(int sessionId)
+    {
+        var session = await _context.ExamSessions.FirstOrDefaultAsync(s => s.Id == sessionId);
+        if (session == null)
+            return NotFound(new { message = "Session not found." });
+
+        if (session.DeletedAt == null)
+            return Ok(new { message = "Session is not in trash; nothing to restore." });
+
+        session.DeletedAt = null;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "RestoreSession: sessionId={SessionId} roomId={RoomId} restored from trash.",
+            session.Id, session.RoomId);
+
+        return Ok(new { message = "Session restored." });
+    }
+
+    // POST: api/rooms/sessions/bulk-restore
+    // Clears DeletedAt on every id in the body. Per-item guard:
+    // a row that isn't currently trashed is treated as a skip
+    // (NOT_IN_TRASH) instead of failing the whole batch.
+    [HttpPost("sessions/bulk-restore")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> BulkRestoreSessions([FromBody] BulkSessionIdsDto body)
+    {
+        if (body?.Ids == null || body.Ids.Count == 0)
+            return BadRequest(new { message = "No session IDs provided." });
+
+        var ids = body.Ids.Distinct().ToList();
+        var sessions = await _context.ExamSessions
+            .Where(s => ids.Contains(s.Id))
+            .ToListAsync();
+
+        var processed = new List<int>();
+        var skipped   = new List<object>();
+
+        foreach (var session in sessions)
+        {
+            if (session.DeletedAt == null)
+            {
+                skipped.Add(new { id = session.Id, reason = "NOT_IN_TRASH" });
+                continue;
+            }
+            session.DeletedAt = null;
+            processed.Add(session.Id);
+        }
+
+        var foundIds = sessions.Select(s => s.Id).ToHashSet();
+        foreach (var id in ids.Where(i => !foundIds.Contains(i)))
+            skipped.Add(new { id, reason = "NOT_FOUND" });
+
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "BulkRestoreSessions: requested={Requested} restored={Restored} skipped={Skipped}",
+            ids.Count, processed.Count, skipped.Count);
+
+        return Ok(new { processed, skipped });
+    }
+
+    // POST: api/rooms/sessions/bulk-purge
+    // Hard-deletes a list of session archives immediately,
+    // bypassing the retention window. Defensive: ONLY accepts rows
+    // that are currently in Trash (DeletedAt != null). Live or
+    // already-clean sessions are skipped so this endpoint cannot
+    // be misused to nuke non-trashed history.
+    [HttpPost("sessions/bulk-purge")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> BulkPurgeSessions([FromBody] BulkSessionIdsDto body)
+    {
+        if (body?.Ids == null || body.Ids.Count == 0)
+            return BadRequest(new { message = "No session IDs provided." });
+
+        var ids = body.Ids.Distinct().ToList();
+        var sessions = await _context.ExamSessions
+            .Where(s => ids.Contains(s.Id))
+            .ToListAsync();
+
+        var processed = new List<int>();
+        var skipped   = new List<object>();
+        var purgeable = new List<Models.ExamSession>();
+
+        foreach (var session in sessions)
+        {
+            if (session.DeletedAt == null)
+            {
+                skipped.Add(new { id = session.Id, reason = "NOT_IN_TRASH", status = session.Status });
+                continue;
+            }
+            purgeable.Add(session);
+            processed.Add(session.Id);
+        }
+
+        var foundIds = sessions.Select(s => s.Id).ToHashSet();
+        foreach (var id in ids.Where(i => !foundIds.Contains(i)))
+            skipped.Add(new { id, reason = "NOT_FOUND" });
+
+        if (purgeable.Count > 0)
+        {
+            _context.ExamSessions.RemoveRange(purgeable);
+            await _context.SaveChangesAsync();
+        }
+
+        _logger.LogInformation(
+            "BulkPurgeSessions: requested={Requested} purged={Purged} skipped={Skipped} ids=[{Ids}]",
+            ids.Count, processed.Count, skipped.Count, string.Join(",", processed));
+
+        return Ok(new { processed, skipped });
+    }
+
+    // GET: api/rooms/{roomId}/trash
+    // Lists soft-deleted Past Session archives for a room. Mirrors
+    // the shape of GetRoomHistory but adds DeletedAt and is the
+    // ONLY history endpoint that includes trashed rows (the others
+    // explicitly filter `DeletedAt == null`).
+    [HttpGet("{roomId}/trash")]
+    [Authorize(Roles = "Instructor")]
+    public async Task<IActionResult> GetRoomTrash(int roomId)
+    {
+        var trashed = await _context.ExamSessions
+            .Where(s => s.RoomId == roomId && s.DeletedAt != null)
+            .OrderByDescending(s => s.DeletedAt)
+            .ToListAsync();
+
+        var enrolledCount = await _context.RoomEnrollments
+            .Where(e => e.RoomId == roomId)
+            .CountAsync();
+
+        var result = trashed.Select(session =>
+        {
+            var endTime = session.EndTime ?? DateTime.UtcNow;
+            var participantCount = _context.SessionParticipants
+                .Where(p => p.RoomId == roomId && p.JoinedAt >= session.StartTime && p.JoinedAt <= endTime)
+                .Select(p => p.StudentId)
+                .Distinct()
+                .Count();
+
+            return new
+            {
+                session.Id,
+                session.SessionNumber,
+                session.RoomId,
+                session.StartTime,
+                session.EndTime,
+                session.Status,
+                session.ExamType,
+                session.DeletedAt,
+                ParticipantCount = participantCount,
+                EnrolledCount = enrolledCount
             };
         }).ToList();
 
@@ -219,13 +1230,42 @@ public class RoomsController : ControllerBase
         return Ok(settings);
     }
 
+    // Spec v3/v4 calls this `PUT /api/rooms/{roomId}/settings`. Accept both
+    // POST (existing client) and PUT (spec) to keep backward compatibility.
     [HttpPost("{roomId}/settings")]
+    [HttpPut("{roomId}/settings")]
     public async Task<ActionResult<RoomDetectionSettings>> SaveRoomSettings(int roomId, [FromBody] RoomSetupDto setupRequest)
     {
+        // Heal first so any orphan rows get closed in the DB and Room.Status
+        // is reconciled to the canonical latest-session state.
+        await EnsureRoomConsistencyAsync(roomId);
+
         var room = await _context.Rooms.FindAsync(roomId);
         if (room == null) return NotFound("Room not found.");
 
-        if (room.Status == "Active") return BadRequest("Cannot modify settings while an exam is running.");
+        // BLOCK EDITS ONLY WHILE MONITORING IS GENUINELY LIVE.
+        //
+        // An ExamSession row is Status="Active" from the instant it is
+        // CREATED (CreateSession) — before the teacher presses "Start
+        // Session Monitoring". Gating on session-active therefore blocked
+        // the normal pre-start setup/creation flow with "Cannot modify
+        // settings while an exam is running", even though nothing was
+        // actually running. IsMonitoringActive is the canonical "monitoring
+        // is truly in progress" flag (true only after Start, kept in
+        // lockstep by the hub), so it is the correct — and only — condition
+        // that should lock settings.
+        if (room.IsMonitoringActive)
+        {
+            _logger.LogInformation(
+                "SaveRoomSettings: blocked for room {RoomId} — monitoring is actively running.", roomId);
+            return BadRequest("Cannot modify settings while an exam is running.");
+        }
+
+        // REQUIRED — LMS Exam URL must be a valid HTTPS absolute URL with
+        // a real host. Reject empty / invalid / non-HTTPS / hostless inputs.
+        var urlError = ValidateLmsExamUrl(setupRequest.LmsExamUrl);
+        if (urlError != null)
+            return BadRequest(urlError);
 
         var existingSettings = await _context.RoomDetectionSettings.FirstOrDefaultAsync(s => s.RoomId == roomId);
         if (existingSettings != null)
@@ -237,6 +1277,8 @@ public class RoomsController : ControllerBase
             existingSettings.EnableFocusDetection = setupRequest.EnableFocusDetection;
             existingSettings.EnableVirtualizationCheck = setupRequest.EnableVirtualizationCheck;
             existingSettings.StrictMode = setupRequest.StrictMode;
+            existingSettings.LmsExamUrl = setupRequest.LmsExamUrl.Trim();
+            existingSettings.AllowedAppsCsv = NormaliseAllowedAppsCsv(setupRequest.AllowedAppsCsv);
         }
         else
         {
@@ -250,6 +1292,8 @@ public class RoomsController : ControllerBase
                 EnableFocusDetection = setupRequest.EnableFocusDetection,
                 EnableVirtualizationCheck = setupRequest.EnableVirtualizationCheck,
                 StrictMode = setupRequest.StrictMode,
+                LmsExamUrl = setupRequest.LmsExamUrl.Trim(),
+                AllowedAppsCsv = NormaliseAllowedAppsCsv(setupRequest.AllowedAppsCsv),
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -258,6 +1302,63 @@ public class RoomsController : ControllerBase
 
         await _context.SaveChangesAsync();
         return Ok("Settings saved successfully.");
+    }
+
+    /// <summary>
+    /// Validates an LMS exam URL for the anchored focus-detection feature.
+    /// Returns null if valid, or an error message describing what's wrong.
+    /// Rules:
+    ///   - non-empty
+    ///   - parses as Uri.UriKind.Absolute
+    ///   - scheme is "https"
+    ///   - host contains a "." (rejects bare strings like "canvas" / "localhost")
+    /// </summary>
+    // Canonicalises the AllowedAppsCsv input from the IMC instructor:
+    // trim each token, drop empties, lowercase, strip ".exe", dedupe,
+    // cap at a sensible length so a runaway input can't bloat the row.
+    // Tokens are preserved verbatim if they contain a "." (domain
+    // tokens like meet.google.com need to stay as-typed for the SAC
+    // to match them against browser titles). Returns null when the
+    // input is null/empty/whitespace-only.
+    private static string? NormaliseAllowedAppsCsv(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tokens = raw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t =>
+            {
+                // Strip trailing .exe for process tokens; domain tokens
+                // (containing a ".") are kept exactly as typed except
+                // for the trim+lowercase pass.
+                var lower = t.ToLowerInvariant();
+                if (!lower.Contains('.') && lower.EndsWith(".exe", StringComparison.Ordinal))
+                    lower = lower[..^4];
+                return lower;
+            })
+            .Where(t => t.Length > 0 && t.Length <= 80 && seen.Add(t))
+            .Take(40);
+
+        var csv = string.Join(",", tokens);
+        return csv.Length == 0 ? null : csv;
+    }
+
+    private static string? ValidateLmsExamUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return "LMS Exam URL is required.";
+
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var parsed))
+            return "LMS Exam URL must be a valid absolute URL.";
+
+        if (!string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return "LMS Exam URL must use HTTPS.";
+
+        if (string.IsNullOrWhiteSpace(parsed.Host) || !parsed.Host.Contains('.'))
+            return "LMS Exam URL must have a valid host (e.g. 'feu.instructure.com').";
+
+        return null;
     }
 
     [HttpGet("{roomId}/participants")]
@@ -297,11 +1398,119 @@ public class RoomsController : ControllerBase
             .Select(g => g.OrderByDescending(p => p.JoinedAt).First())
             .ToDictionary(p => p.StudentId);
 
-        var leaveGrantedStudentIds = await _context.MonitoringEvents
-            .Where(e => e.RoomId == roomId && e.EventType == "LEAVE_GRANTED")
+        // Scope LEAVE_GRANTED to the CURRENT active session. A grant from a
+        // prior session in this same room must NOT mark the student as
+        // "Completed" in a new session — otherwise, every later disconnect
+        // for a student who finished once is rendered "Completed" and
+        // silently dropped from BOTH the Joined and Disconnected cohorts,
+        // so they never appear under the Disconnected tab (they fall into
+        // "Missing" instead). This mirrors the canonical session-scoped
+        // rule already used by RequestJoinSession (lastLeaveGranted is
+        // filtered by >= activeSession.StartTime there).
+        var leaveGrantedQuery = _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId && e.EventType == "LEAVE_GRANTED");
+        if (activeSession != null)
+        {
+            leaveGrantedQuery = leaveGrantedQuery.Where(e => e.Timestamp >= activeSession.StartTime);
+        }
+        var leaveGrantedStudentIds = await leaveGrantedQuery
             .Select(e => e.StudentId)
             .Distinct()
             .ToHashSetAsync();
+
+        // HEARTBEAT-LIVENESS SNAPSHOT + lazy commit.
+        //
+        // Build a per-student "is currently alive" map by scanning the
+        // hub's active-connection dictionary. A student is alive only if
+        // they have at least one ConnectionId entry whose LastBeat is
+        // within the last 15 seconds.
+        //
+        // Beyond just overriding the response, this block now PROMOTES
+        // the heartbeat-derived state into the DB and broadcasts the
+        // standard StudentDisconnected / StudentConnectionLost events for
+        // any student whose row is still "Connected" but whose heartbeat
+        // has gone stale. That way:
+        //   - The Global Log Feed gets the "⚠ CONNECTION LOST" entry
+        //     (IMC's StudentConnectionLost handler).
+        //   - The Session Archive's ConnectionQuality calculation sees a
+        //     real STUDENT_DISCONNECTED event and reports "Disconnected"
+        //     (or "Reconnected" on later rejoin) instead of "Clean
+        //     Connection".
+        // The IMC's 4 s participant poll drives this lazily, with
+        // TryRemove on the hub dictionary acting as the idempotency gate
+        // — only one IMC's poll wins per stale entry, no double-fires.
+        // 10s cutoff aligns with the DisconnectSweeperService timeout so the
+        // poll-based backup path detects a drop on the same ~10s window the
+        // real-time sweeper push uses.
+        var liveCutoff = DateTime.UtcNow.AddSeconds(-10);
+        var aliveStudentIds = new HashSet<int>();
+        var staleConnectionsToFlush = new List<KeyValuePair<string, AcademicSentinel.Server.Hubs.MonitoringHub.ActiveStudentConnection>>();
+        foreach (var kv in AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections)
+        {
+            if (kv.Value.RoomId != roomId) continue;
+            if (kv.Value.LastBeat >= liveCutoff)
+                aliveStudentIds.Add(kv.Value.StudentId);
+            else
+                staleConnectionsToFlush.Add(kv);
+        }
+
+        // Promote stale heartbeat entries: claim them via TryRemove (only
+        // the first IMC poll that observes a stale entry wins), then write
+        // the DB transition and broadcast the standard SignalR events.
+        bool flushedAny = false;
+        foreach (var stale in staleConnectionsToFlush)
+        {
+            if (!AcademicSentinel.Server.Hubs.MonitoringHub._activeStudentConnections.TryRemove(stale.Key, out _))
+                continue;
+
+            var staleStudentId = stale.Value.StudentId;
+            var staleRoomId = stale.Value.RoomId;
+
+            var staleParticipants = await _context.SessionParticipants
+                .Where(p => p.RoomId == staleRoomId
+                            && p.StudentId == staleStudentId
+                            && p.ConnectionStatus != "Completed"
+                            && p.ConnectionStatus != "Disconnected")
+                .ToListAsync();
+
+            if (staleParticipants.Count == 0) continue;
+
+            foreach (var sp in staleParticipants)
+            {
+                sp.ConnectionStatus = "Disconnected";
+                sp.DisconnectedAt = DateTime.UtcNow;
+                sp.JoinApprovalStatus = null;
+                sp.IsCurrentlyActive = false;
+            }
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                EventType = "STUDENT_DISCONNECTED",
+                Description = "Student lost connection to the session (heartbeat timeout).",
+                SeverityScore = 0,
+                RoomId = staleRoomId,
+                StudentId = staleStudentId,
+                Timestamp = DateTime.UtcNow
+            });
+            flushedAny = true;
+
+            // Broadcast in the same iteration so the IMC's Global Log Feed
+            // gets the entry immediately. Sister event StudentConnectionLost
+            // is what the IMC's existing handler keys off for the log line.
+            var roomGroup = staleRoomId.ToString();
+            await _hubContext.Clients.Group(roomGroup).SendAsync("StudentDisconnected", staleStudentId);
+            await _hubContext.Clients.Group(roomGroup).SendAsync("StudentConnectionLost", staleStudentId);
+        }
+        if (flushedAny)
+        {
+            await _context.SaveChangesAsync();
+            // Refresh the local participant snapshot so the response we're
+            // about to assemble reflects the rows we just updated.
+            participants = await participantsQuery.ToListAsync();
+            participantDictionary = participants
+                .GroupBy(p => p.StudentId)
+                .Select(g => g.OrderByDescending(p => p.JoinedAt).First())
+                .ToDictionary(p => p.StudentId);
+        }
 
         var result = enrollments.Select(enrollment => {
             string participationStatus = "NotJoined";
@@ -310,6 +1519,17 @@ public class RoomsController : ControllerBase
                 participationStatus = string.Equals(p.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
                     ? "Disconnected"
                     : "Joined";
+
+                // Heartbeat override: if the DB still says "Joined" but
+                // the hub map has no fresh heartbeat for this student,
+                // the SAC is gone — surface as Disconnected so the IMC
+                // tile turns red on the next poll even before the sweeper
+                // / OnDisconnectedAsync writes to the DB.
+                if (string.Equals(participationStatus, "Joined", StringComparison.OrdinalIgnoreCase)
+                    && !aliveStudentIds.Contains(enrollment.StudentId))
+                {
+                    participationStatus = "Disconnected";
+                }
             }
 
             users.TryGetValue(enrollment.StudentId, out var user);
@@ -319,6 +1539,14 @@ public class RoomsController : ControllerBase
                     || (string.Equals(latestParticipantStatus.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
                         && leaveGrantedStudentIds.Contains(enrollment.StudentId)));
 
+            // Bug fix: a student kicked via RemoveStudentFromCurrentSession has
+            // JoinApprovalStatus = "Removed" on their latest participant row.
+            // Surface that as a distinct ParticipationStatus so the IMC's
+            // participant list stops rendering them as a passive "Disconnected"
+            // member after removal.
+            var isRemovedParticipant = participantDictionary.TryGetValue(enrollment.StudentId, out var latestForRemovalCheck)
+                && string.Equals(latestForRemovalCheck.JoinApprovalStatus, "Removed", StringComparison.OrdinalIgnoreCase);
+
             return new ParticipantDto
             {
                 StudentId = enrollment.StudentId,
@@ -326,19 +1554,23 @@ public class RoomsController : ControllerBase
                 StudentName = user?.FullName ?? "No Name Set", // Sending the real name
                 ProfileImageUrl = user?.ProfileImageUrl,
                 EnrollmentSource = enrollment.EnrollmentSource,
-                ParticipationStatus = isCompletedParticipant
-                    ? "Completed"
-                    : participationStatus,
+                ParticipationStatus = isRemovedParticipant
+                    ? "Removed"
+                    : isCompletedParticipant
+                        ? "Completed"
+                        : participationStatus,
                 ConnectionStatus = participantDictionary.TryGetValue(enrollment.StudentId, out var latestParticipant)
                     ? latestParticipant.ConnectionStatus
-                    : "Disconnected"
+                    : "Disconnected",
+                HasMultipleMonitors = participantDictionary.TryGetValue(enrollment.StudentId, out var latestMonitorParticipant)
+                    && latestMonitorParticipant.HasMultipleMonitors
             };
         }).ToList();
 
         return Ok(result);
     }
 
-    // NEW: Actual Delete logic for unenrollment [cite: 72]
+    // NEW: Actual Delete logic for unenrollment 
     [HttpDelete("{roomId}/unenroll/{studentId}")]
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> UnenrollStudent(int roomId, int studentId)
@@ -386,12 +1618,364 @@ public class RoomsController : ControllerBase
 
         latestParticipant.ConnectionStatus = "Disconnected";
         latestParticipant.DisconnectedAt = DateTime.UtcNow;
+        // Force the next rejoin to go through instructor approval — clearing
+        // IsCurrentlyActive and resetting JoinApprovalStatus stops the rejoin
+        // gate from treating this participant as a still-approved member.
+        latestParticipant.IsCurrentlyActive = false;
+        latestParticipant.JoinApprovalStatus = "Removed";
+
+        // Record a STUDENT_REMOVED event so RequestJoinSession can detect that
+        // a kick happened after the last REJOIN_APPROVED and require a fresh
+        // approval — same pattern as LEAVE_GRANTED.
+        _context.MonitoringEvents.Add(new MonitoringEvent
+        {
+            RoomId = roomId,
+            StudentId = studentId,
+            EventType = "STUDENT_REMOVED",
+            Description = "Student removed from session by instructor.",
+            SeverityScore = 0,
+            Timestamp = DateTime.UtcNow
+        });
+
         await _context.SaveChangesAsync();
 
+        // Distinct StudentRemoved broadcast so the IMC can drop the row
+        // immediately. StudentDisconnected alone is ambiguous — a student who
+        // simply lost network would also fire that, but the IMC keeps them in
+        // the list as "Disconnected". Removal is permanent until rejoin
+        // approval, so we need a separate signal.
+        await _hubContext.Clients.Group(roomId.ToString()).SendAsync("StudentRemoved", studentId);
         await _hubContext.Clients.Group(roomId.ToString()).SendAsync("StudentDisconnected", studentId);
         await _hubContext.Clients.User(studentId.ToString()).SendAsync("RemovedFromSession", roomId);
 
         return Ok(new { message = "Student removed from current session." });
+    }
+
+    // ==========================================
+    // JOIN APPROVAL GATE (late join + rejoin)
+    // Spec v3/v4 alias: POST /api/rooms/{roomId}/join
+    // ==========================================
+    [HttpPost("{roomId}/request-join")]
+    [HttpPost("{roomId}/join")]
+    [Authorize(Roles = "Student")]
+    public async Task<IActionResult> RequestJoinSession(int roomId)
+    {
+        var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdString == null) return Unauthorized();
+        int studentId = int.Parse(userIdString);
+
+        // Canonical rule: latest session is the truth source. Heal first,
+        // then derive activity from the returned state — Room.Status is
+        // now only a cache so we never key gate logic off it directly.
+        var state = await GetLatestSessionStateAsync(roomId);
+        if (state.Latest == null) return NotFound("Room not found.");
+        if (!state.IsActive)
+            return BadRequest("This room does not have an active session.");
+
+        var isEnrolled = await _context.RoomEnrollments
+            .AnyAsync(e => e.RoomId == roomId && e.StudentId == studentId);
+        if (!isEnrolled)
+            return StatusCode(403, "You are not enrolled in this room.");
+
+        var activeSession = state.Latest;
+
+        var latestParticipant = await _context.SessionParticipants
+            .Where(p => p.RoomId == roomId && p.StudentId == studentId)
+            .OrderByDescending(p => p.JoinedAt)
+            .FirstOrDefaultAsync();
+
+        // ============================================================
+        // CONCURRENT-DEVICE JOIN GUARD (defence-in-depth)
+        // ============================================================
+        // The single-device login lock in AuthController.Login is the
+        // primary defence, but a student who logged in on two devices
+        // BEFORE the lock was added (or who legitimately holds two
+        // valid JWTs because the second login happened after a stale-
+        // lock reclaim) could still hit this endpoint twice. Refuse the
+        // second join if the participant row is already Connected for
+        // the active session — that's the canonical "I am currently in
+        // the exam" state and exactly one device is allowed to hold it.
+        // Disconnected and other states fall through to the existing
+        // rejoin/late-join paths below.
+        if (latestParticipant != null
+            && string.Equals(latestParticipant.ConnectionStatus, "Connected", StringComparison.OrdinalIgnoreCase)
+            && latestParticipant.JoinedAt >= activeSession.StartTime)
+        {
+            // ALREADY_CONNECTED must reflect a GENUINELY live connection,
+            // not a stale DB row. A student sitting on the dashboard has
+            // no live SAC, so no fresh heartbeat exists — even though the
+            // row may still read "Connected" because the disconnect hasn't
+            // been detected yet (≤15 s sweeper / ≤45 s SignalR timeout).
+            // Only block when a fresh heartbeat proves they are truly in
+            // the live session from another device.
+            if (IsStudentHeartbeatLive(roomId, studentId))
+            {
+                _logger.LogWarning(
+                    "RequestJoinSession: blocked concurrent join for student {StudentId} in session {SessionId} — live heartbeat present.",
+                    studentId, activeSession.Id);
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    code = "ALREADY_CONNECTED",
+                    message = "Your account is already actively connected to this exam from another device."
+                });
+            }
+
+            // Stale "Connected" with no heartbeat: the SAC is gone.
+            // Reconcile to Disconnected here and DO NOT return — execution
+            // falls through to the disconnected-rejoin gate below, which
+            // routes the student through the normal instructor-approval
+            // pipeline. This is the fix for "ALREADY_CONNECTED when
+            // rejoining from the dashboard after a drop".
+            _logger.LogInformation(
+                "RequestJoinSession: reconciling stale Connected→Disconnected for student {StudentId} (no live heartbeat) before rejoin gate.",
+                studentId);
+            latestParticipant.ConnectionStatus   = "Disconnected";
+            latestParticipant.DisconnectedAt      = DateTime.UtcNow;
+            latestParticipant.JoinApprovalStatus  = "Pending";
+            latestParticipant.IsCurrentlyActive   = false;
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                RoomId = roomId,
+                StudentId = studentId,
+                EventType = "STUDENT_DISCONNECTED",
+                Description = "Student connection lost (no heartbeat) — detected on dashboard rejoin.",
+                SeverityScore = 0,
+                Timestamp = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+        }
+
+        // ============================================================
+        // EXPLICIT DISCONNECTED-STATE REJOIN GATE (deployment fix).
+        //
+        // When a student loses internet mid-exam, the server marks
+        // their participant row ConnectionStatus="Disconnected". When
+        // they regain connectivity and click the course tile on the
+        // dashboard, this REST endpoint is hit.
+        //
+        // Without this short-circuit, the request fell through to the
+        // generic blocking-event analysis below and — when the
+        // STUDENT_DISCONNECTED event wasn't written (e.g. the
+        // DisconnectService never finalized the row, only the hub did)
+        // — the participant looked like a fresh joiner with stale
+        // state, triggering JoinLiveExam's "already completed and
+        // exited" rejection on the next hub call.
+        //
+        // Explicit handling: flip the row to Pending approval, log a
+        // REJOIN_REQ event so the IMC's approval card pipeline picks
+        // it up, and return 202 Accepted so the SAC shows its
+        // waiting-for-approval overlay (matches the existing client
+        // contract in RequestJoinGateAsync).
+        // ============================================================
+        // Treat both "Disconnected" and stale "Completed" (no LEAVE_GRANTED
+        // exists at this point — the canonical completion check above
+        // already short-circuits true completions) as the same recoverable
+        // disconnect-rejoin state. This makes the rejoin pipeline
+        // deterministic regardless of which side healed first (hub
+        // JoinLiveExam's stale-Completed normalization or this REST path).
+        bool isStaleCompleted = latestParticipant != null
+            && string.Equals(latestParticipant.ConnectionStatus, "Completed", StringComparison.OrdinalIgnoreCase)
+            && latestParticipant.JoinedAt >= activeSession.StartTime;
+        bool isDisconnectedRejoin = latestParticipant != null
+            && string.Equals(latestParticipant.ConnectionStatus, "Disconnected", StringComparison.OrdinalIgnoreCase)
+            && latestParticipant.JoinedAt >= activeSession.StartTime;
+
+        if (isDisconnectedRejoin || isStaleCompleted)
+        {
+            _logger.LogInformation(
+                "RequestJoinSession: processing manual rejoin for {State} student {StudentId} in room {RoomId}.",
+                isStaleCompleted ? "stale-Completed" : "Disconnected",
+                studentId, roomId);
+
+            // Normalize a stale Completed row back to Disconnected so the
+            // IMC participant tile / status displays consistently.
+            if (isStaleCompleted)
+            {
+                latestParticipant.ConnectionStatus = "Disconnected";
+                latestParticipant.DisconnectedAt = DateTime.UtcNow;
+            }
+
+            latestParticipant.JoinApprovalStatus = "Pending";
+            latestParticipant.IsCurrentlyActive = false;
+
+            _context.MonitoringEvents.Add(new MonitoringEvent
+            {
+                RoomId = roomId,
+                StudentId = studentId,
+                EventType = "REJOIN_REQ",
+                Description = "Disconnected student attempting to rejoin — awaiting approval.",
+                SeverityScore = 0,
+                Timestamp = DateTime.UtcNow
+            });
+
+            await _context.SaveChangesAsync();
+
+            return StatusCode(StatusCodes.Status202Accepted, new
+            {
+                status = "Pending",
+                participantId = latestParticipant.Id,
+                hasMultipleMonitors = latestParticipant.HasMultipleMonitors,
+                isRejoin = true,
+                isLate = false,
+                message = "Rejoin request submitted successfully."
+            });
+        }
+
+        bool isRejoin = latestParticipant != null
+                     && latestParticipant.JoinedAt >= activeSession.StartTime;
+        bool isLate = !isRejoin;
+
+        var lastLeaveGranted = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "LEAVE_GRANTED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // BUG A FIX — Exam Completed = hard block.
+        // Once an instructor has approved a student's "Done" request the exam
+        // is finished for that student permanently. They cannot rejoin (and
+        // therefore cannot trigger another approval loop in the IMC), even
+        // if monitoring is still running for other students.
+        if (lastLeaveGranted.HasValue)
+        {
+            return StatusCode(403, "You have already completed this exam. Rejoining is not allowed.");
+        }
+
+        var lastRejoinApproved = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "REJOIN_APPROVED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // Track the most recent kick so a removed-then-rejoining student must
+        // pass through instructor approval, just like a student who left.
+        var lastStudentRemoved = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "STUDENT_REMOVED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // BUG B FIX — track the most recent join denial. Without this, a
+        // student whose first attempt was denied could just send another
+        // /request-join and the gate would treat them as a fresh joiner
+        // (no LEAVE_GRANTED, no STUDENT_REMOVED) → auto-approved. Treating
+        // JOIN_DENIED as a blocking event forces re-approval.
+        var lastJoinDenied = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "JOIN_DENIED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // Treat an unexpected disconnect (STUDENT_DISCONNECTED, written by
+        // DisconnectService for both OnDisconnectedAsync and heartbeat-timeout
+        // drops) as a blocking event — same pattern as STUDENT_REMOVED. Without
+        // this, a student who dropped mid-exam would be auto-approved here
+        // (the gate would see no blocking event), JoinApprovalStatus would be
+        // flipped to "Approved", and the hub's rejoin gate in JoinLiveExam
+        // would then be bypassed — silently restoring the student to the
+        // session with no instructor prompt. Including STUDENT_DISCONNECTED
+        // routes disconnect-reconnects through the exact same 202 Pending →
+        // StudentPendingApproval → JOIN_REQ pipeline used by kicked students.
+        var lastStudentDisconnected = await _context.MonitoringEvents
+            .Where(e => e.RoomId == roomId
+                     && e.StudentId == studentId
+                     && e.EventType == "STUDENT_DISCONNECTED"
+                     && e.Timestamp >= activeSession.StartTime)
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => (DateTime?)e.Timestamp)
+            .FirstOrDefaultAsync();
+
+        // Compose the blocking-event high-water mark across all sources.
+        // Any of {LEAVE_GRANTED, STUDENT_REMOVED, JOIN_DENIED,
+        // STUDENT_DISCONNECTED} requires a fresh REJOIN_APPROVED with a newer
+        // timestamp before the gate opens.
+        DateTime? lastBlockingEvent = null;
+        foreach (var ts in new[] { lastStudentRemoved, lastJoinDenied, lastStudentDisconnected })
+        {
+            if (ts.HasValue && (!lastBlockingEvent.HasValue || ts > lastBlockingEvent))
+                lastBlockingEvent = ts;
+        }
+
+        // Late joiners are also rate-limited by JOIN_DENIED — so if their
+        // first attempt was denied, the second attempt also goes through
+        // approval (not auto-approved as a fresh late joiner).
+        bool rejoinNeedsApproval =
+            (isRejoin || lastJoinDenied.HasValue)
+            && lastBlockingEvent.HasValue
+            && (!lastRejoinApproved.HasValue || lastRejoinApproved < lastBlockingEvent);
+
+        // Re-read room (no-tracking) for IsMonitoringActive — the earlier
+        // `room` local was replaced when this method switched to the
+        // canonical latest-session helper above.
+        var roomForApproval = await _context.Rooms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == roomId);
+        bool isMonitoringRunning = roomForApproval?.IsMonitoringActive ?? false;
+
+        // Late joiners only wait if monitoring is actively running. 
+        // Rejoiners wait if they have an unresolved leave-grant.
+        bool requiresApproval = (isLate && isMonitoringRunning) || rejoinNeedsApproval;
+        // =========================================================================
+
+        SessionParticipant participant;
+        if (isRejoin)
+        {
+            participant = latestParticipant!;
+            participant.JoinApprovalStatus = requiresApproval ? "Pending" : "Approved";
+            participant.IsCurrentlyActive = !requiresApproval;
+        }
+        else
+        {
+            participant = new SessionParticipant
+            {
+                RoomId = roomId,
+                StudentId = studentId,
+                ConnectionStatus = "Disconnected",
+                JoinApprovalStatus = "Pending",
+                IsCurrentlyActive = false,
+                JoinedAt = DateTime.UtcNow
+            };
+            _context.SessionParticipants.Add(participant);
+        }
+
+        await _context.SaveChangesAsync();
+
+        if (requiresApproval)
+        {
+            return StatusCode(StatusCodes.Status202Accepted, new
+            {
+                status = "Pending",
+                participantId = participant.Id,
+                hasMultipleMonitors = participant.HasMultipleMonitors,
+                isRejoin,
+                isLate
+            });
+        }
+
+        // If they bypass approval (because monitoring isn't running yet, or it's a clean reconnect)
+        // Make sure to set them as instantly approved!
+        participant.JoinApprovalStatus = "Approved";
+        participant.IsCurrentlyActive = true;
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            status = "Approved",
+            participantId = participant.Id,
+            hasMultipleMonitors = participant.HasMultipleMonitors,
+            isRejoin,
+            isLate
+        });
     }
 
     [HttpGet("instructor")]
@@ -403,14 +1987,35 @@ public class RoomsController : ControllerBase
         int instructorId = int.Parse(userIdString);
 
         var rooms = await _context.Rooms.Where(r => r.InstructorId == instructorId).ToListAsync();
-        return Ok(rooms);
+
+        // Run the canonical helper per room so course tiles never show
+        // IN PROGRESS for a room whose latest session has already ended.
+        var result = new List<object>(rooms.Count);
+        foreach (var r in rooms)
+        {
+            var state = await GetLatestSessionStateAsync(r.Id);
+            result.Add(new
+            {
+                r.Id,
+                r.SubjectName,
+                r.EnrollmentCode,
+                r.Status,
+                r.RoomImageUrl,
+                r.InstructorId,
+                isActive = state.IsActive,
+                instructorDisconnected = state.CanTeacherRejoin
+            });
+        }
+        return Ok(result);
     }
 
     // ==========================================
     // STUDENT DASHBOARD ENDPOINTS
     // ==========================================
 
+    // Spec v3/v4 alias: GET /api/rooms/my
     [HttpGet("student")]
+    [HttpGet("my")]
     [Authorize(Roles = "Student")]
     public async Task<IActionResult> GetStudentRooms()
     {
@@ -434,6 +2039,22 @@ public class RoomsController : ControllerBase
             .Where(u => instructorIds.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id, u => !string.IsNullOrWhiteSpace(u.FullName) ? u.FullName : u.Email);
 
+        // Run the canonical helper per room. HasActiveSession is derived
+        // from the latest session (orphan rows from older sessions can
+        // never make the tile say "Joinable" again), and the per-room
+        // student state comes from the SINGLE canonical classifier so the
+        // card CTA, the rejoin gate, and reconnect messaging all agree.
+        var activeSessionsByRoom = new Dictionary<int, ExamSession>();
+        var roomStateByRoom = new Dictionary<int, StudentRoomState>();
+        foreach (var room in rooms)
+        {
+            var state = await GetLatestSessionStateAsync(room.Id);
+            if (state.CanStudentsJoin && state.Latest != null)
+                activeSessionsByRoom[room.Id] = state.Latest;
+
+            roomStateByRoom[room.Id] = await ComputeStudentRoomStateAsync(room.Id, studentId, state);
+        }
+
         var result = rooms.Select(r =>
         {
             string subjectName = r.SubjectName;
@@ -449,6 +2070,15 @@ public class RoomsController : ControllerBase
                 }
             }
 
+            bool hasActiveSession = activeSessionsByRoom.ContainsKey(r.Id);
+            var roomState = roomStateByRoom.TryGetValue(r.Id, out var rs) ? rs : StudentRoomState.NotJoinable;
+
+            // "Reconnect Now" is shown whenever the canonical state is
+            // ReconnectAvailable — this includes a stale "Connected" row
+            // with no live heartbeat, which previously left the card stuck
+            // on the generic "Joinable Now".
+            bool studentWasDisconnected = roomState == StudentRoomState.ReconnectAvailable;
+
             return new
             {
                 Id = r.Id,
@@ -458,7 +2088,12 @@ public class RoomsController : ControllerBase
                 Status = r.Status,
                 CourseImagePath = r.RoomImageUrl,
                 RoomDescription = r.SubjectName,
-                CreatedBy = instructors.TryGetValue(r.InstructorId, out var creator) ? creator : "Unknown Instructor"
+                CreatedBy = instructors.TryGetValue(r.InstructorId, out var creator) ? creator : "Unknown Instructor",
+                HasActiveSession = hasActiveSession,
+                StudentWasDisconnected = studentWasDisconnected,
+                // Canonical state string for clients that want to drive
+                // richer CTA logic without re-deriving from booleans.
+                RoomState = roomState.ToString()
             };
         })
             .ToList();
@@ -466,7 +2101,9 @@ public class RoomsController : ControllerBase
         return Ok(result);
     }
 
+    // Spec v3/v4 alias: POST /api/rooms/enroll
     [HttpPost("enroll-code")]
+    [HttpPost("enroll")]
     [Authorize(Roles = "Student")]
     public async Task<IActionResult> EnrollStudentByCode([FromBody] EnrollByCodeDto request)
     {
@@ -520,17 +2157,17 @@ public class RoomsController : ControllerBase
     [Authorize(Roles = "Instructor")]
     public async Task<IActionResult> EnrollStudentByEmail(int roomId, [FromBody] string studentEmail)
     {
-        // 1. Find the student by their unique email [cite: 104]
+        // 1. Find the student by their unique email 
         var student = await _context.Users.FirstOrDefaultAsync(u => u.Email == studentEmail && u.Role == "Student");
         if (student == null) return NotFound("Student not found. Ask them to register first.");
 
-        // 2. Prevent duplicate enrollments in the same room [cite: 109]
+        // 2. Prevent duplicate enrollments in the same room 
         var existing = await _context.RoomEnrollments
             .AnyAsync(e => e.RoomId == roomId && e.StudentId == student.Id);
 
         if (existing) return BadRequest("Student is already in this list.");
 
-        // 3. Save the enrollment with source "Manual" [cite: 39, 45]
+        // 3. Save the enrollment with source "Manual" 
         var enrollment = new RoomEnrollment
         {
             RoomId = roomId,

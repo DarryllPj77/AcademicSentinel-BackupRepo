@@ -71,9 +71,11 @@ public class ReportsController : ControllerBase
                 else if (violation.SeverityLevel == "S3") totalScore += 50;
             }
 
-            // Classify based on the total score
+            // Classify based on the total score. Defense panel requires
+            // non-accusatory wording — the high band is reported as
+            // "Possible Dishonesty" rather than the legacy "Cheating".
             string risk = "Safe";
-            if (totalScore >= 50) risk = "Cheating";
+            if (totalScore >= 50) risk = "Possible Dishonesty";
             else if (totalScore >= 20) risk = "Suspicious";
 
             // Add them to the report
@@ -132,7 +134,7 @@ public class ReportsController : ControllerBase
         }
 
         string riskLevel = "Safe";
-        if (totalScore >= 50) riskLevel = "Cheating";
+        if (totalScore >= 50) riskLevel = "Possible Dishonesty";
         else if (totalScore >= 20) riskLevel = "Suspicious";
 
         // 7. Build the report DTO
@@ -166,7 +168,10 @@ public class ReportsController : ControllerBase
     public async Task<ActionResult<IEnumerable<object>>> GetRoomSessions(int roomId)
     {
         var sessions = await _context.ExamSessions
-            .Where(s => s.RoomId == roomId && s.Status == "Completed")
+            .Where(s => s.RoomId == roomId
+                        && s.Status == "Completed"
+                        // Past Sessions Trash: see RoomsController.GetRoomHistory.
+                        && s.DeletedAt == null)
             .OrderByDescending(s => s.StartTime)
             .ToListAsync();
 
@@ -205,28 +210,172 @@ public class ReportsController : ControllerBase
             .ToListAsync();
 
         var result = new List<object>();
+
+        // Expand window to ensure we catch all events
+        var sessionWindowStart = session.StartTime.AddMinutes(-1);
+        var sessionWindowEnd = (session.EndTime ?? DateTime.UtcNow).AddMinutes(1);
+
         foreach (var studentId in studentsInSession)
         {
             var user = await _context.Users.FindAsync(studentId);
             if (user == null) continue;
 
+            // 1. Fetch ALL logs for this student and pass them UNFILTERED to the UI
             var logs = await _context.MonitoringEvents
-                .Where(e => e.RoomId == session.RoomId && e.StudentId == studentId && e.Timestamp >= session.StartTime && (session.EndTime == null || e.Timestamp <= session.EndTime))
+                .Where(e => e.RoomId == session.RoomId && e.StudentId == studentId
+                            && e.Timestamp >= sessionWindowStart
+                            && e.Timestamp <= sessionWindowEnd)
                 .OrderByDescending(e => e.Timestamp)
                 .Select(e => new {
-                    EventType = e.EventType, Description = e.Description,
-                    SeverityScore = e.SeverityScore, Timestamp = e.Timestamp
+                    EventType = e.EventType,
+                    Description = e.Description,
+                    SeverityScore = e.SeverityScore,
+                    Timestamp = e.Timestamp
                 })
                 .ToListAsync();
 
             int totalRisk = logs.Where(l => l.SeverityScore > 0).Sum(l => l.SeverityScore);
-            string riskLevel = totalRisk >= 50 ? "CHEATING" : (totalRisk >= 20 ? "SUSPICIOUS" : "SAFE");
+            string riskLevel = totalRisk >= 50 ? "POSSIBLE DISHONESTY" : (totalRisk >= 20 ? "SUSPICIOUS" : "SAFE");
             int violationCount = logs.Count(l => l.SeverityScore > 0);
 
-            result.Add(new {
-                StudentId = studentId, Name = string.IsNullOrWhiteSpace(user.FullName) ? "Unknown" : user.FullName,
-                Email = user.Email, RiskScore = totalRisk, RiskLevel = riskLevel,
-                ViolationCount = violationCount, Logs = logs
+            // =======================================================
+            // 2. CONNECTION QUALITY — KICK vs NETWORK-DROP, ORDERED
+            // =======================================================
+            // The DB is the source of truth. Three distinct event
+            // sources drive the classifier:
+            //
+            //   STUDENT_DISCONNECTED  — written by DisconnectService
+            //                           and the stale-reconnect path.
+            //                           Represents a TRUE network
+            //                           failure (transport drop or
+            //                           heartbeat timeout).
+            //
+            //   STUDENT_REMOVED       — written by
+            //                           RemoveStudentFromCurrentSession
+            //                           when the instructor kicks. NOT
+            //                           a network event; the student's
+            //                           connection was fine.
+            //
+            //   REJOIN_APPROVED       — written by ApproveStudentJoin
+            //                           when the instructor admits the
+            //                           student back (after either a
+            //                           kick or a real disconnect).
+            //
+            // The "Connection" column reports the student's NETWORK
+            // experience. Reserve "Reconnected" for genuine recovery
+            // from STUDENT_DISCONNECTED only. A kick is an instructor
+            // policy action and must not pollute the network label.
+            //
+            // Rule set:
+            //   (1) Latest STUDENT_REMOVED NOT followed by a later
+            //       REJOIN_APPROVED          → "Disconnected"
+            //       (student was forcibly removed and never readmitted
+            //        before session end — the final state is "removed",
+            //        which is rendered as Disconnected in this column.)
+            //   (2) No STUDENT_DISCONNECTED ever recorded
+            //                                → "Clean Connection"
+            //       (covers fresh runs AND kick → rejoin: the kick was
+            //        not a network event, so without an actual
+            //        STUDENT_DISCONNECTED the network experience was
+            //        clean.)
+            //   (3) STUDENT_DISCONNECTED recorded:
+            //       • REJOIN_APPROVED after the latest STUDENT_DISCONNECTED
+            //         OR current row "Connected"      → "Reconnected"
+            //       • otherwise                       → "Disconnected"
+
+            // Current participant status (most recent row in this session).
+            var mostRecentParticipantRow = await _context.SessionParticipants
+                .AsNoTracking()
+                .Where(p => p.RoomId    == session.RoomId
+                            && p.StudentId == studentId
+                            && p.JoinedAt  >= sessionWindowStart
+                            && p.JoinedAt  <= sessionWindowEnd)
+                .OrderByDescending(p => p.JoinedAt)
+                .FirstOrDefaultAsync();
+
+            string finalStatus = mostRecentParticipantRow?.ConnectionStatus ?? "Unknown";
+
+            // Latest TRUE network-disconnect event. STUDENT_REMOVED is
+            // tracked separately because it represents an instructor
+            // action, not a network event.
+            DateTime? lastNetworkDisconnectTs = logs
+                .Where(l => l.EventType == "STUDENT_DISCONNECTED")
+                .Select(l => (DateTime?)l.Timestamp)
+                .OrderByDescending(t => t)
+                .FirstOrDefault();
+
+            // Latest instructor kick.
+            DateTime? lastKickTs = logs
+                .Where(l => l.EventType == "STUDENT_REMOVED")
+                .Select(l => (DateTime?)l.Timestamp)
+                .OrderByDescending(t => t)
+                .FirstOrDefault();
+
+            // Latest explicit recovery event (covers both kick-return
+            // and disconnect-return — same REJOIN_APPROVED path).
+            DateTime? lastRejoinApprovedTs = logs
+                .Where(l => l.EventType == "REJOIN_APPROVED")
+                .Select(l => (DateTime?)l.Timestamp)
+                .OrderByDescending(t => t)
+                .FirstOrDefault();
+
+            string connectionQuality;
+
+            bool kickedAndNotReadmitted =
+                lastKickTs.HasValue
+                && (!lastRejoinApprovedTs.HasValue || lastRejoinApprovedTs < lastKickTs);
+
+            if (kickedAndNotReadmitted)
+            {
+                // Rule (1): student was kicked and never came back. The
+                // final state is "removed" — render as Disconnected.
+                connectionQuality = "Disconnected";
+            }
+            else if (!lastNetworkDisconnectTs.HasValue)
+            {
+                // Rule (2): no real network disconnect ever occurred.
+                // This branch covers BOTH:
+                //   • students who ran cleanly from start to finish,
+                //   • kicked-then-readmitted students (Rule 1 already
+                //     filtered out the kicked-and-stayed-out case;
+                //     anything reaching here had a superseding rejoin
+                //     after the kick, and their network experience was
+                //     fine because no STUDENT_DISCONNECTED was ever
+                //     written).
+                connectionQuality = "Clean Connection";
+            }
+            else
+            {
+                // Rule (3): A real network disconnect occurred at some
+                // point. The label depends on whether the LATEST
+                // STUDENT_DISCONNECTED was followed by a recovery.
+                bool hasRejoinAfterNetworkDisconnect =
+                    lastRejoinApprovedTs.HasValue
+                    && lastRejoinApprovedTs > lastNetworkDisconnectTs;
+
+                // Live-row fallback: a fast WithAutomaticReconnect can
+                // restore ConnectionStatus="Connected" without writing
+                // REJOIN_APPROVED. The kicked-and-not-readmitted branch
+                // above already shielded us from accidentally rescuing
+                // a kicked-out student via this path.
+                bool isCurrentlyConnected = string.Equals(
+                    finalStatus, "Connected", StringComparison.OrdinalIgnoreCase);
+
+                connectionQuality = (hasRejoinAfterNetworkDisconnect || isCurrentlyConnected)
+                    ? "Reconnected"
+                    : "Disconnected";
+            }
+
+            result.Add(new
+            {
+                StudentId = studentId,
+                Name = string.IsNullOrWhiteSpace(user.FullName) ? "Unknown" : user.FullName,
+                Email = user.Email,
+                RiskScore = totalRisk,
+                RiskLevel = riskLevel,
+                ViolationCount = violationCount,
+                ConnectionQuality = connectionQuality,
+                Logs = logs // Passing the pure, untouched logs to the frontend
             });
         }
         return Ok(result);

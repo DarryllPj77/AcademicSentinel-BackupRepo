@@ -30,6 +30,9 @@ namespace AcademicSentinel.Server.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("EndTime")
                         .HasColumnType("timestamp with time zone");
 
@@ -137,6 +140,9 @@ namespace AcademicSentinel.Server.Migrations
                     b.Property<int>("InstructorId")
                         .HasColumnType("integer");
 
+                    b.Property<bool>("IsMonitoringActive")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("RoomImageContentType")
                         .HasColumnType("text");
 
@@ -173,6 +179,10 @@ namespace AcademicSentinel.Server.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AllowedAppsCsv")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -193,6 +203,11 @@ namespace AcademicSentinel.Server.Migrations
 
                     b.Property<int>("IdleThresholdSeconds")
                         .HasColumnType("integer");
+
+                    b.Property<string>("LmsExamUrl")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<int>("RoomId")
                         .HasColumnType("integer");
@@ -271,6 +286,16 @@ namespace AcademicSentinel.Server.Migrations
                     b.Property<string>("FinalRiskLevel")
                         .HasColumnType("text");
 
+                    b.Property<bool>("HasMultipleMonitors")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsCurrentlyActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("JoinApprovalStatus")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<DateTime>("JoinedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -296,17 +321,47 @@ namespace AcademicSentinel.Server.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("CurrentDeviceId")
+                        .HasColumnType("text");
+
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<int>("EmailVerificationAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("EmailVerificationCodeHash")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("EmailVerificationExpiresAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("IsEmailVerified")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsLoggedIn")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastLoginAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastResetCodeSentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastVerificationCodeSentAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<int>("PasswordResetAttempts")
+                        .HasColumnType("integer");
 
                     b.Property<DateTime?>("PasswordResetCodeExpiresAt")
                         .HasColumnType("timestamp with time zone");

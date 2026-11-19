@@ -18,6 +18,11 @@ namespace AcademicSentinel.Client.Views.IMC
         public bool EndSessionWhenTimerEnds { get; private set; } = true;
         public int StartDelaySeconds { get; private set; } = 10;
 
+        // Cache for the latest extracted LMS domain — used to gate the
+        // Save button and to display the "Anchoring to: ..." preview.
+        private string _validatedLmsDomain = string.Empty;
+        private bool _isLmsUrlValid;
+
         // UPDATED: Now requires RoomId!
         public CreateSessionSetupWindow(int roomId, string roomTitle)
         {
@@ -25,6 +30,73 @@ namespace AcademicSentinel.Client.Views.IMC
             _currentRoomId = roomId;
             ChkIdle_CheckedChanged(this, new RoutedEventArgs());
             ChkEnableMonitoringTimer_CheckedChanged(this, new RoutedEventArgs());
+
+            // Run validation once at startup so the empty field shows the
+            // red border + "required" message and the Save button starts
+            // disabled rather than appearing valid by default.
+            ValidateLmsUrlAndUpdateUi();
+        }
+
+        // Real-time validation for the LMS Exam URL field.
+        //   - empty       → red border + "LMS Exam URL is required"
+        //   - bad URL     → red border + "Please enter a valid HTTPS URL"
+        //   - valid URL   → green border + "✓ Anchoring to: <domain>"
+        // Save button is disabled unless the URL is valid.
+        private void TxtLmsExamUrl_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+        {
+            ValidateLmsUrlAndUpdateUi();
+        }
+
+        private void ValidateLmsUrlAndUpdateUi()
+        {
+            if (TxtLmsExamUrl == null || LmsUrlBorder == null || TxtLmsUrlValidation == null)
+                return;
+
+            var raw = (TxtLmsExamUrl.Text ?? string.Empty).Trim();
+            var (isValid, message, domain) = ValidateLmsUrl(raw);
+
+            _isLmsUrlValid = isValid;
+            _validatedLmsDomain = domain;
+
+            if (isValid)
+            {
+                LmsUrlBorder.BorderBrush = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(34, 197, 94));   // green
+                TxtLmsUrlValidation.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(22, 101, 52));
+                TxtLmsUrlValidation.Text = $"✓ Anchoring to: {domain}";
+            }
+            else
+            {
+                LmsUrlBorder.BorderBrush = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(220, 38, 38));   // red
+                TxtLmsUrlValidation.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(220, 38, 38));
+                TxtLmsUrlValidation.Text = message;
+            }
+
+            // Reflect validity on the Save / Continue button.
+            if (BtnStartSession != null)
+            {
+                BtnStartSession.IsEnabled = isValid;
+            }
+        }
+
+        private static (bool valid, string message, string domain) ValidateLmsUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return (false, "LMS Exam URL is required", string.Empty);
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+                return (false, "Please enter a valid HTTPS URL", string.Empty);
+
+            if (!string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                return (false, "Please enter a valid HTTPS URL", string.Empty);
+
+            if (string.IsNullOrWhiteSpace(parsed.Host) || !parsed.Host.Contains('.'))
+                return (false, "Please enter a valid HTTPS URL", string.Empty);
+
+            return (true, string.Empty, parsed.Host.ToLowerInvariant());
         }
 
         // Toggles the Idle Time textbox on and off
@@ -59,6 +131,17 @@ namespace AcademicSentinel.Client.Views.IMC
 
         private async void BtnStartSession_Click(object sender, RoutedEventArgs e)
         {
+            // 0. REQUIRED — LMS Exam URL must be a valid HTTPS URL.
+            ValidateLmsUrlAndUpdateUi();
+            if (!_isLmsUrlValid)
+            {
+                MessageBox.Show(
+                    "Please enter a valid HTTPS LMS Exam URL before starting the session.",
+                    "Missing LMS Exam URL", MessageBoxButton.OK, MessageBoxImage.Warning);
+                TxtLmsExamUrl?.Focus();
+                return;
+            }
+
             // 1. Validate Idle Time if checked
             int idleSeconds = 0;
             if (ChkIdle.IsChecked == true)
@@ -93,6 +176,15 @@ namespace AcademicSentinel.Client.Views.IMC
             }
             StartDelaySeconds = startDelaySeconds;
 
+            // Allowed Apps During Exam — collect the per-session
+            // allowlist. Empty payload when the feature is toggled off
+            // or no tokens are selected. Server-side
+            // NormaliseAllowedAppsCsv re-canonicalises whatever we
+            // send.
+            string allowedAppsCsv = ChkAllowedApps.IsChecked == true
+                ? BuildAllowedAppsCsvFromUi()
+                : string.Empty;
+
             var settingsPayload = new
             {
                 EnableFocusDetection = ChkTabSwitch.IsChecked == true,
@@ -101,7 +193,12 @@ namespace AcademicSentinel.Client.Views.IMC
                 EnableProcessDetection = ChkProcess.IsChecked == true,
                 EnableIdleDetection = ChkIdle.IsChecked == true,
                 IdleThresholdSeconds = idleSeconds,
-                StrictMode = ChkStrictMode.IsChecked == true
+                StrictMode = ChkStrictMode.IsChecked == true,
+                // REQUIRED — LMS Exam URL for anchored focus detection.
+                // Server enforces the same validation rules; this is the
+                // happy-path payload after client-side validation passed.
+                LmsExamUrl = (TxtLmsExamUrl?.Text ?? string.Empty).Trim(),
+                AllowedAppsCsv = allowedAppsCsv
             };
 
             // 3. Send to Server
@@ -246,6 +343,79 @@ namespace AcademicSentinel.Client.Views.IMC
         public class StartSessionResponse
         {
             public int SessionId { get; set; }
+        }
+
+        // ====================================================================
+        // ALLOWED APPS DURING EXAM — UI HELPERS
+        // ====================================================================
+
+        // ChkAllowedApps enables/disables the entire body; mirrors the
+        // ChkIdle / IdleTimePanel pattern already used in this view.
+        private void ChkAllowedApps_CheckedChanged(object sender, RoutedEventArgs e)
+        {
+            if (AllowedAppsBody == null) return;
+            bool enabled = ChkAllowedApps?.IsChecked == true;
+            AllowedAppsBody.IsEnabled = enabled;
+            AllowedAppsBody.Opacity = enabled ? 1.0 : 0.55;
+        }
+
+        // Preset checkboxes carry their canonical token list in the Tag
+        // property as a comma-separated string. On toggle we splice
+        // those tokens in or out of TxtAllowedAppsCustom, so the
+        // textbox stays the single source of truth — the user can also
+        // type tokens directly and the presets won't fight them.
+        private void AllowedAppPreset_CheckedChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is not System.Windows.Controls.CheckBox cb) return;
+            if (cb.Tag is not string tagCsv) return;
+            if (TxtAllowedAppsCustom == null) return;
+
+            var presetTokens = ParseTokens(tagCsv);
+            var current = ParseTokens(TxtAllowedAppsCustom.Text);
+
+            if (cb.IsChecked == true)
+            {
+                foreach (var t in presetTokens)
+                    if (!current.Contains(t)) current.Add(t);
+            }
+            else
+            {
+                foreach (var t in presetTokens)
+                    current.Remove(t);
+            }
+
+            TxtAllowedAppsCustom.Text = string.Join(", ", current);
+        }
+
+        // Final payload assembly: take the textbox tokens (which by now
+        // include every preset toggle the user touched) and return a
+        // canonicalised CSV. The server runs the same canonicalisation
+        // again before persisting.
+        private string BuildAllowedAppsCsvFromUi()
+        {
+            if (TxtAllowedAppsCustom == null) return string.Empty;
+            var tokens = ParseTokens(TxtAllowedAppsCustom.Text);
+            return string.Join(",", tokens);
+        }
+
+        // Trim + lowercase + strip ".exe" + dedupe. Preserves token
+        // order so the textbox doesn't reshuffle on every preset
+        // toggle (better UX when the instructor is editing).
+        private static List<string> ParseTokens(string csv)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(csv)) return result;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var token = raw.ToLowerInvariant();
+                if (!token.Contains('.') && token.EndsWith(".exe", StringComparison.Ordinal))
+                    token = token[..^4];
+                if (token.Length == 0) continue;
+                if (seen.Add(token)) result.Add(token);
+            }
+            return result;
         }
 
     }

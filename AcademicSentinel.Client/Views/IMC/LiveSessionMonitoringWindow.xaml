@@ -11,7 +11,8 @@
         Background="#F5F5F5"
         FontFamily="{materialDesign:MaterialDesignFont}"
         TextElement.Foreground="#1B1B1B"
-        TextElement.FontSize="13">
+        TextElement.FontSize="13"
+        Loaded="Window_Loaded">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -111,9 +112,56 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Outlined variants — used by the participant-card action
+             buttons (Approve/Deny finish, Allow Q&A/Deny ask, Lower
+             Hand). The base PrimaryBtn / GhostBtn templates hardcode
+             the Border properties, so per-button BorderBrush overrides
+             don't reach the visual tree; these derived styles re-emit
+             the template with a black 1px border instead. -->
+        <Style x:Key="PrimaryBtnOutlined" TargetType="Button" BasedOn="{StaticResource PrimaryBtn}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="b" Background="{TemplateBinding Background}"
+                                BorderBrush="Black" BorderThickness="1"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="{StaticResource FEUGreenLightBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="{StaticResource FEUGreenDarkBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="GhostBtnOutlined" TargetType="Button" BasedOn="{StaticResource GhostBtn}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="b" Background="{TemplateBinding Background}"
+                                BorderBrush="Black" BorderThickness="1"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="#F5F5F5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
-    <Grid>
+    <Grid Margin="0,0,0,-16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="72"/>
@@ -165,10 +213,51 @@
                     </StackPanel>
                 </StackPanel>
 
-                <Button Grid.Column="2" Content="End Session"
-                        Style="{StaticResource EndSessionBtn}"
-                        Click="BtnEndSession_Click"
-                        Margin="0,0,16,0"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <!-- Opens InstructorMonitoringHelpWindow (a safe,
+                         clickable replica of this console). Non-modal
+                         with Owner=this so the instructor can keep
+                         glancing at the live console while reading. -->
+                    <Button Content="Help"
+                            Click="BtnHelp_Click"
+                            Background="Transparent"
+                            Foreground="White"
+                            FontSize="13"
+                            FontWeight="SemiBold"
+                            Cursor="Hand"
+                            Margin="0,0,10,0"
+                            Padding="16,10"
+                            BorderBrush="#80FFFFFF"
+                            BorderThickness="1.5">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="hb" Background="{TemplateBinding Background}"
+                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                        CornerRadius="6"
+                                        Padding="{TemplateBinding Padding}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="HelpCircleOutline" Width="16" Height="16"
+                                                                 Foreground="White" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <ContentPresenter VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="hb" Property="Background" Value="#22FFFFFF"/>
+                                        <Setter TargetName="hb" Property="BorderBrush" Value="White"/>
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="hb" Property="Background" Value="#33FFFFFF"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                    <Button Content="End Session"
+                            Style="{StaticResource EndSessionBtn}"
+                            Click="BtnEndSession_Click"/>
+                </StackPanel>
 
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Background="Transparent" BorderThickness="0" Cursor="Hand" Padding="6" Margin="0,0,12,0">
@@ -210,53 +299,68 @@
         </Border>
 
         <Grid Grid.Row="2" Margin="20,20,20,0">
+            <!-- Column layout:
+                 0 = Left sidebar (Pause button, participants, etc.)
+                     280 px initial, MinWidth=250 so the GridSplitter can't
+                     collapse it past the point where the controls clip.
+                 1 = GridSplitter (5 px) — draggable horizontal resizer
+                     between sidebar and main feed.
+                 2 = Main Global Log Feed (* — fills remaining space).
+                 3 = Right Student-Details panel (Auto). -->
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="360" MinWidth="290"/>
+                <ColumnDefinition Width="8"/>
+                <ColumnDefinition Width="*" MinWidth="320"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0">
 
-                <Border Background="White" CornerRadius="12" Padding="16" Margin="0,0,0,12" Height="148">
+                <Border Background="White" CornerRadius="12" Padding="16,20" Margin="0,0,0,12" MinHeight="148">
                     <Border.Effect>
                         <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                     </Border.Effect>
-                    <StackPanel>
-                        <Grid Margin="0,0,0,12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="1" x:Name="TxtMonitoringState" Text="Monitoring: Inactive" 
-                                       FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource FEUSubTextBrush}" 
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Grid>
 
-                        <StackPanel Margin="0,0,0,10">
+                    <StackPanel VerticalAlignment="Center">
+
+                        <TextBlock x:Name="TxtMonitoringState"
+                                   Text="NOT ACTIVE"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="#424242"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,0,0,16"/>
+
+                        <Border BorderBrush="#CFD8DC" BorderThickness="1.5" CornerRadius="16" Padding="16,6" HorizontalAlignment="Center" Margin="0,0,0,20">
                             <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-
-                                <Border Grid.Column="0" Background="#FFF3E0" CornerRadius="6" Padding="8,6" BorderBrush="#FFCC80" BorderThickness="1" Margin="0,0,6,0">
-                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                        <TextBlock Text="Time Remaining:" FontSize="10" Foreground="#E65100" HorizontalAlignment="Center"/>
-                                        <TextBlock x:Name="CountdownDisabledIndicator" Text="Timer Disabled" FontSize="10" Foreground="Gray" Visibility="Collapsed" HorizontalAlignment="Center"/>
-                                        <TextBlock x:Name="TxtCountdownDisplay" Text="--:--" FontSize="16" FontWeight="Bold" Foreground="#E65100" HorizontalAlignment="Center"/>
-                                    </StackPanel>
-                                </Border>
-
-                            </Grid>
-
-                            <Button Style="{StaticResource GhostBtn}" Click="BtnViewParticipants_Click" Margin="0,15,0,0" HorizontalAlignment="Stretch">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                    <materialDesign:PackIcon Kind="AccountMultipleOutline" Width="14" Height="14" Margin="0,0,4,0"/>
-                                    <TextBlock Text="Participants"/>
+                                <StackPanel x:Name="DisabledTimerPanel" Orientation="Horizontal" Visibility="Visible" HorizontalAlignment="Center">
+                                    <TextBlock x:Name="CountdownDisabledIndicator"
+                                               Text="No Active Countdown"
+                                               FontSize="12"
+                                               FontWeight="Medium"
+                                               Foreground="#78909C"
+                                               VerticalAlignment="Center"/>
                                 </StackPanel>
-                            </Button>
-                        </StackPanel>
+
+                                <StackPanel x:Name="ActiveTimerPanel" Orientation="Horizontal" Visibility="Collapsed" HorizontalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="TimerOutline" Width="14" Height="14" Foreground="#E65100" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="TxtCountdownDisplay"
+                                               Text="00:07"
+                                               FontSize="13"
+                                               FontWeight="Bold"
+                                               Foreground="#E65100"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Button Style="{StaticResource GhostBtn}" Click="BtnViewParticipants_Click" HorizontalAlignment="Stretch" Padding="0,10">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="AccountMultipleOutline" Width="16" Height="16" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="View Participants List" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
                     </StackPanel>
                 </Border>
 
@@ -275,6 +379,19 @@
                         <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                     </Border.Effect>
                     <StackPanel>
+                        <!--
+                            Participants green header.
+                            Layout reverted to the original 3-column design
+                            (Title | Count badge | Missing stats) — putting
+                            the Analytics button here was crowding the row
+                            and clipping content when the session became
+                            Active and the Student Details panel pinched
+                            the sidebar toward its 290 px MinWidth. The
+                            Analytics button now lives on its own row
+                            below the filter tabs (see BtnSessionAnalyticMode
+                            block further down) so it's always fully
+                            visible regardless of sidebar width.
+                        -->
                         <Border Background="{StaticResource FEUGreenBrush}" CornerRadius="12,12,0,0" Padding="14,12">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -282,19 +399,27 @@
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                    <materialDesign:PackIcon Kind="AccountMultiple" Width="16" Height="16"
+
+                                <Grid Grid.Column="0" Margin="0,0,6,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <materialDesign:PackIcon Grid.Column="0" Kind="AccountMultiple" Width="16" Height="16"
                                                              Foreground="White" Margin="0,0,6,0"
                                                              VerticalAlignment="Center"/>
-                                    <TextBlock Text="Participants" FontSize="13" FontWeight="SemiBold"
-                                               Foreground="White" VerticalAlignment="Center"/>
-                                </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="Participants" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="White" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </Grid>
+
                                 <Border Grid.Column="1" Background="{StaticResource FEUGoldBrush}"
-                                        CornerRadius="10" Padding="8,2">
+                                        CornerRadius="10" Padding="8,2" VerticalAlignment="Center">
                                     <TextBlock x:Name="TxtParticipantCount" Text="0/0"
                                                FontSize="11" FontWeight="Bold"
                                                Foreground="{StaticResource FEUGreenBrush}"/>
                                 </Border>
+
                                 <TextBlock Grid.Column="2" x:Name="TxtMissingCount" Text="Missing: 0"
                                            Margin="10,0,0,0"
                                            FontSize="11" FontWeight="SemiBold"
@@ -303,7 +428,119 @@
                             </Grid>
                         </Border>
 
-                        <Border Padding="12,12,12,6">
+                        <!--
+                            Analytics toggle row. Pinned to its own line
+                            with HorizontalAlignment="Stretch" so the
+                            button is always fully visible regardless of
+                            sidebar width (previously placed inside the
+                            green Participants header, where it got
+                            clipped when the session became Active and
+                            the right Student Details panel pinched the
+                            sidebar column toward its 290 px MinWidth).
+                        -->
+                        <Border Padding="12,10,12,0">
+                            <Button x:Name="BtnSessionAnalyticMode"
+                                    Click="BtnSessionAnalyticMode_Click"
+                                    Background="#1976D2"
+                                    Foreground="White"
+                                    BorderThickness="0"
+                                    FontWeight="Bold"
+                                    FontSize="12"
+                                    Padding="10,6"
+                                    Cursor="Hand"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Center"
+                                    ToolTip="Toggle session analytics dashboard">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="ChartBar" Width="14" Height="14"
+                                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock x:Name="TxtSessionAnalyticMode" Text="Analytics"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </Border>
+
+                        <!-- Participant cohort filter. RbFilterTaking is IsChecked=True
+                             so the panel opens with the active-taking cohort visible
+                             by default; flipping to Done shows finished students; All
+                             shows both cohorts (still sorted Taking-before-Done by
+                             the CollectionView's SectionSortOrder). The Content text
+                             is updated in code-behind so the running counts stay
+                             live without a binding-converter dance.
+
+                             Container is a WrapPanel so the four cohort tabs flow
+                             onto a second line if the sidebar gets squeezed below
+                             a single-row threshold (the original StackPanel would
+                             clip the Disconnected tab on narrow widths). -->
+                        <Border Padding="12,10,12,4">
+                            <WrapPanel Orientation="Horizontal">
+                                <RadioButton x:Name="RbFilterTaking"
+                                             Content="Taking (0)"
+                                             GroupName="ParticipantFilter"
+                                             IsChecked="True"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,6,4"
+                                             Padding="10,4"
+                                             Foreground="{StaticResource FEUGreenBrush}"
+                                             Checked="RbFilterTaking_Checked"/>
+                                <RadioButton x:Name="RbFilterDone"
+                                             Content="Done (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,6,4"
+                                             Padding="10,4"
+                                             Foreground="#616161"
+                                             Checked="RbFilterDone_Checked"/>
+                                <RadioButton x:Name="RbFilterFinished"
+                                             Content="Finished (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,6,4"
+                                             Padding="10,4"
+                                             Foreground="#616161"
+                                             Checked="RbFilterFinished_Checked"/>
+                                <!--
+                                    Disconnected cohort tab. Bucket for
+                                    students whose participant row carries
+                                    ConnectionStatus="Disconnected". Listed
+                                    here so an instructor can quickly find
+                                    students offline mid-session without
+                                    scrolling the full Taking list.
+                                -->
+                                <RadioButton x:Name="RbFilterDisconnected"
+                                             Content="Disconnected (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,6,4"
+                                             Padding="10,4"
+                                             Foreground="#D32F2F"
+                                             Checked="RbFilterDisconnected_Checked"/>
+                                <!--
+                                    Req Approval cohort tab. Bucket for any
+                                    participant currently awaiting instructor
+                                    action: join requests, rejoin requests
+                                    (post-disconnect), and leave requests.
+                                    Driven by canonical request state
+                                    (IsJoinApprovalPending / IsLeaveRequested)
+                                    via GetCohort — no UI-only flags.
+                                -->
+                                <RadioButton x:Name="RbFilterReqApproval"
+                                             Content="Req Approval (0)"
+                                             GroupName="ParticipantFilter"
+                                             FontSize="11"
+                                             FontWeight="SemiBold"
+                                             Margin="0,0,0,4"
+                                             Padding="10,4"
+                                             Foreground="#FF9800"
+                                             Checked="RbFilterReqApproval_Checked"/>
+                            </WrapPanel>
+                        </Border>
+
+                        <Border Padding="12,4,12,6">
                             <Border Background="#F5F5F5" CornerRadius="6" Padding="10,6">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
@@ -322,7 +559,16 @@
                             </Border>
                         </Border>
 
-                        <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="360" Height="340">
+                        <!--
+                            Participants list region. The ScrollViewer (the
+                            existing per-student row list) and the
+                            ParticipantsAnalyticsPanel (session-level
+                            dashboard) share the same Grid slot — only one
+                            is visible at a time. Visibility is flipped by
+                            BtnSessionAnalyticMode_Click.
+                        -->
+                        <Grid>
+                        <ScrollViewer x:Name="ParticipantsScrollViewer" VerticalScrollBarVisibility="Auto" MaxHeight="360" Height="340">
                             <Grid>
                                 <StackPanel x:Name="EmptyParticipantsState" VerticalAlignment="Center"
                                         HorizontalAlignment="Center" Margin="0,30"
@@ -364,22 +610,84 @@
                                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                                         <TextBlock Text="{Binding Email}" FontSize="10" Foreground="{StaticResource FEUSubTextBrush}" TextTrimming="CharacterEllipsis"/>
-                                                        <TextBlock Text="WANTS TO LEAVE"
+                                                        <!-- "WANTS TO FINISH" (renamed from "WANTS TO LEAVE")
+                                                             surfaces the pending state of the Done flow:
+                                                             student clicked Done, awaiting instructor
+                                                             approval. The row stays in the Taking tab
+                                                             until teacher Approve flips IsDone=true. -->
+                                                        <TextBlock Text="WANTS TO FINISH"
                                                                    FontSize="9"
                                                                    FontWeight="Bold"
                                                                    Foreground="#E65100"
                                                                    Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Text="✋ WANTS TO ASK"
+                                                                   FontSize="9"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="#1565C0"
+                                                                   Visibility="{Binding IsHandRaisePending, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Text="✋ HAND RAISED — Q&amp;A ACTIVE"
+                                                                   FontSize="9"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="#E65100"
+                                                                   Visibility="{Binding IsHandRaiseActive, Converter={StaticResource BoolToVis}}"/>
                                                         <TextBlock Text="{Binding Status}" FontSize="10" Foreground="{Binding StatusColor}"/>
                                                     </StackPanel>
-                                                    <Button x:Name="BtnApproveLeave"
-                                                            Grid.Column="3"
-                                                            Content="Approve Leave"
-                                                            Style="{StaticResource PrimaryBtn}"
-                                                            FontSize="10"
-                                                            Padding="8,4"
-                                                            Margin="6,0,36,0"
-                                                            Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
-                                                            Click="BtnApproveLeave_Click"/>
+                                                    <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="6,0,18,0">
+                                                        <Button x:Name="BtnApproveJoin"
+                                                                Content="Approve"
+                                                                Style="{StaticResource PrimaryBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsJoinApprovalPending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnApproveJoin_Click"/>
+                                                        <Button x:Name="BtnDenyJoin"
+                                                                Content="Deny"
+                                                                Style="{StaticResource GhostBtn}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsJoinApprovalPending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnDenyJoin_Click"/>
+                                                        <Button x:Name="BtnApproveLeave"
+                                                                Content="Approve"
+                                                                Style="{StaticResource PrimaryBtnOutlined}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnApproveLeave_Click"/>
+                                                        <Button x:Name="BtnDenyLeave"
+                                                                Content="Deny"
+                                                                Style="{StaticResource GhostBtnOutlined}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Visibility="{Binding IsLeaveRequested, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnDenyLeave_Click"/>
+                                                        <Button x:Name="BtnApproveHandRaise"
+                                                                Content="Allow Q&amp;A"
+                                                                Style="{StaticResource PrimaryBtnOutlined}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsHandRaisePending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnApproveHandRaise_Click"/>
+                                                        <Button x:Name="BtnDenyHandRaise"
+                                                                Content="Deny"
+                                                                Style="{StaticResource GhostBtnOutlined}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Visibility="{Binding IsHandRaisePending, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnDenyHandRaise_Click"/>
+                                                        <Button x:Name="BtnLowerHand"
+                                                                Content="Lower Hand"
+                                                                Style="{StaticResource GhostBtnOutlined}"
+                                                                FontSize="10"
+                                                                Padding="8,4"
+                                                                Visibility="{Binding IsHandRaiseActive, Converter={StaticResource BoolToVis}}"
+                                                                Click="BtnLowerHand_Click"/>
+                                                    </StackPanel>
                                                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0">
                                                         <materialDesign:PackIcon Kind="AlertCircle"
                                                                                  Width="16"
@@ -400,11 +708,140 @@
                                 </ItemsControl>
                             </Grid>
                         </ScrollViewer>
+
+                        <!--
+                            Session Analytics dashboard (Risk distribution +
+                            Connection distribution + total violations).
+                            Sits in the same Grid slot as the participants
+                            ScrollViewer with Visibility=Collapsed by
+                            default. BtnSessionAnalyticMode_Click flips
+                            which child is visible; LoadSessionAnalytics()
+                            populates the two ItemsControls with grouped
+                            MetricAnalyticItem rows whose Count/Max drive
+                            the ProgressBar widths.
+                        -->
+                        <Border x:Name="ParticipantsAnalyticsPanel"
+                                Visibility="Collapsed"
+                                Background="White"
+                                Padding="14,12"
+                                Height="340"
+                                MaxHeight="360">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="Total Session Violations"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#616161"/>
+                                    <TextBlock x:Name="TxtSessionTotalViolations"
+                                               Text="0 violations recorded."
+                                               FontSize="16" FontWeight="Bold"
+                                               Foreground="#D32F2F"
+                                               TextWrapping="Wrap"
+                                               Margin="0,4,0,16"/>
+
+                                    <TextBlock Text="Risk Level Distribution"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#616161" Margin="0,0,0,6"/>
+                                    <ItemsControl x:Name="SessionRiskAnalyticsControl" Margin="0,0,0,16">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,3,0,3">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="130"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="40"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Category}"
+                                                               FontSize="11" FontWeight="SemiBold"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Category}"/>
+                                                    <Border Grid.Column="1" Background="#EEEEEE"
+                                                            CornerRadius="3" Height="16" Margin="6,0">
+                                                        <ProgressBar Value="{Binding Count, Mode=OneWay}"
+                                                                     Maximum="{Binding Max, Mode=OneWay}"
+                                                                     Foreground="{Binding BarBrush}"
+                                                                     Background="Transparent"
+                                                                     BorderThickness="0"
+                                                                     Height="16"/>
+                                                    </Border>
+                                                    <TextBlock Grid.Column="2"
+                                                               Text="{Binding Count}"
+                                                               TextAlignment="Right"
+                                                               VerticalAlignment="Center"
+                                                               FontWeight="Bold" FontSize="11"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <TextBlock Text="Connection Status"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#616161" Margin="0,0,0,6"/>
+                                    <ItemsControl x:Name="SessionConnectionAnalyticsControl">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,3,0,3">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="130"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="40"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Category}"
+                                                               FontSize="11" FontWeight="SemiBold"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Category}"/>
+                                                    <Border Grid.Column="1" Background="#EEEEEE"
+                                                            CornerRadius="3" Height="16" Margin="6,0">
+                                                        <ProgressBar Value="{Binding Count, Mode=OneWay}"
+                                                                     Maximum="{Binding Max, Mode=OneWay}"
+                                                                     Foreground="{Binding BarBrush}"
+                                                                     Background="Transparent"
+                                                                     BorderThickness="0"
+                                                                     Height="16"/>
+                                                    </Border>
+                                                    <TextBlock Grid.Column="2"
+                                                               Text="{Binding Count}"
+                                                               TextAlignment="Right"
+                                                               VerticalAlignment="Center"
+                                                               FontWeight="Bold" FontSize="11"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <TextBlock x:Name="TxtSessionAnalyticsEmpty"
+                                               Text="No participants to analyze yet."
+                                               FontSize="11" FontStyle="Italic"
+                                               Foreground="#9E9E9E"
+                                               Margin="0,12,0,0"
+                                               Visibility="Collapsed"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                        </Grid>
                     </StackPanel>
                 </Border>
             </StackPanel>
 
-            <Border Grid.Column="1" Background="White" CornerRadius="12" Padding="20" HorizontalAlignment="Stretch" Margin="16,0,0,0">
+            <!-- Draggable splitter between the sidebar (col 0) and the
+                 main log feed (col 2). NO Margin: a Margin wider than
+                 the column collapses the visible rectangle to zero, so
+                 the bar would disappear. Solid medium-gray fill so the
+                 splitter renders as a clearly visible vertical bar with
+                 the standard SizeWE cursor on hover. -->
+            <GridSplitter Grid.Column="1"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch"
+                          Background="#9E9E9E"
+                          BorderBrush="#616161"
+                          BorderThickness="1,0"
+                          Cursor="SizeWE"
+                          ResizeBehavior="PreviousAndNext"
+                          ResizeDirection="Columns"
+                          ShowsPreview="False"/>
+
+            <Border Grid.Column="2" Background="White" CornerRadius="12" Padding="20" HorizontalAlignment="Stretch" Margin="8,0,0,0">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                 </Border.Effect>
@@ -412,11 +849,36 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <Border x:Name="CriticalAlertBanner"
+                    <!-- Transient instructor reconnect banner. Shown while
+                         the IMC's SignalR connection is auto-reconnecting
+                         (WithAutomaticReconnect) during an ACTIVE session —
+                         NOT a terminal teardown. Cleared on Reconnected. -->
+                    <Border x:Name="InstructorReconnectBanner"
                             Grid.Row="0"
+                            Background="#FFF8E1"
+                            BorderBrush="#FFB300"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="10,8"
+                            Margin="0,0,0,12"
+                            Visibility="Collapsed">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <materialDesign:PackIcon Kind="Sync" Width="18" Height="18"
+                                                     Foreground="#E65100"
+                                                     VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBlock x:Name="TxtInstructorReconnectBanner"
+                                       Foreground="#E65100" FontWeight="SemiBold" FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Text="Connection interrupted — reconnecting to the server…"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border x:Name="CriticalAlertBanner"
+                            Grid.Row="1"
                             Background="#D32F2F"
                             CornerRadius="8"
                             Padding="10,8"
@@ -448,7 +910,7 @@
                         </Grid>
                     </Border>
 
-                    <Grid Grid.Row="1" Margin="0,0,0,16">
+                    <Grid Grid.Row="2" Margin="0,0,0,16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
@@ -472,7 +934,7 @@
                         </ComboBox>
                     </Grid>
 
-                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
                         <Grid>
                             <StackPanel x:Name="EmptyLogFeedState" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,60" Visibility="Visible">
                                 <materialDesign:PackIcon Kind="TextBoxOutline" Width="48" Height="48" Foreground="#E0E0E0" HorizontalAlignment="Center"/>
@@ -493,7 +955,11 @@
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="1">
                                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
-                                                        <TextBlock Text="{Binding StudentEmail}" FontSize="13" FontWeight="SemiBold" Margin="0,0,8,0"/>
+                                                        <!-- StudentLabel resolves to the student's FullName for
+                                                             student-attributed rows (or "SYSTEM" for system rows).
+                                                             Email is no longer shown here — see
+                                                             LiveSessionMonitoringWindow.ResolveLogDisplayLabel. -->
+                                                        <TextBlock Text="{Binding StudentLabel}" FontSize="13" FontWeight="SemiBold" Margin="0,0,8,0"/>
                                                         <Border Background="{Binding BadgeColor}" CornerRadius="10" Padding="7,2">
                                                             <TextBlock Text="{Binding BadgeText}" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
                                                         </Border>
@@ -510,7 +976,7 @@
                 </Grid>
             </Border>
 
-            <Border x:Name="RightDetailPanel" Grid.Column="2" Width="350" Margin="16,0,0,0" Background="White" CornerRadius="12" Padding="20" Visibility="Collapsed">
+            <Border x:Name="RightDetailPanel" Grid.Column="3" Width="350" Margin="16,0,0,0" Background="White" CornerRadius="12" Padding="20" Visibility="Collapsed">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.05" Color="Black"/>
                 </Border.Effect>
@@ -578,7 +1044,7 @@
                                     </TextBlock>
                                 </StackPanel>
 
-                                <StackPanel Orientation="Horizontal">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                     <TextBlock Text="Remote Access: " FontSize="11" Foreground="{StaticResource FEUSubTextBrush}"/>
                                     <TextBlock FontSize="11" FontWeight="SemiBold">
                                         <TextBlock.Style>
@@ -595,16 +1061,51 @@
                                         </TextBlock.Style>
                                     </TextBlock>
                                 </StackPanel>
+
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Multiple Monitors: " FontSize="11" Foreground="{StaticResource FEUSubTextBrush}"/>
+                                    <TextBlock FontSize="11" FontWeight="SemiBold">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="No"/>
+                                                <Setter Property="Foreground" Value="#2E7D32"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasMultipleMonitors}" Value="True">
+                                                        <Setter Property="Text" Value="Yes"/>
+                                                        <Setter Property="Foreground" Value="#D32F2F"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
                         <TextBlock Text="VIOLATION STATISTICS" FontSize="10" FontWeight="Bold" Foreground="{StaticResource FEUSubTextBrush}" Margin="0,0,0,8" Height="15"/>
-                        <Border Background="#FFEBEE" CornerRadius="8" Padding="16" Margin="0,0,0,20" Height="136">
+                        <!--
+                            Risk panel — height is intentionally NOT fixed so the
+                            wider "POSSIBLE DISHONESTY" label can wrap onto a
+                            second line in the narrow Student Details column
+                            without being clipped. FontSize is dropped to 22 and
+                            TextWrapping is enabled on the risk label so the
+                            wording fits cleanly across the available width.
+                            ALERTS keeps its larger 36pt readout — only the
+                            multi-word risk label needed the layout tweak.
+                        -->
+                        <Border Background="#FFEBEE" CornerRadius="8" Padding="16" Margin="0,0,0,20">
                             <StackPanel>
                                 <TextBlock Text="ALERTS" FontSize="10" FontWeight="Bold" Foreground="#D32F2F"/>
                                 <TextBlock x:Name="TxtAlertCount" Text="0" FontSize="36" FontWeight="Bold" Foreground="#D32F2F"/>
-                                <TextBlock Text="RISK LEVEL" FontSize="10" FontWeight="Bold" Foreground="#D32F2F"/>
-                                <TextBlock x:Name="TxtRiskLevel" Text="SAFE" FontSize="36" FontWeight="Bold" Foreground="#1B5E20"/>
+                                <TextBlock Text="RISK LEVEL" FontSize="10" FontWeight="Bold" Foreground="#D32F2F" Margin="0,4,0,0"/>
+                                <TextBlock x:Name="TxtRiskLevel"
+                                           Text="SAFE"
+                                           FontSize="22"
+                                           FontWeight="Bold"
+                                           Foreground="#1B5E20"
+                                           TextWrapping="Wrap"
+                                           LineHeight="26"
+                                           LineStackingStrategy="BlockLineHeight"/>
                             </StackPanel>
                         </Border>
                         <StackPanel x:Name="RecentActivityList" Margin="0,0,0,20"/>
@@ -622,19 +1123,6 @@
             </Border>
         </Grid>
 
-        <Border Grid.Row="3" Background="Transparent" Padding="24,0">
-            <Grid VerticalAlignment="Center">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="© 2026 FEU Institute of Technology - Instructor Console" FontSize="11" Foreground="#9E9E9E"/>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <TextBlock Text="Support" FontSize="11" Foreground="#9E9E9E" Margin="0,0,16,0" Cursor="Hand"/>
-                    <TextBlock Text="Documentation" FontSize="11" Foreground="#9E9E9E" Margin="0,0,16,0" Cursor="Hand"/>
-                    <TextBlock Text="Privacy Policy" FontSize="11" Foreground="#9E9E9E" Cursor="Hand"/>
-                </StackPanel>
-            </Grid>
-        </Border>
+        
     </Grid>
 </Window>

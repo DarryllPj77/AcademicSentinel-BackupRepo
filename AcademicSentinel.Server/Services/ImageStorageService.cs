@@ -54,8 +54,13 @@ public class ImageStorageService : IImageStorageService
     private readonly string _userProfilesDirectory;
     private readonly string _roomImagesDirectory;
     private const long MaxFileSizeBytes = 5 * 1024 * 1024; // 5 MB
-    private readonly string[] _allowedExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".webp" };
-    private readonly string[] _allowedMimeTypes = { "image/jpeg", "image/png", "image/gif", "image/webp" };
+    // Spec v4: profile and room images restricted to .png/.jpg/.jpeg only.
+    private readonly string[] _allowedExtensions = { ".jpg", ".jpeg", ".png" };
+    private readonly string[] _allowedMimeTypes =
+    {
+        "image/jpeg", "image/pjpeg",
+        "image/png"
+    };
 
     public ImageStorageService(IConfiguration configuration, IWebHostEnvironment env)
     {

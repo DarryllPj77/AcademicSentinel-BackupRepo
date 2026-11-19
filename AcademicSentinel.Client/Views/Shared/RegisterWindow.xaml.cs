@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Text.RegularExpressions;
 using AcademicSentinel.Client.Services;
 using AcademicSentinel.Client.Models;
+using AcademicSentinel.Client.Constants;
 
 namespace AcademicSentinel.Client.Views.Shared
 {
@@ -15,6 +16,19 @@ namespace AcademicSentinel.Client.Views.Shared
         {
             InitializeComponent();
             _authService = new AuthService();
+
+            // Apply AppMode role restriction
+            if (AppMode.Role == "Teacher")
+            {
+                RbTeacher.IsChecked = true;
+                RbStudent.Visibility = Visibility.Collapsed;
+            }
+            else if (AppMode.Role == "Student")
+            {
+                RbStudent.IsChecked = true;
+                RbTeacher.Visibility = Visibility.Collapsed;
+            }
+            // "All" → both tabs stay visible
         }
 
         private void Window_MouseDown(object sender, MouseButtonEventArgs e)
@@ -42,6 +56,27 @@ namespace AcademicSentinel.Client.Views.Shared
                 return;
             }
 
+            // PROTOTYPE: allowlist mirrors the server. gmail.com is
+            // included so testers can register without an
+            // institutional account while outbound email is being
+            // set up. Tighten back to @fit.edu.ph + @feutech.edu.ph
+            // when email delivery is restored.
+            string domain = email.Split('@').Length > 1
+                ? email.Split('@')[1].ToLowerInvariant()
+                : string.Empty;
+            if (domain != "fit.edu.ph" && domain != "feutech.edu.ph" && domain != "gmail.com")
+            {
+                MessageBox.Show(
+                    "Registration is restricted to:\n\n" +
+                    "  • @fit.edu.ph (Student)\n" +
+                    "  • @feutech.edu.ph (Instructor)\n" +
+                    "  • @gmail.com (prototype testers)\n\n" +
+                    "Please use one of these to continue.",
+                    "Email Domain Required",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             if (password != confirmPassword)
             {
                 MessageBox.Show("Passwords do not match.", "Validation Error", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -55,8 +90,6 @@ namespace AcademicSentinel.Client.Views.Shared
             }
 
             string selectedRole = RbTeacher.IsChecked == true ? "Instructor" : "Student";
-
-            // Removed the student block! Students can now register.
 
             var registerData = new UserRegisterDto
             {
@@ -73,13 +106,30 @@ namespace AcademicSentinel.Client.Views.Shared
 
             if (isSuccess)
             {
-                MessageBox.Show("Registration successful! You can now log in.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
-                new LoginWindow().Show();
+                // PROTOTYPE: email verification is auto-completed on
+                // the server (no SMTP available yet), so we skip the
+                // verification-code screen and go straight to login.
+                // Restore the EmailVerificationWindow flow below when
+                // SMTP delivery is configured.
+                MessageBox.Show(
+                    "Account created. You can sign in now.",
+                    "Account Ready", MessageBoxButton.OK, MessageBoxImage.Information);
+                new LoginWindow(AppMode.Role).Show();
                 this.Close();
             }
             else
             {
-                MessageBox.Show("Registration failed. Email might be taken.", "Registration Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                // Show the actual server reason if AuthService captured
+                // one (e.g. "Cannot reach server", "This email is already
+                // registered", "wait N seconds"). Fall back to the
+                // generic explanation only when no detail was captured.
+                var detail = _authService.LastErrorMessage;
+                var msg = string.IsNullOrWhiteSpace(detail)
+                    ? "Registration failed. The email might be taken, or the domain isn't allowed " +
+                      "(only @fit.edu.ph, @feutech.edu.ph, and @gmail.com are accepted in this build)."
+                    : $"Registration failed.\n\n{detail}";
+
+                MessageBox.Show(msg, "Registration Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 BtnRegister.IsEnabled = true;
                 BtnRegister.Content = "Create Account";
             }
@@ -87,9 +137,10 @@ namespace AcademicSentinel.Client.Views.Shared
 
         private void BtnClose_Click(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
 
+        // FIXED — passes AppMode.Role to LoginWindow
         private void LinkLoginHere_Click(object sender, MouseButtonEventArgs e)
         {
-            new LoginWindow().Show();
+            new LoginWindow(AppMode.Role).Show();
             this.Close();
         }
 

@@ -8,19 +8,16 @@
         Title="Teacher Dashboard - FourCUDA"
         Height="720" Width="1280"
         WindowStartupLocation="CenterScreen"
-        WindowStyle="None" 
-        AllowsTransparency="True" 
         ResizeMode="CanResize"
-        MouseLeftButtonDown="Window_MouseDown"
         Background="#F5F5F5"
         FontFamily="{materialDesign:MaterialDesignFont}"
         TextElement.Foreground="#1B1B1B"
         TextElement.FontWeight="Regular"
         TextElement.FontSize="14">
 
-    <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="0" ResizeBorderThickness="7" GlassFrameThickness="0" CornerRadius="0"/>
-    </WindowChrome.WindowChrome>
+    <!-- The previous WindowChrome override (CaptionHeight="0") was
+         suppressing the WPF default title bar. Removed so the OS-provided
+         title bar with minimize/maximize/close buttons is shown again. -->
 
     <Window.Resources>
         <!-- ======================== FEU TECH COLOR PALETTE ======================== -->
@@ -294,18 +291,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="Teacher Dashboard" FontSize="22" FontWeight="Bold" Foreground="{StaticResource FEUGreenBrush}" VerticalAlignment="Center"/>
-                    <!-- Window Controls with MaterialDesign Icons -->
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMinimize_Click" Margin="4,0" ToolTip="Minimize">
-                            <materialDesign:PackIcon Kind="WindowMinimize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMaximize_Click" Margin="4,0" ToolTip="Maximize">
-                            <materialDesign:PackIcon Kind="WindowMaximize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUDangerButton}" Padding="0" Click="BtnClose_Click" ToolTip="Close">
-                            <materialDesign:PackIcon Kind="WindowClose" Width="16" Height="16"/>
-                        </Button>
-                    </StackPanel>
+                    <!-- Custom Window-Control buttons removed — using the
+                         WPF default title-bar chrome instead. -->
                 </Grid>
             </Border>
 
@@ -398,11 +385,34 @@
                 <Grid x:Name="RoomCoursesPanel" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
+                    <!-- Connection-recovery banner. Hidden normally; shows
+                         "No internet connection" while the dashboard poll is
+                         failing and "Internet connection restored" once the
+                         network returns. Colours set in code-behind. -->
+                    <Border x:Name="ConnectionBanner" Grid.Row="0"
+                            Visibility="Collapsed"
+                            CornerRadius="10"
+                            Padding="16,10"
+                            Margin="0,0,0,16">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <materialDesign:PackIcon x:Name="ConnectionBannerIcon"
+                                                     Kind="WifiOff"
+                                                     Width="20" Height="20"
+                                                     VerticalAlignment="Center"
+                                                     Margin="0,0,10,0"/>
+                            <TextBlock x:Name="TxtConnectionBanner"
+                                       VerticalAlignment="Center"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Action Bar -->
-                    <Border Grid.Row="0" Background="White" CornerRadius="12" Padding="20,14" Margin="0,0,0,20">
+                    <Border Grid.Row="1" Background="White" CornerRadius="12" Padding="20,14" Margin="0,0,0,20">
                         <Border.Effect><DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.06" Color="Black"/></Border.Effect>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -417,6 +427,14 @@
                                         <TextBlock Text="Create" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </Button>
+                                <Button x:Name="BtnEditCourse" Click="BtnEditCourse_Click" Margin="0,0,10,0"
+                                        Background="#1565C0" Foreground="White" BorderBrush="#0D47A1" BorderThickness="1"
+                                        Padding="16,8" FontWeight="SemiBold" Cursor="Hand">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="PencilOutline" Width="18" Height="18" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <TextBlock Text="Edit" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
                                 <Button x:Name="BtnDeleteCourse" Style="{StaticResource FEUDangerButton}" Click="BtnDeleteCourse_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <materialDesign:PackIcon Kind="DeleteOutline" Width="18" Height="18" VerticalAlignment="Center" Margin="0,0,6,0"/>
@@ -428,7 +446,7 @@
                     </Border>
 
                     <!-- Course Cards with checkbox and image -->
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="CoursesItemsControl">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate><WrapPanel Orientation="Horizontal"/></ItemsPanelTemplate>
@@ -436,19 +454,48 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Border Style="{StaticResource CourseCardStyle}" Width="240" Height="220" Margin="0,0,16,16" Cursor="Hand"
+                                            ClipToBounds="True"
                                             MouseLeftButtonDown="CourseCard_Click">
                                         <Grid>
+                                            <!-- Locked row heights so every card renders identically regardless of
+                                                 whether an image is present or how long the description is. -->
                                             <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="32"/>
+                                                <RowDefinition Height="120"/>
                                                 <RowDefinition Height="*"/>
-                                                <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
 
                                             <!-- Checkbox for delete selection -->
                                             <CheckBox Grid.Row="0" IsChecked="{Binding IsSelected}" HorizontalAlignment="Right" Margin="0,8,8,0"/>
 
+                                            <!-- LIVE indicator chip — visible only when the room has an in-progress monitoring session. -->
+                                            <Border Grid.Row="0" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                                    Margin="8,0,0,0" Padding="8,2"
+                                                    CornerRadius="10"
+                                                    Background="#D32F2F"
+                                                    Visibility="{Binding InProgressVisibility, FallbackValue=Collapsed}">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="8" Height="8" Fill="White" VerticalAlignment="Center" Margin="0,0,6,0">
+                                                        <Ellipse.Triggers>
+                                                            <EventTrigger RoutedEvent="Loaded">
+                                                                <BeginStoryboard>
+                                                                    <Storyboard RepeatBehavior="Forever">
+                                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                                         From="1.0" To="0.2" Duration="0:0:0.8"
+                                                                                         AutoReverse="True"/>
+                                                                    </Storyboard>
+                                                                </BeginStoryboard>
+                                                            </EventTrigger>
+                                                        </Ellipse.Triggers>
+                                                    </Ellipse>
+                                                    <TextBlock Text="IN PROGRESS" Foreground="White"
+                                                               FontSize="10" FontWeight="Bold"
+                                                               VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Border>
+
                                             <!-- Course Image Area -->
-                                            <Border Grid.Row="1" Background="{StaticResource FEULightGrayBrush}" CornerRadius="0">
+                                            <Border Grid.Row="1" Background="{StaticResource FEULightGrayBrush}" CornerRadius="0" ClipToBounds="True">
                                                 <Grid>
                                                     <!-- Default icon when no image -->
                                                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
@@ -458,12 +505,15 @@
                                                         <TextBlock Text="{Binding CourseLogo}" FontSize="12"
                                                                    Foreground="{StaticResource FEUSubTextBrush}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                                                     </StackPanel>
-                                                    <!-- Course image when uploaded -->
-                                                    <!-- NEW: Added ClipToBounds and ensured Stretch is UniformToFill -->
-                                                    <Image Source="{Binding CourseImagePath}" 
-                                                           Stretch="UniformToFill" 
+                                                    <!-- Course image when uploaded — UniformToFill keeps any aspect ratio
+                                                         centered and cropped to the locked 240×120 image area. -->
+                                                    <Image Source="{Binding CourseImagePath}"
+                                                           Stretch="UniformToFill"
+                                                           StretchDirection="Both"
                                                            ClipToBounds="True"
-                                                           Visibility="{Binding HasImageVisibility, FallbackValue=Collapsed}"/> 
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{Binding HasImageVisibility, FallbackValue=Collapsed}"/>
                                                 </Grid>
                                             </Border>
 
@@ -471,7 +521,7 @@
                                             <Border Grid.Row="2" Padding="14,12">
                                                 <TextBox Text="{Binding CourseDescription}" FontSize="13" FontWeight="Medium"
                                                          Foreground="{StaticResource FEUDarkTextBrush}" TextWrapping="Wrap"
-                                                         MaxHeight="40"
+                                                         VerticalAlignment="Top"
                                                          Background="Transparent" BorderThickness="0"
                                                          IsReadOnly="True" IsReadOnlyCaretVisible="False"/>
                                             </Border>
@@ -483,7 +533,7 @@
                     </ScrollViewer>
 
                     <!-- Empty State -->
-                    <StackPanel x:Name="EmptyCoursesState" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Visible">
+                    <StackPanel x:Name="EmptyCoursesState" Grid.Row="2" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Visible">
                         <materialDesign:PackIcon Kind="BookPlusOutline" Width="80" Height="80" Foreground="#E0E0E0" HorizontalAlignment="Center"/>
                         <TextBlock Text="No Courses Yet" FontSize="20" FontWeight="SemiBold" Foreground="#BDBDBD" HorizontalAlignment="Center" Margin="0,16,0,6"/>
                         <TextBlock Text="Click 'Create' to add your first course." FontSize="13" Foreground="#BDBDBD" HorizontalAlignment="Center"/>

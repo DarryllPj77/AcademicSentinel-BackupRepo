@@ -14,6 +14,14 @@ public class UserLoginDto
 {
     public string Email { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
+
+    // Hardware binding for the single-device lock. The WPF client
+    // sends Environment.MachineName so AuthController.Login can
+    // distinguish a ghost-lock recovery (same machine relaunching
+    // after a crash) from a concurrent-login attempt (different
+    // machine). Optional for back-compat; an empty value falls
+    // through to the strict-block branch.
+    public string DeviceId { get; set; } = string.Empty;
 }
 
 // Used when the server replies to the app (Notice: No password included!)

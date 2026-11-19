@@ -255,7 +255,11 @@
         <Style x:Key="CourseCardStyle" TargetType="Border">
             <Setter Property="Background" Value="White"/>
             <Setter Property="CornerRadius" Value="12"/>
+            <!-- Match the Teacher dashboard outline so cards look identical across roles. -->
+            <Setter Property="BorderBrush" Value="#D0D0D0"/>
+            <Setter Property="BorderThickness" Value="1.5"/>
             <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,0,0"/>
             <Setter Property="Effect">
                 <Setter.Value>
                     <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.08" Color="Black"/>
@@ -409,17 +413,8 @@
                                Foreground="{StaticResource FEUGreenBrush}"
                                VerticalAlignment="Center"/>
 
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMinimize_Click" Margin="4,0" ToolTip="Minimize">
-                            <materialDesign:PackIcon Kind="WindowMinimize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUOutlineButton}" Padding="0" Click="BtnMaximize_Click" Margin="4,0" ToolTip="Maximize">
-                            <materialDesign:PackIcon Kind="WindowMaximize" Width="16" Height="16"/>
-                        </Button>
-                        <Button Width="36" Height="36" Style="{StaticResource FEUDangerButton}" Padding="0" Click="BtnClose_Click" ToolTip="Close">
-                            <materialDesign:PackIcon Kind="WindowClose" Width="16" Height="16"/>
-                        </Button>
-                    </StackPanel>
+                    <!-- Custom Window-Control buttons removed — Student
+                         Dashboard uses the WPF default title-bar chrome. -->
                 </Grid>
             </Border>
 
@@ -590,10 +585,34 @@
                 <Grid x:Name="CoursesPanel" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <Border Grid.Row="0"
+                    <!-- Connection-recovery banner. Hidden normally; shows
+                         "No connection" while the dashboard poll is failing
+                         and "Connection restored — you can rejoin..." once
+                         the network returns. Colours set in code-behind. -->
+                    <Border x:Name="ConnectionBanner" Grid.Row="0"
+                            Visibility="Collapsed"
+                            CornerRadius="10"
+                            Padding="16,10"
+                            Margin="0,0,0,16">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <materialDesign:PackIcon x:Name="ConnectionBannerIcon"
+                                                     Kind="WifiOff"
+                                                     Width="20" Height="20"
+                                                     VerticalAlignment="Center"
+                                                     Margin="0,0,10,0"/>
+                            <TextBlock x:Name="TxtConnectionBanner"
+                                       VerticalAlignment="Center"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1"
                             Background="White"
                             CornerRadius="12"
                             Padding="20,14"
@@ -632,8 +651,7 @@
 
                                 <Button x:Name="BtnAddCourse"
                                         Style="{StaticResource FEUPrimaryButton}"
-                                        Click="BtnAddCourse_Click"
-                                        Margin="0,0,10,0">
+                                        Click="BtnAddCourse_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <materialDesign:PackIcon Kind="Plus"
                                                                  Width="18" Height="18"
@@ -642,23 +660,59 @@
                                         <TextBlock Text="Add" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </Button>
-
-                                <Button x:Name="BtnDeleteCourse"
-                                        Style="{StaticResource FEUDangerButton}"
-                                        Click="BtnDeleteCourse_Click">
-                                    <StackPanel Orientation="Horizontal">
-                                        <materialDesign:PackIcon Kind="DeleteOutline"
-                                                                 Width="18" Height="18"
-                                                                 VerticalAlignment="Center"
-                                                                 Margin="0,0,6,0"/>
-                                        <TextBlock Text="Delete" VerticalAlignment="Center"/>
-                                    </StackPanel>
-                                </Button>
                             </StackPanel>
                         </Grid>
                     </Border>
 
-                    <ScrollViewer Grid.Row="1"
+                    <!-- Live search bar. Filters StudentCoursesControl
+                         through an ICollectionView attached in code-behind
+                         so the underlying ObservableCollection is never
+                         mutated — joinable cards keep their state and
+                         position when the filter is applied or cleared. -->
+                    <Border Grid.Row="2"
+                            Background="White"
+                            CornerRadius="12"
+                            Padding="14,10"
+                            Margin="0,0,0,16">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.05" Color="Black"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <materialDesign:PackIcon Grid.Column="0"
+                                                     Kind="Magnify"
+                                                     Width="22" Height="22"
+                                                     Foreground="{StaticResource FEUSubTextBrush}"
+                                                     VerticalAlignment="Center"
+                                                     Margin="2,0,10,0"/>
+
+                            <TextBox x:Name="TxtCourseSearch"
+                                     Grid.Column="1"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     FontSize="14"
+                                     VerticalContentAlignment="Center"
+                                     TextChanged="TxtCourseSearch_TextChanged"
+                                     materialDesign:HintAssist.Hint="Search by course name or code (e.g. Math 101, CS-301)"/>
+
+                            <Button x:Name="BtnClearSearch"
+                                    Grid.Column="2"
+                                    Style="{StaticResource FEUOutlineButton}"
+                                    Padding="10,6"
+                                    Click="BtnClearSearch_Click"
+                                    Visibility="Collapsed"
+                                    ToolTip="Clear search">
+                                <materialDesign:PackIcon Kind="Close" Width="16" Height="16"/>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="3"
                                   VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="StudentCoursesControl">
@@ -673,12 +727,14 @@
                                             Width="240" Height="220"
                                             Margin="0,0,16,16"
                                             Cursor="Hand"
+                                            ClipToBounds="True"
                                             MouseLeftButtonDown="CourseCard_Click">
                                         <Grid>
+                                            <!-- Locked row heights so every card renders identically. -->
                                             <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="32"/>
+                                                <RowDefinition Height="120"/>
                                                 <RowDefinition Height="*"/>
-                                                <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
 
                                             <CheckBox Grid.Row="0"
@@ -688,10 +744,17 @@
 
                                             <Border Grid.Row="1"
                                                     Background="{StaticResource FEULightGrayBrush}"
-                                                    CornerRadius="0">
+                                                    CornerRadius="0"
+                                                    ClipToBounds="True">
                                                 <Grid>
+                                                    <!-- UniformToFill centers/crops any aspect ratio into the
+                                                         locked 240×120 image area. -->
                                                     <Image Source="{Binding CourseImagePath}"
                                                            Stretch="UniformToFill"
+                                                           StretchDirection="Both"
+                                                           ClipToBounds="True"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
                                                            Visibility="{Binding HasImageVisibility}"/>
                                                     <StackPanel VerticalAlignment="Center"
                                                                 HorizontalAlignment="Center"
@@ -739,7 +802,7 @@
                     </ScrollViewer>
 
                     <StackPanel x:Name="EmptyCoursesState"
-                                Grid.Row="1"
+                                Grid.Row="2"
                                 VerticalAlignment="Center"
                                 HorizontalAlignment="Center"
                                 Visibility="Visible">

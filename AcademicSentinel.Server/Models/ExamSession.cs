@@ -20,5 +20,12 @@ namespace AcademicSentinel.Server.Models
         public string Status { get; set; } = string.Empty; // "Active" or "Completed"
 
         public string ExamType { get; set; } = "Summative";
+
+        // Soft-delete (Trash) timestamp. Null = visible in Past
+        // Sessions; non-null = trashed and pending permanent removal
+        // by ArchiveCleanupService once older than the configured
+        // retention window. UTC; never set for non-terminal sessions
+        // (Active/Pending/Countdown) — see DeleteSession endpoint.
+        public DateTime? DeletedAt { get; set; }
     }
 }

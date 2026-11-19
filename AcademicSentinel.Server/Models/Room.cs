@@ -22,4 +22,7 @@ public class Room
     public string? RoomImageContentType { get; set; } // MIME type (image/png, image/jpeg, etc.)
     public long? RoomImageSize { get; set; } // File size in bytes
     public DateTime? RoomImageUploadedAt { get; set; } // When the image was uploaded
+
+    // NEW: Tracks if the live monitoring feed is actively running
+    public bool IsMonitoringActive { get; set; } = false;
 }

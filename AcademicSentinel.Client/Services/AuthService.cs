@@ -21,14 +21,47 @@ namespace AcademicSentinel.Client.Services
         // Calls POST /api/auth/register
         public async Task<bool> RegisterAsync(UserRegisterDto registerData)
         {
+            LastErrorMessage = null;
             try
             {
-                // Hits the /api/auth/register endpoint we just created 
+                // Hits the /api/auth/register endpoint we just created
                 var response = await _httpClient.PostAsJsonAsync(ApiEndpoints.AuthRegister, registerData);
-                return response.IsSuccessStatusCode;
+                if (response.IsSuccessStatusCode)
+                    return true;
+
+                // Surface the real server reason so the UI can show
+                // "domain not allowed" vs "email already registered" vs
+                // "wait N seconds" instead of one generic message.
+                try
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    LastErrorMessage = string.IsNullOrWhiteSpace(body)
+                        ? $"Server returned {(int)response.StatusCode} {response.StatusCode}."
+                        : body;
+                }
+                catch
+                {
+                    LastErrorMessage = $"Server returned {(int)response.StatusCode} {response.StatusCode}.";
+                }
+                return false;
             }
-            catch (Exception)
+            catch (HttpRequestException hre)
             {
+                // Cannot reach the API at all — usually means the
+                // BaseUrl in ApiEndpoints.cs points somewhere the
+                // installed client can't actually hit (e.g. localhost
+                // on a deployed build).
+                LastErrorMessage = $"Cannot reach server: {hre.Message}";
+                return false;
+            }
+            catch (TaskCanceledException)
+            {
+                LastErrorMessage = "The server did not respond in time. Check your internet connection.";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LastErrorMessage = $"Unexpected error: {ex.Message}";
                 return false;
             }
         }
@@ -36,9 +69,19 @@ namespace AcademicSentinel.Client.Services
         // Calls POST /api/auth/login
         public async Task<bool> LoginAsync(string email, string password)
         {
+            LastErrorMessage = null;
             try
             {
-                var loginData = new UserLoginDto { Email = email, Password = password };
+                // Environment.MachineName is the Windows PC hostname.
+                // Server uses it to enforce single-device login: same
+                // value on a contested login → ghost-lock recovery;
+                // different value → strict 409 refusal.
+                var loginData = new UserLoginDto
+                {
+                    Email    = email,
+                    Password = password,
+                    DeviceId = Environment.MachineName ?? string.Empty
+                };
 
                 // Now using ApiEndpoints.AuthLogin!
                 var response = await _httpClient.PostAsJsonAsync(ApiEndpoints.AuthLogin, loginData);
@@ -52,11 +95,40 @@ namespace AcademicSentinel.Client.Services
                         SessionManager.JwtToken = result.Token;
                         return true;
                     }
+                    return false;
                 }
+
+                // Surface a marker for the server's EMAIL_NOT_VERIFIED
+                // 403 so the LoginWindow can branch and route the user
+                // to the verify-email screen instead of treating it as
+                // a bad-credentials failure. The server replies with
+                // either a JSON object that carries a `code` field or
+                // a plain string for legacy paths; treat any 403 as
+                // the verification gate.
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    LastErrorMessage = "EMAIL_NOT_VERIFIED";
+                    return false;
+                }
+
+                // Single-device session lock — server returns 409 when
+                // the account is already logged in elsewhere. Surface a
+                // distinct marker so the LoginWindow can show the
+                // actionable "already logged in on another device"
+                // message instead of the generic invalid-credentials
+                // toast.
+                if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+                {
+                    LastErrorMessage = "ALREADY_LOGGED_IN";
+                    return false;
+                }
+
+                LastErrorMessage = "INVALID_CREDENTIALS";
                 return false;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                LastErrorMessage = $"NETWORK_ERROR:{ex.Message}";
                 return false;
             }
         }
